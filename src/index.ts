@@ -1,5 +1,4 @@
 import "dotenv/config";
-import Openai from "openai";
 import WebSocket from "ws";
 import { login } from "./login";
 import { Gpt } from "./chatGpt";
@@ -59,7 +58,7 @@ class Bot {
       nme || process.env.CBOX_USERNAME!,
       key!,
       pic || process.env.CBOX_DEFAULT_PIC!,
-      new Gpt(new Openai({ apiKey: process.env.OPENAI_API_KEY! })),
+      new Gpt(),
       new WebSocket(socketUrl!),
       boxId!,
       boxTag!,
