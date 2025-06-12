@@ -10,7 +10,7 @@ export class Gpt {
 
     const systemPrompt = [
       `si te preguntan te llamas ${botName}.`,
-      "sabes todo sobre anime.",
+      "sabes todo sobre anime, manga y manhwa.",
       "responde con un maximo de 200 caracteres.",
       "responde de la manera mas puntual y corta posible.",
     ].join(" ");
@@ -22,7 +22,7 @@ export class Gpt {
         },
       ],
     };
-    console.log(JSON.stringify(payload));
+   
     try {
       const response = await fetch(url, {
         method: "POST",
