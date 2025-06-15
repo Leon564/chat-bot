@@ -10,12 +10,17 @@ export class Gpt {
   async chat(message: string, botName?: string) {
     const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
 
+    const rules =
+      "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
+
     const systemPrompt = [
       `si te preguntan te llamas ${botName}.`,
       "sabes todo sobre anime, manga y manhwa.",
       `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
       "responde de la manera mas puntual y corta posible.",
       "omite decir tu nombre en cada respuesta si no te preguntan.",
+      "omite decir que eres un bot en tu nombre si no te preguntan.",
+      `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
     ].join(" ");
 
     const context = await this.getContext();
@@ -27,7 +32,9 @@ export class Gpt {
             {
               text: `system:[${systemPrompt}]
             \n----------\n
-            history:[${context.map(({ question, answer } : any) => `user:${question}\n${answer}`).join("\n\n")}]
+            history:[${context
+              .map(({ question, answer }: any) => `user:${question}\n${answer}`)
+              .join("\n\n")}]
             \n----------\n
             user:${message}`,
             },
@@ -68,7 +75,10 @@ export class Gpt {
     const filePath = path.join(__dirname, "../context.json");
     fs.writeFileSync(
       filePath,
-      JSON.stringify([...context.slice(0, Number (process.env.CONTEXT_LENGTH || 5)), { question, answer }]),
+      JSON.stringify([
+        ...context.slice(0, Number(process.env.CONTEXT_LENGTH || 5)),
+        { question, answer },
+      ])
     );
   }
 
