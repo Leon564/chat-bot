@@ -32,26 +32,23 @@ class Bot {
   }
 
   public static async start() {
-    
     const { boxId, boxTag, iframeUrl, socketUrl } = await boxDetails(
       process.env.CBOX_URL!
     );
-    const dataLogin = await login(
-    {
+    const dataLogin = await login({
       boxId: boxId!,
       boxTag: boxTag!,
       iframeUrl: iframeUrl!,
       password: process.env.CBOX_PASSWORD!,
       username: process.env.CBOX_USERNAME!,
-    }
-    );
+    });
     if (dataLogin.error) {
       console.log("error al iniciar sesion");
       console.log(dataLogin.error);
       return;
     }
     const { nme, key, pic } = dataLogin.udata;
-    
+
     console.log(`starting bot as ${nme}`);
 
     new Bot(
@@ -84,12 +81,17 @@ class Bot {
         return;
 
       console.log(`Mensaje recibido: ${message} de ${name} el ${date}`);
-      
+
+      const _textColor = process.env.TEXT_COLOR;
+
+      const textColor = _textColor ? `^#${_textColor} ` : "";
+
       const response = await this.gpt.chat(message, this.uname);
+
       if (!response) return;
       const responseData = {
         key: this.ukey,
-        message: `<@${name}> ${response}`,
+        message: `${textColor}<@${name}> ${response}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
