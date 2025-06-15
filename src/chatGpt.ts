@@ -1,4 +1,6 @@
 import "dotenv/config";
+import path from "path";
+import fs from "fs";
 
 export class Gpt {
   constructor(
@@ -16,14 +18,24 @@ export class Gpt {
       "omite decir tu nombre en cada respuesta si no te preguntan.",
     ].join(" ");
 
+    const context = await this.getContext();
+
     const payload = {
       contents: [
         {
-          parts: [{ text: `system:[${systemPrompt}]\n----------\nuser:${message}` }],
+          parts: [
+            {
+              text: `system:[${systemPrompt}]
+            \n----------\n
+            history:[${context.map(({ question, answer } : any) => `user:${question}\n${answer}`).join("\n\n")}]
+            \n----------\n
+            user:${message}`,
+            },
+          ],
         },
       ],
     };
-   
+
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -42,9 +54,31 @@ export class Gpt {
       const candidates = data?.candidates || [];
       const content = candidates[0]?.content?.parts?.[0]?.text;
 
+      await this.saveContext({ question: message, answer: content || "" });
+
       return content || "No response from Gemini.";
     } catch (error) {
       throw error;
     }
+  }
+
+  //guarda el contexto de las ultimas 3 preguntas y respuestas en un archivo json
+  async saveContext({ question, answer }: any) {
+    const context = await this.getContext();
+    const filePath = path.join(__dirname, "../context.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify([...context.slice(0, Number (process.env.CONTEXT_LENGTH || 5)), { question, answer }]),
+    );
+  }
+
+  //recupera el contexto de las ultimas 3 preguntas y respuestas
+  async getContext() {
+    const filePath = path.join(__dirname, "../context.json");
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, "utf-8");
+      return JSON.parse(data);
+    }
+    return [];
   }
 }
