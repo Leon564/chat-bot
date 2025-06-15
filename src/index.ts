@@ -89,7 +89,7 @@ class Bot {
       if (!response) return;
       const responseData = {
         key: this.ukey,
-        message: response,
+        message: `<@${name}> ${response}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,

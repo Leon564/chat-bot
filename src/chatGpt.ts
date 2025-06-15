@@ -11,14 +11,15 @@ export class Gpt {
     const systemPrompt = [
       `si te preguntan te llamas ${botName}.`,
       "sabes todo sobre anime, manga y manhwa.",
-      "responde con un maximo de 200 caracteres.",
+      `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
       "responde de la manera mas puntual y corta posible.",
+      "omite decir tu nombre en cada respuesta si no te preguntan.",
     ].join(" ");
 
     const payload = {
       contents: [
         {
-          parts: [{ text: `gemini:[${systemPrompt}]\n\nuser:${message}` }],
+          parts: [{ text: `system:[${systemPrompt}]\n----------\nuser:${message}` }],
         },
       ],
     };

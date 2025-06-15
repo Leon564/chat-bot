@@ -56,7 +56,7 @@ export const sendMessage = async ({
       },
       body: `aj=1063&lp=2529196&pst=${message?.substring(
         0,
-        300
+        Number (process.env.MAX_LENGTH_RESPONSE || 300)
       )}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
       method: "POST",
      // agent,
