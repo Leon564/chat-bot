@@ -54,7 +54,7 @@ class Bot {
     new Bot(
       nme || process.env.CBOX_USERNAME!,
       key!,
-      pic || process.env.CBOX_DEFAULT_PIC!,
+      process.env.CBOX_DEFAULT_PIC || pic || "",
       new Gpt(),
       new WebSocket(socketUrl!),
       boxId!,
