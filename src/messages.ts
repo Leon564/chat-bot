@@ -2,7 +2,6 @@ import { load } from "cheerio";
 import "dotenv/config";
 import WebSocket from "ws";
 import he from "he";
-//import { HttpsProxyAgent } from "https-proxy-agent";
 import fetch from "node-fetch";
 
 export type SendMessageOptions = {
@@ -34,8 +33,6 @@ export const sendMessage = async ({
 }: SendMessageOptions) => {
   const baseUrl = iframeUrl?.split("?")[0];
 
-  //const agent = new HttpsProxyAgent(process.env.HTTPS_PROXY!);
-
   fetch(
     `${baseUrl}?sec=submit&boxid=${boxId || ""}&boxtag=${boxTag || ""}&_v=1063`,
     {
@@ -56,14 +53,11 @@ export const sendMessage = async ({
       },
       body: `aj=1063&lp=2529196&pst=${message?.substring(
         0,
-        Number (process.env.MAX_LENGTH_RESPONSE || 300)
+        Number(process.env.MAX_LENGTH_RESPONSE || 300)
       )}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
       method: "POST",
-     // agent,
     }
   );
-  // .then((res) => res.text())
-  // .then(console.log);
 };
 
 export const toDomain = (data: WebSocket.Data): ToDomainResponse => {
