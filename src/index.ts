@@ -4,7 +4,7 @@ import { login } from "./login";
 import { Gpt } from "./chatGpt";
 import { boxDetails } from "./boxDetails";
 import { sendMessage, toDomain } from "./messages";
-import { isLastEvent, saveEventsLog, saveLog } from "./utils";
+import { getLastEventType, saveEventsLog, saveLog } from "./utils";
 
 class Bot {
   private responseQueue: any[] = [];
@@ -95,7 +95,10 @@ class Bot {
 
       const responseData = {
         key: this.ukey,
-        message: `${textColor}<@${name}> ${response.replace("{{resumen}}", '')}`,
+        message: `${textColor}<@${name}> ${response.replace(
+          "{{resumen}}",
+          ""
+        )}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
@@ -107,8 +110,11 @@ class Bot {
         this.responseQueue.push(responseData);
         return;
       }
-      
-      if (response.includes("{{resumen}}") && !(await isLastEvent("Resumen"))) {
+
+      const lastResumenEvent = await getLastEventType("Resumen");
+      console.log(lastResumenEvent);
+      if (response.includes("{{resumen}}") && lastResumenEvent.minutesLeft < 10) {
+        console.log("no puedo generar un resumen porque faltan menos de 10 minutos");
         const responseData = {
           key: this.ukey,
           message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
@@ -123,7 +129,7 @@ class Bot {
       }
 
       sendMessage(responseData);
-
+      
       if (response.includes("{{resumen}}")) {
         const resumen = await this.gpt.generateSummary();
         const responses = resumen.split("{{skip}}");

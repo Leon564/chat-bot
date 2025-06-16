@@ -37,16 +37,16 @@ export const getLastEvents = async () => {
   return eventsLog;
 };
 
-//una funcion para verificar si el ultimo evento {event: 'Resumen'} fue hace menos de 10 minutos
-export const isLastEvent = async (event: string) => {
-  const eventsLog = await getLastEvents();
-  const lastResumenEvent = eventsLog.find(
-    (event: any) => event.event === event
-  );
-  if (!lastResumenEvent) return false;
-  const lastEventDate = new Date(lastResumenEvent.date);
+export const getLastEventType = async (event: string) => {
+  const eventsLog: any[] = await getLastEvents();
+  const lastEvent = eventsLog
+    .slice()
+    .reverse()
+    .find((_event: any) => _event.event === event);
+  if (!lastEvent) return { minutesLeft: 1000, lastResumenEvent: null };
+  const lastEventDate = new Date(lastEvent.date);
   const now = new Date();
   const diff = now.getTime() - lastEventDate.getTime();
-  const minutes = Math.floor(diff / (1000 * 60));
-  return minutes < 10;
+  const minutesLeft = Math.floor(diff / (1000 * 60));
+  return { minutesLeft, lastResumenEvent: lastEvent };
 };
