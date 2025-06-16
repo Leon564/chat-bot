@@ -16,7 +16,7 @@ export const saveLog = async (user: string, message: string) => {
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
     : [];
   messagesLog.push({ user, message });
-  fs.writeFileSync(filePath, JSON.stringify(messagesLog.slice(0, 200)));
+  fs.writeFileSync(filePath, JSON.stringify(messagesLog.slice(-200)));
 };
 
 export const saveEventsLog = async (event: string, user: string) => {
@@ -25,7 +25,7 @@ export const saveEventsLog = async (event: string, user: string) => {
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
     : [];
   eventsLog.push({ event, user, date: new Date().toISOString() });
-  fs.writeFileSync(filePath, JSON.stringify(eventsLog.slice(0, 200)));
+  fs.writeFileSync(filePath, JSON.stringify(eventsLog.slice(-200)));
 };
 
 export const getLastEvents = async () => {
