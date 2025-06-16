@@ -4,11 +4,18 @@ import { login } from "./login";
 import { Gpt } from "./chatGpt";
 import { boxDetails } from "./boxDetails";
 import { sendMessage, toDomain } from "./messages";
-import { clearMessagesLog, getLastEventType, saveEventsLog, saveLog } from "./utils";
+import {
+  clearMessagesLog,
+  getLastEventType,
+  saveEventsLog,
+  saveLog,
+  sleep,
+} from "./utils";
 
 class Bot {
   private responseQueue: any[] = [];
-  private lastSentTime: number = Date.now() - Number(process.env.RESPONSE_DELAY || 20500);
+  private lastSentTime: number =
+    Date.now() - Number(process.env.RESPONSE_DELAY || 20500);
 
   constructor(
     private uname: string,
@@ -23,7 +30,8 @@ class Bot {
     setInterval(() => {
       if (
         this.responseQueue.length > 0 &&
-        Date.now() - this.lastSentTime > Number(process.env.RESPONSE_DELAY || 20500)
+        Date.now() - this.lastSentTime >
+          Number(process.env.RESPONSE_DELAY || 20500)
       ) {
         const response = this.responseQueue.shift();
         sendMessage(response);
@@ -106,15 +114,20 @@ class Bot {
         iframeUrl: this.iframeUrl,
       };
 
-      if (Date.now() - this.lastSentTime < Number(process.env.RESPONSE_DELAY || 20500)) {
+      if (
+        Date.now() - this.lastSentTime <
+        Number(process.env.RESPONSE_DELAY || 20500)
+      ) {
         this.responseQueue.push(responseData);
         return;
       }
 
       const lastResumenEvent = await getLastEventType("Resumen");
-     
-      if (response.includes("{{resumen}}") && lastResumenEvent.minutesLeft < 10) {
-        
+
+      if (
+        response.includes("{{resumen}}") &&
+        lastResumenEvent.minutesLeft < 10
+      ) {
         const responseData = {
           key: this.ukey,
           message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
@@ -124,12 +137,12 @@ class Bot {
           boxId: this.boxId,
           iframeUrl: this.iframeUrl,
         };
-        sendMessage(responseData);
+        await sendMessage(responseData);
         return;
       }
 
-      sendMessage(responseData);
-      
+      await sendMessage(responseData);
+
       if (response.includes("{{resumen}}")) {
         const resumen = await this.gpt.generateSummary();
         const responses = resumen.split("{{skip}}");
@@ -147,9 +160,9 @@ class Bot {
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          setTimeout(() => {
-            sendMessage(responseData);
-          }, 1000 * i);
+
+          sendMessage(responseData);
+          await sleep(3000);
         }
         saveEventsLog("Resumen", name);
         await clearMessagesLog();

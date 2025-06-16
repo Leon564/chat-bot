@@ -55,3 +55,7 @@ export const clearMessagesLog = async () => {
   const filePath = path.join(__dirname, "../data/messages_log.json");
   fs.writeFileSync(filePath, "[]");
 };
+
+export const sleep = (ms: number) => {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+};
