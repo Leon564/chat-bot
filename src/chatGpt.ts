@@ -83,14 +83,10 @@ export class Gpt {
     const context = await this.getContext();
     const filePath = path.join(__dirname, "../data/context.json");
     context.push({ question, answer });
-    fs.writeFileSync(filePath, JSON.stringify(context.slice(-Number(process.env.CONTEXT_LENGTH || 5))));
-    // fs.writeFileSync(
-    //   filePath,
-    //   JSON.stringify([
-    //     ...context.slice(0, Number(process.env.CONTEXT_LENGTH || 5)),
-    //     { question, answer },
-    //   ])
-    // );
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify(context.slice(-Number(process.env.CONTEXT_LENGTH || 5)))
+    );
   }
 
   //recupera el contexto de las ultimas 3 preguntas y respuestas
