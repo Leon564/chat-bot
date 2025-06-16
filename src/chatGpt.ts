@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
+import { getLastMessages } from "./utils";
 
 export class Gpt {
   constructor(
@@ -22,6 +23,7 @@ export class Gpt {
       "omite decir que eres un bot en tu nombre si no te preguntan.",
       `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
       'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash> :)"',
+      'si te piden un resumen del chat responde con "Generando resumen del chat... {{resumen}}"',
     ].join(" ");
 
     const context = await this.getContext();
@@ -64,7 +66,11 @@ export class Gpt {
 
       await this.saveContext({ question: message, answer: content || "" });
 
-      return content || "No response from Gemini.";
+      // if (content.includes("{{resumen}}")) {
+      //   this.generateSummary();
+      // }
+
+      return content/*.replace("{{resumen}}", "")*/ || "No response from Gemini.";
     } catch (error) {
       throw error;
     }
@@ -73,7 +79,7 @@ export class Gpt {
   //guarda el contexto de las ultimas 3 preguntas y respuestas en un archivo json
   async saveContext({ question, answer }: any) {
     const context = await this.getContext();
-    const filePath = path.join(__dirname, "../context.json");
+    const filePath = path.join(__dirname, "../data/context.json");
     fs.writeFileSync(
       filePath,
       JSON.stringify([
@@ -85,11 +91,55 @@ export class Gpt {
 
   //recupera el contexto de las ultimas 3 preguntas y respuestas
   async getContext() {
-    const filePath = path.join(__dirname, "../context.json");
+    const filePath = path.join(__dirname, "../data/context.json");
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, "utf-8");
       return JSON.parse(data);
     }
     return [];
+  }
+
+  async generateSummary() {
+    const history = await getLastMessages();
+    const messages = history.map(({ user, message }: any) => `${user}:${message}`).join("\n\n");
+    const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
+    const payload = {
+      contents: [
+        {
+          parts: [
+            {
+              text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres. con {{skip}} para dividir el resumen en partes.
+            \n----------\n
+            history:[${messages}]
+            \n----------\n
+            user:resumen`,
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const data = await response.json();
+      const candidates = data?.candidates || [];
+      const content = candidates[0]?.content?.parts?.[0]?.text;
+
+      return content || "No response from Gemini.";
+    } catch (error) {
+      throw error;
+    }
   }
 }

@@ -1,3 +1,5 @@
 /node_modules
 .env
 context.json
+/data/context.json
+/data/messages_log.json

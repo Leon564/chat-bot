@@ -4,6 +4,7 @@ import { login } from "./login";
 import { Gpt } from "./chatGpt";
 import { boxDetails } from "./boxDetails";
 import { sendMessage, toDomain } from "./messages";
+import { isLastEvent, saveEventsLog, saveLog } from "./utils";
 
 class Bot {
   private responseQueue: any[] = [];
@@ -72,6 +73,8 @@ class Bot {
     this.socket.on("message", async (data: WebSocket.Data) => {
       const { date, id, lvl, message, name } = toDomain(data);
 
+      await saveLog(name, message);
+
       if (
         !message ||
         name === this.uname ||
@@ -89,20 +92,62 @@ class Bot {
       const response = await this.gpt.chat(message, this.uname);
 
       if (!response) return;
+
       const responseData = {
         key: this.ukey,
-        message: `${textColor}<@${name}> ${response}`,
+        message: `${textColor}<@${name}> ${response.replace("{{resumen}}")}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
         boxId: this.boxId,
         iframeUrl: this.iframeUrl,
       };
+
       if (Date.now() - this.lastSentTime < 20500) {
         this.responseQueue.push(responseData);
         return;
       }
+
+      if (response.includes("{{resumen}}") && (await isLastEvent("Resumen"))) {
+        const responseData = {
+          key: this.ukey,
+          message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
+          pic: this.pic,
+          username: this.uname,
+          boxTag: this.boxTag,
+          boxId: this.boxId,
+          iframeUrl: this.iframeUrl,
+        };
+        sendMessage(responseData);
+        return;
+      }
+
       sendMessage(responseData);
+
+      if (response.includes("{{resumen}}")) {
+        const resumen = await this.gpt.generateSummary();
+        const responses = resumen.split("{{skip}}");
+        //envia el resumen con un delay de 1 segundo entre cada parte
+        for (let i = 0; i < responses.length; i++) {
+          const responseData = {
+            key: this.ukey,
+            message: `${textColor} ${responses[i]
+              .replace("{{resumen}}", "")
+              .replace("{{skip}}", "")
+              .trim()}`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          setTimeout(() => {
+            sendMessage(responseData);
+          }, 1000 * i);
+        }
+        saveEventsLog("Resumen", name);
+      }
+
       this.lastSentTime = Date.now();
     });
     // Manejar errores en la conexión
