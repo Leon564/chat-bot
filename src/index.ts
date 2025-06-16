@@ -8,7 +8,7 @@ import { clearMessagesLog, getLastEventType, saveEventsLog, saveLog } from "./ut
 
 class Bot {
   private responseQueue: any[] = [];
-  private lastSentTime: number = Date.now() - 20500;
+  private lastSentTime: number = Date.now() - Number(process.env.RESPONSE_DELAY || 20500);
 
   constructor(
     private uname: string,
@@ -23,7 +23,7 @@ class Bot {
     setInterval(() => {
       if (
         this.responseQueue.length > 0 &&
-        Date.now() - this.lastSentTime > 20500
+        Date.now() - this.lastSentTime > Number(process.env.RESPONSE_DELAY || 20500)
       ) {
         const response = this.responseQueue.shift();
         sendMessage(response);
@@ -106,7 +106,7 @@ class Bot {
         iframeUrl: this.iframeUrl,
       };
 
-      if (Date.now() - this.lastSentTime < 20500) {
+      if (Date.now() - this.lastSentTime < Number(process.env.RESPONSE_DELAY || 20500)) {
         this.responseQueue.push(responseData);
         return;
       }
