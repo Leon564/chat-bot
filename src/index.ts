@@ -4,7 +4,7 @@ import { login } from "./login";
 import { Gpt } from "./chatGpt";
 import { boxDetails } from "./boxDetails";
 import { sendMessage, toDomain } from "./messages";
-import { getLastEventType, saveEventsLog, saveLog } from "./utils";
+import { clearMessagesLog, getLastEventType, saveEventsLog, saveLog } from "./utils";
 
 class Bot {
   private responseQueue: any[] = [];
@@ -112,9 +112,9 @@ class Bot {
       }
 
       const lastResumenEvent = await getLastEventType("Resumen");
-      console.log(lastResumenEvent);
+     
       if (response.includes("{{resumen}}") && lastResumenEvent.minutesLeft < 10) {
-        console.log("no puedo generar un resumen porque faltan menos de 10 minutos");
+        
         const responseData = {
           key: this.ukey,
           message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
@@ -152,6 +152,7 @@ class Bot {
           }, 1000 * i);
         }
         saveEventsLog("Resumen", name);
+        await clearMessagesLog();
       }
 
       this.lastSentTime = Date.now();

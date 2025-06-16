@@ -50,3 +50,8 @@ export const getLastEventType = async (event: string) => {
   const minutesLeft = Math.floor(diff / (1000 * 60));
   return { minutesLeft, lastResumenEvent: lastEvent };
 };
+
+export const clearMessagesLog = async () => {
+  const filePath = path.join(__dirname, "../data/messages_log.json");
+  fs.writeFileSync(filePath, "[]");
+};
