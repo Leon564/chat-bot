@@ -21,6 +21,7 @@ export class Gpt {
       "omite decir tu nombre en cada respuesta si no te preguntan.",
       "omite decir que eres un bot en tu nombre si no te preguntan.",
       `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
+      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como Sleepy Ash :)"',
     ].join(" ");
 
     const context = await this.getContext();
