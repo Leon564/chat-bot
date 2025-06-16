@@ -70,7 +70,9 @@ export class Gpt {
       //   this.generateSummary();
       // }
 
-      return content/*.replace("{{resumen}}", "")*/ || "No response from Gemini.";
+      return (
+        content /*.replace("{{resumen}}", "")*/ || "No response from Gemini."
+      );
     } catch (error) {
       throw error;
     }
@@ -101,14 +103,18 @@ export class Gpt {
 
   async generateSummary() {
     const history = await getLastMessages();
-    const messages = history.map(({ user, message }: any) => `${user}:${message}`).join("\n\n");
+    const messages = history
+      .map(({ user, message }: any) => `${user}:${message}`)
+      .join("\n\n");
     const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
     const payload = {
       contents: [
         {
           parts: [
             {
-              text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres. con {{skip}} para dividir el resumen en partes.
+              text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
+              \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona. 
+              \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
             \n----------\n
             history:[${messages}]
             \n----------\n

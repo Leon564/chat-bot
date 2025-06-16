@@ -95,7 +95,7 @@ class Bot {
 
       const responseData = {
         key: this.ukey,
-        message: `${textColor}<@${name}> ${response.replace("{{resumen}}")}`,
+        message: `${textColor}<@${name}> ${response.replace("{{resumen}}", '')}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
@@ -107,8 +107,8 @@ class Bot {
         this.responseQueue.push(responseData);
         return;
       }
-
-      if (response.includes("{{resumen}}") && (await isLastEvent("Resumen"))) {
+      
+      if (response.includes("{{resumen}}") && !(await isLastEvent("Resumen"))) {
         const responseData = {
           key: this.ukey,
           message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
