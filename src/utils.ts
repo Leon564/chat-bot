@@ -56,6 +56,24 @@ export const clearMessagesLog = async () => {
   fs.writeFileSync(filePath, "[]");
 };
 
+export const saveMemory = async (memory: string) => {
+  const filePath = path.join(__dirname, "../data/memory.json");
+  const memoryLog = fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
+    : [];
+  memoryLog.push(memory);
+  fs.writeFileSync(filePath, JSON.stringify(memoryLog.slice(-200)));
+};
+
+export const getMemory = async () => {
+  const filePath = path.join(__dirname, "../data/memory.json");
+  const memoryLog = fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
+    : [];
+  return memoryLog;
+};
+
 export const sleep = (ms: number) => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
+

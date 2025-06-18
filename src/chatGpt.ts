@@ -1,7 +1,7 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
-import { getLastMessages } from "./utils";
+import { getLastMessages, getMemory, saveMemory } from "./utils";
 
 export class Gpt {
   constructor(
@@ -15,18 +15,25 @@ export class Gpt {
       "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
 
     const systemPrompt = [
+      `context es el contexto del chat y memory es lo que tu consideras importante para recordar.`,
       `si te preguntan te llamas ${botName}.`,
+      `si te preguntan que haces aqui di que estas aqui por ordenes de Leon564 ayudando a los usuarios del chat.`,
+      `si te preguntan quien es Leon564 responde con que aqui lo conocen como <@6851018|Sleepy Ash>`,
+      `si te preguntan quien escogio tu nombre diles que "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas.`,
       "sabes todo sobre anime, manga y manhwa.",
       `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
       "responde de la manera mas puntual y corta posible.",
       "omite decir tu nombre en cada respuesta si no te preguntan.",
       "omite decir que eres un bot en tu nombre si no te preguntan.",
       `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
-      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash> :)"',
+      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas para que encaje con el contexto.',
       'si te piden un resumen del chat responde con "Generando resumen del chat... {{resumen}}"',
+      `si crees que algo es importante para recordar al final de tu respuesta ponlo entre etiquetas las etiquetas <memory> </memory>`,
     ].join(" ");
 
     const context = await this.getContext();
+
+    const memory = await getMemory();
 
     const payload = {
       contents: [
@@ -38,6 +45,8 @@ export class Gpt {
             history:[${context
               .map(({ question, answer }: any) => `user:${question}\n${answer}`)
               .join("\n\n")}]
+            \n----------\n
+            memory:[${memory.join("\n\n")}]
             \n----------\n
             user:${message}`,
             },
@@ -62,7 +71,12 @@ export class Gpt {
 
       const data = await response.json();
       const candidates = data?.candidates || [];
-      const content = candidates[0]?.content?.parts?.[0]?.text;
+      let content = candidates[0]?.content?.parts?.[0]?.text;
+
+      if (content.includes("<memory>")) {
+        await saveMemory(content.split("<memory>")[1]?.replace('</memory>', "").trim());
+        content = content.split("<memory>")[0].trim();
+      }
 
       await this.saveContext({ question: message, answer: content || "" });
 
