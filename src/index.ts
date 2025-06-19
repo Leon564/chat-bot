@@ -97,7 +97,7 @@ class Bot {
 
       const textColor = _textColor ? `^#${_textColor} ` : "";
 
-      const response = await this.gpt.chat(message, this.uname);
+      const response = await this.gpt.chat(message, this.uname, name);
 
       if (!response) return;
 
