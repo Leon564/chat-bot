@@ -45,7 +45,10 @@ export class Gpt {
               text: `system:[${systemPrompt}]
             \n----------\n
             history:[${context
-              .map(({ question, answer }: any) => `{user:${question}\nbot:${answer}}`)
+              .map(
+                ({ question, answer }: any) =>
+                  `{user:${question}\nbot:${answer}}`
+              )
               .join("\n\n")}]
             \n----------\n
             memory:[${memory.join("\n\n")}]
@@ -76,7 +79,11 @@ export class Gpt {
       let content = candidates[0]?.content?.parts?.[0]?.text;
 
       if (content.includes("<memory>")) {
-        await saveMemory(content.split("<memory>")[1]?.replace('</memory>', "").trim());
+        if (Boolean(process.env.USE_MEMORY)) {
+          await saveMemory(
+            content.split("<memory>")[1]?.replace("</memory>", "").trim()
+          );
+        }
         content = content.split("<memory>")[0].trim();
       }
 
