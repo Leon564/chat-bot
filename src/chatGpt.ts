@@ -25,6 +25,7 @@ export class Gpt {
       "sabes todo sobre anime, manga y manhwa.",
       `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
       "responde de la manera mas puntual y corta posible.",
+      "si te piden el enlace del discord responde a tu manera y adjunta este enlace: https://discord.gg/t99zyKmM",
       "omite decir tu nombre en cada respuesta si no te preguntan.",
       "omite decir que eres un bot en tu nombre si no te preguntan.",
       `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
