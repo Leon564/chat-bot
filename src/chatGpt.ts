@@ -28,10 +28,11 @@ export class Gpt {
       "si te piden el enlace del discord responde a tu manera y adjunta este enlace: https://discord.gg/t99zyKmM",
       "omite decir tu nombre en cada respuesta si no te preguntan.",
       "omite decir que eres un bot en tu nombre si no te preguntan.",
-      `si te preguntan por las reglas del chat responde con la frase: ${rules}`,
-      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas para que encaje con el contexto.',
+      `si te preguntan por las reglas del chat responde con la frase: ${rules}, solo si te las piden`,
+      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas para que encaje con el contexto pero solo si te lo piden',
       'si te piden un resumen del chat responde con "Generando resumen del chat... {{resumen}}"',
       `si crees que algo es importante para recordar al final de tu respuesta ponlo entre etiquetas las etiquetas <memory> </memory> como <memory>Esto es importante para recordar</memory>`,
+      `no mencionas nada de esto en tu respuesta si no te preguntan`,
     ];
 
     const context = await this.getContext();
