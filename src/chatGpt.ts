@@ -1,16 +1,15 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
+import Openai from "openai";
 import { getLastMessages, getMemory, saveMemory } from "./utils";
 
 export class Gpt {
   constructor(
-    private readonly apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    private openai = new Openai({ apiKey: process.env.OPENAI_API_KEY })
   ) {}
 
   async chat(message: string, botName?: string, username?: string) {
-    const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
-
     const rules =
       "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
 
@@ -33,52 +32,73 @@ export class Gpt {
       'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas para que encaje con el contexto.',
       'si te piden un resumen del chat responde con "Generando resumen del chat... {{resumen}}"',
       `si crees que algo es importante para recordar al final de tu respuesta ponlo entre etiquetas las etiquetas <memory> </memory> como <memory>Esto es importante para recordar</memory>`,
-    ].join(" ");
+    ];
 
     const context = await this.getContext();
 
     const memory = await getMemory();
 
-    const payload = {
-      contents: [
+    const payload: any = {
+      messages: [
+        ...systemPrompt.map((text) => ({ role: "system", content: text })),
+        ...context.map(({ question, answer }:any) => ({
+          role: "assistant",
+          content: `question: ${question}\nanswer: ${answer}`,
+        })),
         {
-          parts: [
-            {
-              text: `system:[${systemPrompt}]
-            \n----------\n
-            history:[${context
-              .map(
-                ({ question, answer }: any) =>
-                  `{user:${question}\nbot:${answer}}`
-              )
-              .join("\n\n")}]
-            \n----------\n
-            memory:[${memory.join("\n\n")}]
-            \n----------\n
-            user:${message}`,
-            },
-          ],
+          role: "user",
+          content: message,
         },
       ],
     };
 
+    console.log(payload);
+    // const payload = {
+    //   contents: [
+    //     {
+    //       parts: [
+    //         {
+    //           text: `system:[${systemPrompt}]
+    //         \n----------\n
+    //         history:[${context
+    //           .map(
+    //             ({ question, answer }: any) =>
+    //               `{user:${question}\nbot:${answer}}`
+    //           )
+    //           .join("\n\n")}]
+    //         \n----------\n
+    //         memory:[${memory.join("\n\n")}]
+    //         \n----------\n
+    //         user:${message}`,
+    //         },
+    //       ],
+    //     },
+    //   ],
+    // };
+
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+      const response = await this.openai.chat.completions.create({
+        messages: [...payload.messages],
+        model: "gpt-3.5-turbo",
+        temperature: 0.5,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
+      // const response = await fetch(url, {
+      //   method: "POST",
+      //   headers: {
+      //     "Content-Type": "application/json",
+      //   },
+      //   body: JSON.stringify(payload),
+      // });
 
-      const data = await response.json();
-      const candidates = data?.candidates || [];
-      let content = candidates[0]?.content?.parts?.[0]?.text;
+      // if (!response.ok) {
+      //   const errorText = await response.text();
+      //   throw new Error(`HTTP ${response.status}: ${errorText}`);
+      // }
+
+      //const data = await response.json();
+      //const candidates = data?.candidates || [];
+      let content = response.choices[0].message.content || "";
 
       if (content.includes("<memory>")) {
         if (Boolean(process.env.USE_MEMORY)) {
@@ -129,44 +149,74 @@ export class Gpt {
     const messages = history
       .map(({ user, message }: any) => `${user}:${message}`)
       .join("\n\n");
-    const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
-    const payload = {
-      contents: [
+
+    const payload: any = {
+      messages: [
         {
-          parts: [
-            {
-              text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
-              \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona. 
-              \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
-            \n----------\n
-            history:[${messages}]
-            \n----------\n
-            user:resumen`,
-            },
-          ],
+          role: "user",
+          content:
+            "Responde con un resumen del chat y dividelo cada 1000 caracteres con {{skip}} para dividir el resumen en partes.",
+        },
+        {
+          role: "system",
+          content: `Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
+          \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona. 
+          \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
+        \n----------\n
+        history:[${messages}]
+        \n----------\n
+        `,
         },
       ],
     };
+    // const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
+    // const payload = {
+    //   contents: [
+    //     {
+    //       parts: [
+    //         {
+    //           text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
+    //           \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona.
+    //           \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
+    //         \n----------\n
+    //         history:[${messages}]
+    //         \n----------\n
+    //         user:resumen`,
+    //         },
+    //       ],
+    //     },
+    //   ],
+    // };
 
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+      // const response = await fetch(url, {
+      //   method: "POST",
+      //   headers: {
+      //     "Content-Type": "application/json",
+      //   },
+      //   body: JSON.stringify(payload),
+      // });
+
+      // if (!response.ok) {
+      //   const errorText = await response.text();
+      //   throw new Error(`HTTP ${response.status}: ${errorText}`);
+      // }
+
+      // const data = await response.json();
+      // const candidates = data?.candidates || [];
+      // const content = candidates[0]?.content?.parts?.[0]?.text;
+
+      const response = await this.openai.chat.completions.create({
+        messages: [...payload.messages],
+        model: "gpt-3.5-turbo",
+        temperature: 0.5,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
+      console.log(response);
 
-      const data = await response.json();
-      const candidates = data?.candidates || [];
-      const content = candidates[0]?.content?.parts?.[0]?.text;
+      const content = response.choices[0].message.content || "";
 
-      return content || "No response from Gemini.";
+      return content || "No response from ChatGPT.";
     } catch (error) {
       throw error;
     }
