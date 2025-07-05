@@ -25,7 +25,7 @@ export class Gpt {
       `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
       `si te piden una sinopsis responde de la manera mas detallada posible.`,
       //"responde de la manera mas puntual y corta posible.",
-      "si te piden el enlace del discord responde a tu manera y adjunta este enlace: https://discord.gg/t99zyKmM",
+      "si te piden el enlace del discord responde a tu manera y adjunta este enlace pero asegurate de no poner simbolos ni nada a su lado para que el enlace sea clickeable: https://discord.gg/n53r5Py2eD",
       "omite decir tu nombre en cada respuesta si no te preguntan.",
       "omite decir que eres un bot en tu nombre si no te preguntan.",
       `si te preguntan (solo si te preguntan por las reglas especificamente, si no no las digas) por las reglas del chat responde con la frase: ${rules}`,
