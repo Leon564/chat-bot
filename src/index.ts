@@ -148,6 +148,7 @@ class Bot {
         const responses = resumen.split("{{skip}}");
         //envia el resumen con un delay de 1 segundo entre cada parte
         for (let i = 0; i < responses.length; i++) {
+          if (!responses[i].trim()) continue;
           const responseData = {
             key: this.ukey,
             message: `${textColor} ${responses[i]
