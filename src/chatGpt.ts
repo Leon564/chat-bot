@@ -43,7 +43,7 @@ export class Gpt {
     const payload: any = {
       messages: [
         ...systemPrompt.map((text) => ({ role: "system", content: text })),
-        ...context.map(({ question, answer }:any) => ({
+        ...context.map(({ question, answer }: any) => ({
           role: "assistant",
           content: `question: ${question}\nanswer: ${answer}`,
         })),
@@ -156,58 +156,32 @@ export class Gpt {
       messages: [
         {
           role: "user",
-          content:
-            "Responde con un resumen del chat y dividelo cada 1000 caracteres con {{skip}} para dividir el resumen en partes.",
+          content: "genera un resumen de este chat",
         },
         {
           role: "system",
-          content: `Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
-          \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona. 
-          \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
-        \n----------\n
-        history:[${messages}]
-        \n----------\n
-        `,
+          content: `Responde con un resumen del chat, hazlo de manera que sea facil de entender y que no se pierda el contexto de la conversacion.`,
+        },
+        {
+          role: "system",
+          content: `Tu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona.`,
+        },
+        {
+          role: "system",
+          content: `Omite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.`,
+        },
+        {
+          role: "system",
+          content: `no respondas con el mismo chat que te he dado, responde con un resumen de lo que has entendido del chat y no repitas lo que ya se ha dicho.`,
+        },
+        {
+          role: "assistant",
+          content: `history:[${messages}]`,
         },
       ],
     };
-    // const url = `${this.apiUrl}?key=${process.env.GEMINI_API_KEY}`;
-    // const payload = {
-    //   contents: [
-    //     {
-    //       parts: [
-    //         {
-    //           text: `system:Responde con un resumen del chat y dividelo cada ${process.env.MAX_LENGTH_RESPONSE} caracteres con {{skip}} para dividir el resumen en partes.
-    //           \n\nTu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona.
-    //           \n\nOmite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.
-    //         \n----------\n
-    //         history:[${messages}]
-    //         \n----------\n
-    //         user:resumen`,
-    //         },
-    //       ],
-    //     },
-    //   ],
-    // };
 
     try {
-      // const response = await fetch(url, {
-      //   method: "POST",
-      //   headers: {
-      //     "Content-Type": "application/json",
-      //   },
-      //   body: JSON.stringify(payload),
-      // });
-
-      // if (!response.ok) {
-      //   const errorText = await response.text();
-      //   throw new Error(`HTTP ${response.status}: ${errorText}`);
-      // }
-
-      // const data = await response.json();
-      // const candidates = data?.candidates || [];
-      // const content = candidates[0]?.content?.parts?.[0]?.text;
-
       const response = await this.openai.chat.completions.create({
         messages: [...payload.messages],
         model: "gpt-3.5-turbo",

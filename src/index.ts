@@ -81,7 +81,9 @@ class Bot {
     this.socket.on("message", async (data: WebSocket.Data) => {
       const { date, id, lvl, message, name } = toDomain(data);
 
-      await saveLog(name, message);
+      if (name && message) {
+        await saveLog(name, message);
+      }
 
       if (
         !message ||
@@ -148,21 +150,28 @@ class Bot {
         const responses = resumen.split("{{skip}}");
         //envia el resumen con un delay de 1 segundo entre cada parte
         for (let i = 0; i < responses.length; i++) {
-          if (!responses[i].trim()) continue;
-          const responseData = {
-            key: this.ukey,
-            message: `${textColor} ${responses[i]
-              .replace("{{resumen}}", "")
-              .replace("{{skip}}", "")
-              .trim()}`,
-            pic: this.pic,
-            username: this.uname,
-            boxTag: this.boxTag,
-            boxId: this.boxId,
-            iframeUrl: this.iframeUrl,
-          };
+          if (
+            responses[i].trim() !== "" &&
+            responses[i].trim() !== "{{skip}}" &&
+            responses[i].trim() !== undefined &&
+            responses[i].trim() !== null
+          ) {
+            const responseData = {
+              key: this.ukey,
+              message: `${textColor} ${responses[i]
+                .replace("{{resumen}}", "")
+                .replace("{{skip}}", "")
+                .trim()}`,
+              pic: this.pic,
+              username: this.uname,
+              boxTag: this.boxTag,
+              boxId: this.boxId,
+              iframeUrl: this.iframeUrl,
+            };
 
-          sendMessage(responseData);
+            sendMessage(responseData);
+          }
+
           await sleep(3000);
         }
         saveEventsLog("Resumen", name);

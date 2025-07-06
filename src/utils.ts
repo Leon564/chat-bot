@@ -19,6 +19,11 @@ export const saveLog = async (user: string, message: string) => {
   fs.writeFileSync(filePath, JSON.stringify(messagesLog.slice(-200)));
 };
 
+export const clearMessagesLog = async () => {
+  const filePath = path.join(__dirname, "../data/messages_log.json");
+  fs.writeFileSync(filePath, JSON.stringify([]));
+};
+
 export const saveEventsLog = async (event: string, user: string) => {
   const filePath = path.join(__dirname, "../data/events_log.json");
   const eventsLog = fs.existsSync(filePath)
@@ -51,11 +56,6 @@ export const getLastEventType = async (event: string) => {
   return { minutesLeft, lastResumenEvent: lastEvent };
 };
 
-export const clearMessagesLog = async () => {
-  const filePath = path.join(__dirname, "../data/messages_log.json");
-  fs.writeFileSync(filePath, "[]");
-};
-
 export const saveMemory = async (memory: string) => {
   const filePath = path.join(__dirname, "../data/memory.json");
   const memoryLog = fs.existsSync(filePath)
@@ -76,4 +76,3 @@ export const getMemory = async () => {
 export const sleep = (ms: number) => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
-
