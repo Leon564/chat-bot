@@ -36,6 +36,17 @@ class Bot {
         const response = this.responseQueue.shift();
         sendMessage(response);
         this.lastSentTime = Date.now();
+        
+        // Si hay más respuestas en la cola del mismo tipo (partes múltiples), 
+        // procesarlas con un delay menor
+        if (this.responseQueue.length > 0) {
+          setTimeout(() => {
+            const nextResponse = this.responseQueue.shift();
+            if (nextResponse) {
+              sendMessage(nextResponse);
+            }
+          }, Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY para partes adicionales
+        }
       }
     }, 1000);
   }
@@ -103,12 +114,13 @@ class Bot {
 
       if (!response) return;
 
+      // Verificar si la respuesta necesita ser dividida
+      const isMultiPart = response.includes("{{split}}");
+      const parts = isMultiPart ? response.split("{{split}}").filter(part => part.trim()) : [response];
+
       const responseData = {
         key: this.ukey,
-        message: `${textColor}<@${name}> ${response.replace(
-          "{{resumen}}",
-          ""
-        )}`,
+        message: `${textColor}<@${name}> ${parts[0].replace("{{resumen}}", "")}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
@@ -120,65 +132,135 @@ class Bot {
         Date.now() - this.lastSentTime <
         Number(process.env.RESPONSE_DELAY || 20500)
       ) {
-        this.responseQueue.push(responseData);
-        return;
-      }
-
-      const lastResumenEvent = await getLastEventType("Resumen");
-
-      if (
-        response.includes("{{resumen}}") &&
-        lastResumenEvent.minutesLeft < 10
-      ) {
-        const responseData = {
-          key: this.ukey,
-          message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
-          pic: this.pic,
-          username: this.uname,
-          boxTag: this.boxTag,
-          boxId: this.boxId,
-          iframeUrl: this.iframeUrl,
-        };
-        await sendMessage(responseData);
-        return;
-      }
-
-      await sendMessage(responseData);
-
-      if (response.includes("{{resumen}}")) {
-        const resumen = await this.gpt.generateSummary();
-        const responses = resumen.split("{{skip}}");
-        //envia el resumen con un delay de 1 segundo entre cada parte
-        for (let i = 0; i < responses.length; i++) {
-          if (
-            responses[i].trim() !== "" &&
-            responses[i].trim() !== "{{skip}}" &&
-            responses[i].trim() !== undefined &&
-            responses[i].trim() !== null
-          ) {
-            const responseData = {
+        // Si hay múltiples partes, agregar todas a la cola
+        if (isMultiPart) {
+          parts.forEach((part, index) => {
+            const partData = {
               key: this.ukey,
-              message: `${textColor} ${responses[i]
-                .replace("{{resumen}}", "")
-                .replace("{{skip}}", "")
-                .trim()}`,
+              message: index === 0 
+                ? `${textColor}<@${name}> ${part.replace("{{resumen}}", "")}` 
+                : `${textColor}${part}`,
               pic: this.pic,
               username: this.uname,
               boxTag: this.boxTag,
               boxId: this.boxId,
               iframeUrl: this.iframeUrl,
             };
-
-            sendMessage(responseData);
-          }
-
-          await sleep(3000);
+            this.responseQueue.push(partData);
+          });
+        } else {
+          this.responseQueue.push(responseData);
         }
-        saveEventsLog("Resumen", name);
-        await clearMessagesLog();
+        return;
       }
 
-      this.lastSentTime = Date.now();
+      const lastResumenEvent = await getLastEventType("Resumen");
+
+      // Verificar si se solicitó resumen y si ha pasado suficiente tiempo
+      if (response.includes("{{resumen}}")) {
+        if (lastResumenEvent.minutesLeft < 10) {
+          const responseData = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(responseData);
+          this.lastSentTime = Date.now();
+          return;
+        }
+
+        // Enviar mensaje de confirmación primero
+        const confirmationData = {
+          key: this.ukey,
+          message: `${textColor}<@${name}> ${response.replace("{{resumen}}", "")}`,
+          pic: this.pic,
+          username: this.uname,
+          boxTag: this.boxTag,
+          boxId: this.boxId,
+          iframeUrl: this.iframeUrl,
+        };
+        await sendMessage(confirmationData);
+        this.lastSentTime = Date.now();
+
+        // Generar y enviar el resumen
+        try {
+          const resumen = await this.gpt.generateSummary();
+          const responses = resumen.split("{{skip}}").filter(part => part.trim());
+          
+          console.log(`Enviando resumen en ${responses.length} parte(s)`);
+          
+          // Enviar el resumen con un delay entre cada parte
+          for (let i = 0; i < responses.length; i++) {
+            const part = responses[i].trim();
+            if (part && part !== "{{skip}}" && part !== "{{resumen}}") {
+              const partNumber = responses.length > 1 ? ` (${i + 1}/${responses.length})` : "";
+              const responseData = {
+                key: this.ukey,
+                message: `${textColor}📋${partNumber} ${part}`,
+                pic: this.pic,
+                username: this.uname,
+                boxTag: this.boxTag,
+                boxId: this.boxId,
+                iframeUrl: this.iframeUrl,
+              };
+
+              await sendMessage(responseData);
+              
+              // Solo esperar entre partes si hay más de una
+              if (i < responses.length - 1) {
+                await sleep(Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY entre partes del resumen
+              }
+            }
+          }
+          
+          // Guardar evento de resumen y limpiar log
+          await saveEventsLog("Resumen", name);
+          await clearMessagesLog();
+        } catch (error) {
+          console.error("Error generating summary:", error);
+          const errorData = {
+            key: this.ukey,
+            message: `${textColor}❌ Error al generar el resumen. Inténtalo más tarde.`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(errorData);
+        }
+        return;
+      }
+
+      // Enviar respuesta normal si no es resumen
+      if (isMultiPart) {
+        // Enviar la primera parte inmediatamente
+        await sendMessage(responseData);
+        this.lastSentTime = Date.now();
+        
+        // Enviar las partes restantes con delay
+        for (let i = 1; i < parts.length; i++) {
+          const partData = {
+            key: this.ukey,
+            message: `${textColor}${parts[i]}`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          
+          await sleep(Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY entre partes de respuesta normal
+          await sendMessage(partData);
+        }
+      } else {
+        await sendMessage(responseData);
+        this.lastSentTime = Date.now();
+      }
     });
     // Manejar errores en la conexión
     this.socket.on("error", (error: Error) => {
