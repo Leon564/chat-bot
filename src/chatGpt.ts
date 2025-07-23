@@ -23,13 +23,15 @@ NO guardes información genérica o repetitiva.`
       : '';
 
     // Optimized single system prompt for better coherence and reduced tokens
-    const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa. Usuario actual: ${username}.
+    const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa.
+
+IMPORTANTE: Estás respondiendo específicamente a ${username}. Cuando menciones "tu creador" o respondas preguntas personales sobre ti, asegúrate de dirigirte a ${username}.
 
 COMPORTAMIENTO:
 - Responde de forma natural y coherente, máximo ${process.env.MAX_LENGTH_RESPONSE} caracteres
 - Evita repetir información del contexto previo
 - No menciones que eres un bot ni repitas tu nombre innecesariamente
-- Solo usa el nombre del usuario cuando sea necesario
+- Dirige tu respuesta específicamente a ${username} cuando sea relevante
 
 RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Tu propósito: Ayudar por órdenes de Leon564 (<@6851018|Sleepy Ash>)
@@ -38,7 +40,7 @@ RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
 - Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"${memoryInstructions}
 
-Sé conciso y relevante en tus respuestas.`;
+Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
     const context = await this.getContext();
     const memory = Boolean(process.env.USE_MEMORY) ? await getMemory() : [];
@@ -62,16 +64,18 @@ Sé conciso y relevante en tus respuestas.`;
 
     // Add conversation context more efficiently
     if (context && context.length > 0) {
-      context.forEach(({ question, answer }: any) => {
+      context.forEach(({ question, answer, user }: any) => {
+        // Incluir el nombre del usuario en el contexto histórico si está disponible
+        const userQuestion = user ? `${user}: ${question}` : question;
         messages.push(
-          { role: "user", content: question },
+          { role: "user", content: userQuestion },
           { role: "assistant", content: answer }
         );
       });
     }
 
-    // Add current user message
-    messages.push({ role: "user", content: message });
+    // Add current user message with username for clarity
+    messages.push({ role: "user", content: `${username}: ${message}` });
 
     const payload = { messages };
 
@@ -97,7 +101,7 @@ Sé conciso y relevante en tus respuestas.`;
         content = content.split("<memory>")[0].trim();
       }
 
-      await this.saveContext({ question: message, answer: content || "" });
+      await this.saveContext({ question: message, answer: content || "", user: username });
 
       // Dividir respuesta si es demasiado larga (excepto para resúmenes que ya se manejan aparte)
       if (content && !content.includes("{{resumen}}")) {
@@ -114,11 +118,11 @@ Sé conciso y relevante en tus respuestas.`;
     }
   }
 
-  //guarda el contexto de las ultimas 3 preguntas y respuestas en un archivo json
-  async saveContext({ question, answer }: any) {
+  //guarda el contexto de las ultimas preguntas y respuestas con el usuario en un archivo json
+  async saveContext({ question, answer, user }: any) {
     const context = await this.getContext();
     const filePath = path.join(__dirname, "../data/context.json");
-    context.push({ question, answer });
+    context.push({ question, answer, user });
     fs.writeFileSync(
       filePath,
       JSON.stringify(context.slice(-Number(process.env.CONTEXT_LENGTH || 5)))
