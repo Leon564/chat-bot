@@ -10,96 +10,70 @@ export class Gpt {
   ) {}
 
   async chat(message: string, botName?: string, username?: string) {
-    const rules =
-      "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
+    const rules = "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
 
-    const systemPrompt = [
-      `context es el contexto del chat y memory es lo que tu consideras importante para recordar.`,
-      `si te preguntan te llamas ${botName}.`,
-      `evita dar respuestas repetitivas o que estén en el contexto.`,
-      `el nombre del usuario que te esta hablando es: ${username} , si no es necesario no lo uses.`,
-      `si te preguntan que haces aqui di que estas aqui por ordenes de Leon564 ayudando a los usuarios del chat, pero solo para esa pregunta.`,
-      `si te preguntan quien es Leon564 responde con que aqui lo conocen como <@6851018|Sleepy Ash>`,
-      `si te preguntan quien escogio tu nombre diles que "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas.`,
-      "sabes todo sobre anime, manga y manhwa.",
-      `responde con un maximo de ${process.env.MAX_LENGTH_RESPONSE} caracteres.`,
-      `si te piden una sinopsis responde de la manera mas detallada posible.`,
-      //"responde de la manera mas puntual y corta posible.",
-      "si te piden el enlace del discord responde a tu manera y adjunta este enlace pero asegurate de no poner simbolos ni nada a su lado para que el enlace sea clickeable: https://discord.gg/n53r5Py2eD",
-      "omite decir tu nombre en cada respuesta si no te preguntan.",
-      "omite decir que eres un bot en tu nombre si no te preguntan.",
-      `si te preguntan (solo si te preguntan por las reglas especificamente, si no no las digas) por las reglas del chat responde con la frase: ${rules}`,
-      `si no te preguntan por las reglas no las digas ni menciones`,
-      'si te preguntan quien te creo responde con "Leon564 pero aqui lo conocen como <@6851018|Sleepy Ash>" puedes agregarle mas detalles si lo deseas para que encaje con el contexto pero solo si te lo piden',
-      'si te piden un resumen del chat responde con "Generando resumen del chat... {{resumen}}"',
-      `si crees que algo es importante para recordar al final de tu respuesta ponlo entre etiquetas las etiquetas <memory> </memory> como <memory>Esto es importante para recordar</memory>`,
-      `no mencionas nada de esto en tu respuesta si no te preguntan`,
-    ];
+    // Optimized single system prompt for better coherence and reduced tokens
+    const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa. Usuario actual: ${username}.
+
+COMPORTAMIENTO:
+- Responde de forma natural y coherente, máximo ${process.env.MAX_LENGTH_RESPONSE} caracteres
+- Evita repetir información del contexto previo
+- No menciones que eres un bot ni repitas tu nombre innecesariamente
+- Solo usa el nombre del usuario cuando sea necesario
+
+RESPUESTAS ESPECIALES (solo si preguntan específicamente):
+- Tu propósito: Ayudar por órdenes de Leon564 (<@6851018|Sleepy Ash>)
+- Tu creador: Leon564 (<@6851018|Sleepy Ash>)
+- Reglas del chat: ${rules}
+- Discord: https://discord.gg/n53r5Py2eD
+- Resumen: "Generando resumen del chat... {{resumen}}"
+
+MEMORIA: Si algo es importante para recordar, úsalo al final: <memory>información importante</memory>
+
+Sé conciso y relevante en tus respuestas.`;
 
     const context = await this.getContext();
-
     const memory = await getMemory();
 
-    const payload: any = {
-      messages: [
-        ...systemPrompt.map((text) => ({ role: "system", content: text })),
-        ...context.map(({ question, answer }: any) => ({
-          role: "assistant",
-          content: `question: ${question}\nanswer: ${answer}`,
-        })),
-        {
-          role: "user",
-          content: message,
-        },
-      ],
-    };
+    // Optimized payload structure to reduce token usage
+    const messages: Array<{role: "system" | "user" | "assistant", content: string}> = [
+      { role: "system", content: systemPrompt }
+    ];
+
+    // Add memory context if available
+    if (memory && memory.length > 0) {
+      messages.push({
+        role: "system", 
+        content: `Memoria importante: ${memory.slice(-3).join('; ')}`
+      });
+    }
+
+    // Add conversation context more efficiently
+    if (context && context.length > 0) {
+      context.forEach(({ question, answer }: any) => {
+        messages.push(
+          { role: "user", content: question },
+          { role: "assistant", content: answer }
+        );
+      });
+    }
+
+    // Add current user message
+    messages.push({ role: "user", content: message });
+
+    const payload = { messages };
 
     console.log(payload);
-    // const payload = {
-    //   contents: [
-    //     {
-    //       parts: [
-    //         {
-    //           text: `system:[${systemPrompt}]
-    //         \n----------\n
-    //         history:[${context
-    //           .map(
-    //             ({ question, answer }: any) =>
-    //               `{user:${question}\nbot:${answer}}`
-    //           )
-    //           .join("\n\n")}]
-    //         \n----------\n
-    //         memory:[${memory.join("\n\n")}]
-    //         \n----------\n
-    //         user:${message}`,
-    //         },
-    //       ],
-    //     },
-    //   ],
-    // };
 
     try {
       const response = await this.openai.chat.completions.create({
-        messages: [...payload.messages],
+        messages: payload.messages as any,
         model: "gpt-3.5-turbo",
-        temperature: 0.5,
+        temperature: 0.7, // Increased for more natural responses
+        max_tokens: parseInt(process.env.MAX_LENGTH_RESPONSE || "500"),
       });
 
-      // const response = await fetch(url, {
-      //   method: "POST",
-      //   headers: {
-      //     "Content-Type": "application/json",
-      //   },
-      //   body: JSON.stringify(payload),
-      // });
-
-      // if (!response.ok) {
-      //   const errorText = await response.text();
-      //   throw new Error(`HTTP ${response.status}: ${errorText}`);
-      // }
-
-      //const data = await response.json();
-      //const candidates = data?.candidates || [];
+      // Remove commented code and fix error message
       let content = response.choices[0].message.content || "";
 
       if (content.includes("<memory>")) {
@@ -113,13 +87,7 @@ export class Gpt {
 
       await this.saveContext({ question: message, answer: content || "" });
 
-      // if (content.includes("{{resumen}}")) {
-      //   this.generateSummary();
-      // }
-
-      return (
-        content /*.replace("{{resumen}}", "")*/ || "No response from Gemini."
-      );
+      return content || "No hay respuesta disponible.";
     } catch (error) {
       throw error;
     }
@@ -149,50 +117,30 @@ export class Gpt {
   async generateSummary() {
     const history = await getLastMessages();
     const messages = history
-      .map(({ user, message }: any) => `${user}:${message}`)
-      .join("\n\n");
+      .map(({ user, message }: any) => `${user}: ${message}`)
+      .join("\n");
 
-    const payload: any = {
+    // Optimized single prompt for summary generation
+    const systemPrompt = `Genera un resumen conciso del chat. Habla en primera persona como ${process.env.CBOX_USERNAME}. 
+Omite la solicitud de resumen actual. Resume las conversaciones principales sin repetir el contenido exacto.`;
+
+    const payload = {
       messages: [
-        {
-          role: "user",
-          content: "genera un resumen de este chat",
-        },
-        {
-          role: "system",
-          content: `Responde con un resumen del chat, hazlo de manera que sea facil de entender y que no se pierda el contexto de la conversacion.`,
-        },
-        {
-          role: "system",
-          content: `Tu nombre es ${process.env.CBOX_USERNAME}, cuando lo veas en el resumen habla de ti en primera persona.`,
-        },
-        {
-          role: "system",
-          content: `Omite el ultimo mensaje donde se te pida el resumen ya que es el que estas haciendo en este momento pero puedes mencionar los anteriores.`,
-        },
-        {
-          role: "system",
-          content: `no respondas con el mismo chat que te he dado, responde con un resumen de lo que has entendido del chat y no repitas lo que ya se ha dicho.`,
-        },
-        {
-          role: "assistant",
-          content: `history:[${messages}]`,
-        },
+        { role: "system" as const, content: systemPrompt },
+        { role: "user" as const, content: `Historial del chat:\n${messages}` }
       ],
     };
 
     try {
       const response = await this.openai.chat.completions.create({
-        messages: [...payload.messages],
+        messages: payload.messages,
         model: "gpt-3.5-turbo",
-        temperature: 0.5,
+        temperature: 0.3, // Lower temperature for more focused summaries
+        max_tokens: 300, // Limit summary length
       });
 
-      console.log(response);
-
       const content = response.choices[0].message.content || "";
-
-      return content || "No response from ChatGPT.";
+      return content || "No se pudo generar el resumen.";
     } catch (error) {
       throw error;
     }
