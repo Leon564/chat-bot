@@ -56,49 +56,109 @@ export const getLastEventType = async (event: string) => {
   return { minutesLeft, lastResumenEvent: lastEvent };
 };
 
-export const saveMemory = async (memory: string) => {
+export const saveMemory = async (memory: string, username?: string) => {
   // No hacer nada si la memoria está deshabilitada
   if (!Boolean(process.env.USE_MEMORY)) return;
   
   if (!memory || memory.trim().length === 0) return;
   
   const filePath = path.join(__dirname, "../data/memory.json");
-  const memoryLog = fs.existsSync(filePath)
+  const memoryData = fs.existsSync(filePath)
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
-    : [];
+    : { global: [], users: {} };
   
-  // Limpiar la memoria de información duplicada o muy similar
+  // Asegurar estructura correcta
+  if (!memoryData.global) memoryData.global = [];
+  if (!memoryData.users) memoryData.users = {};
+  
   const cleanMemory = memory.trim();
+  const timestamp = new Date().toISOString();
   
-  // Evitar duplicados exactos
-  if (memoryLog.includes(cleanMemory)) return;
+  // Crear objeto de memoria con metadata
+  const memoryEntry = {
+    content: cleanMemory,
+    timestamp,
+    user: username || 'unknown'
+  };
   
-  // Evitar duplicados similares (más del 80% de similitud)
-  const isDuplicate = memoryLog.some((existingMemory: string) => {
-    const similarity = calculateSimilarity(cleanMemory.toLowerCase(), existingMemory.toLowerCase());
-    return similarity > 0.8;
-  });
+  if (username) {
+    // Memoria específica del usuario
+    if (!memoryData.users[username]) {
+      memoryData.users[username] = [];
+    }
+    
+    // Evitar duplicados para este usuario específico
+    const userMemories = memoryData.users[username];
+    const isDuplicate = userMemories.some((existingMemory: any) => {
+      const similarity = calculateSimilarity(
+        cleanMemory.toLowerCase(), 
+        existingMemory.content.toLowerCase()
+      );
+      return similarity > 0.8;
+    });
+    
+    if (!isDuplicate) {
+      memoryData.users[username].push(memoryEntry);
+      // Mantener solo las últimas 30 memorias por usuario
+      memoryData.users[username] = memoryData.users[username].slice(-30);
+    }
+  } else {
+    // Memoria global
+    const isDuplicate = memoryData.global.some((existingMemory: any) => {
+      const similarity = calculateSimilarity(
+        cleanMemory.toLowerCase(), 
+        existingMemory.content.toLowerCase()
+      );
+      return similarity > 0.8;
+    });
+    
+    if (!isDuplicate) {
+      memoryData.global.push(memoryEntry);
+      // Mantener solo las últimas 20 memorias globales
+      memoryData.global = memoryData.global.slice(-20);
+    }
+  }
   
-  if (isDuplicate) return;
-  
-  memoryLog.push(cleanMemory);
-  fs.writeFileSync(filePath, JSON.stringify(memoryLog.slice(-50))); // Mantener solo 50 memorias
+  fs.writeFileSync(filePath, JSON.stringify(memoryData, null, 2));
 };
 
-export const getMemory = async (): Promise<string[]> => {
+export const getMemory = async (username?: string): Promise<string[]> => {
   // Retornar array vacío si la memoria está deshabilitada
   if (!Boolean(process.env.USE_MEMORY)) return [];
   
   const filePath = path.join(__dirname, "../data/memory.json");
-  const memoryLog = fs.existsSync(filePath)
+  const memoryData = fs.existsSync(filePath)
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
-    : [];
+    : { global: [], users: {} };
   
-  // Filtrar y categorizar memorias por relevancia
-  const categorizedMemories = categorizeMemories(memoryLog);
+  // Asegurar estructura correcta
+  if (!memoryData.global) memoryData.global = [];
+  if (!memoryData.users) memoryData.users = {};
+  
+  let relevantMemories: any[] = [];
+  
+  if (username && memoryData.users[username]) {
+    // Obtener memorias específicas del usuario
+    const userMemories = memoryData.users[username];
+    relevantMemories = [...userMemories];
+    
+    // Agregar algunas memorias globales relevantes si hay espacio
+    const globalMemories = memoryData.global.slice(-3);
+    relevantMemories = [...relevantMemories, ...globalMemories];
+  } else {
+    // Solo memorias globales si no hay usuario específico
+    relevantMemories = memoryData.global;
+  }
+  
+  // Ordenar por timestamp (más recientes primero)
+  relevantMemories.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  
+  // Categorizar y filtrar las memorias
+  const memoryContents = relevantMemories.map(m => m.content);
+  const categorizedMemories = categorizeMemoriesByUser(memoryContents, username);
   
   // Seleccionar las más importantes (máximo 5 elementos)
-  return selectMostRelevantMemories(categorizedMemories, 5);
+  return selectMostRelevantMemoriesForUser(categorizedMemories, 5);
 };
 
 // Nueva función para calcular similitud entre strings
@@ -206,6 +266,84 @@ const selectMostRelevantMemories = (categories: any, maxCount: number): string[]
   return selected.slice(0, maxCount);
 };
 
+// Categorizar memorias por tipo de información específica para un usuario
+const categorizeMemoriesByUser = (memories: string[], username?: string): {
+  userPreferences: string[];
+  factualInfo: string[];
+  interactions: string[];
+  recommendations: string[];
+  personalInfo: string[];
+  other: string[];
+} => {
+  const categories = {
+    userPreferences: [] as string[],
+    factualInfo: [] as string[],
+    interactions: [] as string[],
+    recommendations: [] as string[],
+    personalInfo: [] as string[],
+    other: [] as string[]
+  };
+  
+  memories.forEach(memory => {
+    const lowerMemory = memory.toLowerCase();
+    const userMention = username ? lowerMemory.includes(username.toLowerCase()) : false;
+    
+    if (lowerMemory.includes('le gusta') || lowerMemory.includes('favorito') || lowerMemory.includes('prefiere')) {
+      categories.userPreferences.push(memory);
+    } else if (lowerMemory.includes('recomendación') || lowerMemory.includes('anime:') || lowerMemory.includes('manga:') || lowerMemory.includes('manhwa:')) {
+      categories.recommendations.push(memory);
+    } else if (lowerMemory.includes('leon564') || lowerMemory.includes('sleepy ash') || lowerMemory.includes('creador')) {
+      categories.factualInfo.push(memory);
+    } else if (userMention && (lowerMemory.includes('nombre') || lowerMemory.includes('edad') || lowerMemory.includes('país'))) {
+      categories.personalInfo.push(memory);
+    } else if (lowerMemory.includes('usuario') || lowerMemory.includes('preguntó') || lowerMemory.includes('interesado')) {
+      categories.interactions.push(memory);
+    } else {
+      categories.other.push(memory);
+    }
+  });
+  
+  return categories;
+};
+
+// Seleccionar las memorias más relevantes para un usuario específico
+const selectMostRelevantMemoriesForUser = (categories: any, maxCount: number): string[] => {
+  const selected: string[] = [];
+  
+  // Prioridad para usuario específico: información personal > preferencias > recomendaciones > factual > interacciones
+  
+  // Información personal del usuario (máxima prioridad)
+  if (categories.personalInfo.length > 0 && selected.length < maxCount) {
+    selected.push(...categories.personalInfo.slice(-1));
+  }
+  
+  // Preferencias del usuario
+  if (categories.userPreferences.length > 0 && selected.length < maxCount) {
+    const remaining = maxCount - selected.length;
+    selected.push(...categories.userPreferences.slice(-Math.min(2, remaining)));
+  }
+  
+  // Recomendaciones específicas
+  if (categories.recommendations.length > 0 && selected.length < maxCount) {
+    const remaining = maxCount - selected.length;
+    selected.push(...categories.recommendations.slice(-Math.min(1, remaining)));
+  }
+  
+  // Información factual importante
+  if (categories.factualInfo.length > 0 && selected.length < maxCount) {
+    const remaining = maxCount - selected.length;
+    selected.push(...categories.factualInfo.slice(-Math.min(1, remaining)));
+  }
+  
+  // Interacciones recientes si hay espacio
+  if (categories.interactions.length > 0 && selected.length < maxCount) {
+    const remaining = maxCount - selected.length;
+    selected.push(...categories.interactions.slice(-remaining));
+  }
+  
+  return selected.slice(0, maxCount);
+};
+
 // Función para limpiar memorias duplicadas o irrelevantes existentes
 export const cleanExistingMemories = async () => {
   // No hacer nada si la memoria está deshabilitada
@@ -214,10 +352,24 @@ export const cleanExistingMemories = async () => {
   const filePath = path.join(__dirname, "../data/memory.json");
   if (!fs.existsSync(filePath)) return;
   
-  const memoryLog = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-  const cleanedMemories: string[] = [];
+  const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
   
-  memoryLog.forEach((memory: string) => {
+  // Manejar formato antiguo (array) y nuevo formato (objeto)
+  if (Array.isArray(memoryData)) {
+    // Formato antiguo - migrar primero
+    await migrateMemoriesToUserFormat();
+    return;
+  }
+  
+  // Asegurar estructura correcta
+  if (!memoryData.global) memoryData.global = [];
+  if (!memoryData.users) memoryData.users = {};
+  
+  // Limpiar memorias globales
+  const cleanedGlobal: any[] = [];
+  memoryData.global.forEach((memoryEntry: any) => {
+    const memory = typeof memoryEntry === 'string' ? memoryEntry : memoryEntry.content;
+    
     // Skip memorias muy cortas o genéricas
     if (memory.length < 10) return;
     
@@ -237,18 +389,201 @@ export const cleanExistingMemories = async () => {
     if (isGeneric) return;
     
     // Evitar duplicados
-    const isDuplicate = cleanedMemories.some(existing => {
-      const similarity = calculateSimilarity(memory.toLowerCase(), existing.toLowerCase());
+    const isDuplicate = cleanedGlobal.some(existing => {
+      const existingContent = typeof existing === 'string' ? existing : existing.content;
+      const similarity = calculateSimilarity(memory.toLowerCase(), existingContent.toLowerCase());
       return similarity > 0.8;
     });
     
     if (!isDuplicate) {
-      cleanedMemories.push(memory);
+      // Mantener formato de objeto con metadata
+      if (typeof memoryEntry === 'object') {
+        cleanedGlobal.push(memoryEntry);
+      } else {
+        cleanedGlobal.push({
+          content: memory,
+          timestamp: new Date().toISOString(),
+          user: 'unknown'
+        });
+      }
     }
   });
   
-  fs.writeFileSync(filePath, JSON.stringify(cleanedMemories.slice(-30)));
-  console.log(`Memorias limpiadas: ${memoryLog.length} -> ${cleanedMemories.length}`);
+  // Limpiar memorias por usuario
+  const cleanedUsers: { [key: string]: any[] } = {};
+  Object.entries(memoryData.users).forEach(([username, userMemories]: [string, any]) => {
+    if (!Array.isArray(userMemories)) return;
+    
+    const cleanedUserMemories: any[] = [];
+    userMemories.forEach((memoryEntry: any) => {
+      const memory = typeof memoryEntry === 'string' ? memoryEntry : memoryEntry.content;
+      
+      if (memory.length < 10) return;
+      
+      const genericPhrases = [
+        'información general',
+        'el usuario preguntó',
+        'debo variar',
+        'recordar',
+        'generando resumen'
+      ];
+      
+      const isGeneric = genericPhrases.some(phrase => 
+        memory.toLowerCase().includes(phrase.toLowerCase())
+      );
+      
+      if (isGeneric) return;
+      
+      const isDuplicate = cleanedUserMemories.some(existing => {
+        const existingContent = typeof existing === 'string' ? existing : existing.content;
+        const similarity = calculateSimilarity(memory.toLowerCase(), existingContent.toLowerCase());
+        return similarity > 0.8;
+      });
+      
+      if (!isDuplicate) {
+        if (typeof memoryEntry === 'object') {
+          cleanedUserMemories.push(memoryEntry);
+        } else {
+          cleanedUserMemories.push({
+            content: memory,
+            timestamp: new Date().toISOString(),
+            user: username
+          });
+        }
+      }
+    });
+    
+    if (cleanedUserMemories.length > 0) {
+      cleanedUsers[username] = cleanedUserMemories.slice(-25); // Máximo 25 por usuario
+    }
+  });
+  
+  const newMemoryData = {
+    global: cleanedGlobal.slice(-15), // Máximo 15 memorias globales
+    users: cleanedUsers
+  };
+  
+  const originalGlobalCount = memoryData.global.length;
+  const originalUserCount = Object.values(memoryData.users).reduce((acc: number, memories: any) => acc + (Array.isArray(memories) ? memories.length : 0), 0);
+  const newGlobalCount = newMemoryData.global.length;
+  const newUserCount = Object.values(newMemoryData.users).reduce((acc: number, memories: any) => acc + memories.length, 0);
+  
+  fs.writeFileSync(filePath, JSON.stringify(newMemoryData, null, 2));
+  console.log(`✅ Memorias limpiadas:`);
+  console.log(`   Global: ${originalGlobalCount} -> ${newGlobalCount}`);
+  console.log(`   Usuarios: ${originalUserCount} -> ${newUserCount}`);
+  console.log(`   Total usuarios: ${Object.keys(cleanedUsers).length}`);
+};
+
+// Obtener memorias específicas de un usuario
+export const getUserMemories = async (username: string): Promise<any[]> => {
+  if (!Boolean(process.env.USE_MEMORY)) return [];
+  
+  const filePath = path.join(__dirname, "../data/memory.json");
+  if (!fs.existsSync(filePath)) return [];
+  
+  const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  
+  if (!memoryData.users || !memoryData.users[username]) return [];
+  
+  return memoryData.users[username];
+};
+
+// Limpiar memorias de un usuario específico
+export const clearUserMemories = async (username: string): Promise<void> => {
+  if (!Boolean(process.env.USE_MEMORY)) return;
+  
+  const filePath = path.join(__dirname, "../data/memory.json");
+  if (!fs.existsSync(filePath)) return;
+  
+  const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  
+  if (memoryData.users && memoryData.users[username]) {
+    delete memoryData.users[username];
+    fs.writeFileSync(filePath, JSON.stringify(memoryData, null, 2));
+  }
+};
+
+// Obtener estadísticas de memoria por usuario
+export const getMemoryStats = async (): Promise<{
+  totalUsers: number;
+  totalMemories: number;
+  globalMemories: number;
+  topUsers: { username: string; memories: number }[];
+}> => {
+  if (!Boolean(process.env.USE_MEMORY)) {
+    return { totalUsers: 0, totalMemories: 0, globalMemories: 0, topUsers: [] };
+  }
+  
+  const filePath = path.join(__dirname, "../data/memory.json");
+  if (!fs.existsSync(filePath)) {
+    return { totalUsers: 0, totalMemories: 0, globalMemories: 0, topUsers: [] };
+  }
+  
+  const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  
+  const totalUsers = Object.keys(memoryData.users || {}).length;
+  const globalMemories = (memoryData.global || []).length;
+  
+  let totalMemories = globalMemories;
+  const userMemoryCounts: { username: string; memories: number }[] = [];
+  
+  if (memoryData.users) {
+    Object.entries(memoryData.users).forEach(([username, memories]: [string, any]) => {
+      const memoryCount = Array.isArray(memories) ? memories.length : 0;
+      totalMemories += memoryCount;
+      userMemoryCounts.push({ username, memories: memoryCount });
+    });
+  }
+  
+  // Ordenar usuarios por cantidad de memorias (descendente)
+  const topUsers = userMemoryCounts
+    .sort((a, b) => b.memories - a.memories)
+    .slice(0, 10);
+  
+  return {
+    totalUsers,
+    totalMemories,
+    globalMemories,
+    topUsers
+  };
+};
+
+// Migrar memorias existentes al nuevo formato
+export const migrateMemoriesToUserFormat = async (): Promise<void> => {
+  if (!Boolean(process.env.USE_MEMORY)) return;
+  
+  const filePath = path.join(__dirname, "../data/memory.json");
+  if (!fs.existsSync(filePath)) return;
+  
+  const existingData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  
+  // Si ya está en el nuevo formato, no hacer nada
+  if (existingData.global !== undefined && existingData.users !== undefined) {
+    return;
+  }
+  
+  // Si es un array (formato antiguo), migrar
+  if (Array.isArray(existingData)) {
+    const newData = {
+      global: existingData.map((memory: string) => ({
+        content: memory,
+        timestamp: new Date().toISOString(),
+        user: 'unknown'
+      })),
+      users: {}
+    };
+    
+    // Crear backup del formato anterior
+    const backupPath = path.join(__dirname, "../data/memory_backup.json");
+    fs.writeFileSync(backupPath, JSON.stringify(existingData, null, 2));
+    
+    // Guardar en nuevo formato
+    fs.writeFileSync(filePath, JSON.stringify(newData, null, 2));
+    
+    console.log('✅ Memorias migradas al nuevo formato con categorización por usuario');
+    console.log(`📁 Backup creado en: ${backupPath}`);
+  }
 };
 
 export const sleep = (ms: number) => {

@@ -11,6 +11,7 @@ import {
   saveLog,
   sleep,
   cleanExistingMemories,
+  migrateMemoriesToUserFormat,
 } from "./utils";
 
 class Bot {
@@ -53,8 +54,9 @@ class Bot {
   }
 
   public static async start() {
-    // Limpiar memorias duplicadas al iniciar solo si la memoria está habilitada
+    // Migrar memorias al nuevo formato al iniciar si es necesario
     if (Boolean(process.env.USE_MEMORY)) {
+      await migrateMemoriesToUserFormat();
       await cleanExistingMemories();
     }
     

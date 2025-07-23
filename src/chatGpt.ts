@@ -12,16 +12,21 @@ export class Gpt {
   async chat(message: string, botName?: string, username?: string) {
     const rules = "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
 
-    // Generar instrucciones de memoria dinámicamente
+    // Generar instrucciones de memoria dinámicamente usando función especial
     const memoryInstructions = Boolean(process.env.USE_MEMORY) 
-      ? `\n\nMEMORIA: Solo usa <memory>información específica y valiosa</memory> al final para:
+      ? `\n\nSISTEMA DE MEMORIA:
+Si quieres guardar información importante sobre ${username}, usa esta función exacta al final de tu respuesta:
+SAVE_MEMORY("información específica y valiosa")
+
+Guarda solo:
 - Preferencias del usuario (gustos, géneros favoritos)
 - Recomendaciones específicas hechas
 - Información personal relevante del usuario
 - Datos únicos de la conversación
-NO guardes información genérica o repetitiva.`
-      : '';
 
+NO uses SAVE_MEMORY para información genérica o repetitiva.
+La función debe estar en una línea separada al final de tu respuesta.`
+      : '';
     // Optimized single system prompt for better coherence and reduced tokens
     const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa.
 
@@ -38,12 +43,12 @@ RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Tu creador: Leon564 (<@6851018|Sleepy Ash>)
 - Reglas del chat: ${rules}
 - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
-- Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"${memoryInstructions}
+- Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"${memoryInstructions}${this.generateMemoryExamples(username)}
 
 Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
     const context = await this.getContext();
-    const memory = Boolean(process.env.USE_MEMORY) ? await getMemory() : [];
+    const memory = Boolean(process.env.USE_MEMORY) ? await getMemory(username) : [];
 
     // Optimized payload structure to reduce token usage
     const messages: Array<{role: "system" | "user" | "assistant", content: string}> = [
@@ -90,15 +95,18 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
       // Remove commented code and fix error message
       let content = response.choices[0].message.content || "";
       console.log(`Respuesta de OpenAI: ${content}`);
-      // Solo procesar memoria si está habilitada
-      if (Boolean(process.env.USE_MEMORY) && content.includes("<memory>")) {
-        const memoryContent = content.split("<memory>")[1]?.replace("</memory>", "").trim();
+      // Procesar función de memoria si está habilitada
+      if (Boolean(process.env.USE_MEMORY) && content.includes("SAVE_MEMORY(")) {
+        const memoryResults = this.extractMemoryFromResponse(content, username);
+        content = memoryResults.cleanContent;
         
-        // Solo guardar memoria si es realmente útil
-        if (memoryContent && this.isMemoryWorthSaving(memoryContent)) {
-          await saveMemory(memoryContent);
+        // Guardar todas las memorias extraídas
+        for (const memoryItem of memoryResults.memoriesToSave) {
+          if (this.isMemoryWorthSaving(memoryItem, username)) {
+            await saveMemory(memoryItem, username);
+            console.log(`💾 Memoria guardada para ${username}: ${memoryItem}`);
+          }
         }
-        content = content.split("<memory>")[0].trim();
       }
 
       await this.saveContext({ question: message, answer: content || "", user: username });
@@ -260,12 +268,43 @@ Responde con frases cortas y puntuales.`;
     return chunks;
   }
 
-  // Función para determinar si una memoria vale la pena guardar
-  private isMemoryWorthSaving(memory: string): boolean {
+  // Método para extraer memorias de la respuesta usando el nuevo formato
+  private extractMemoryFromResponse(content: string, username?: string): {
+    cleanContent: string;
+    memoriesToSave: string[];
+  } {
+    const memoriesToSave: string[] = [];
+    let cleanContent = content;
+
+    // Buscar todas las instancias de SAVE_MEMORY()
+    const memoryRegex = /SAVE_MEMORY\s*\(\s*["'`](.*?)["'`]\s*\)/gi;
+    let match;
+
+    while ((match = memoryRegex.exec(content)) !== null) {
+      const memoryContent = match[1].trim();
+      if (memoryContent && memoryContent.length > 0) {
+        memoriesToSave.push(memoryContent);
+      }
+    }
+
+    // Limpiar el contenido removiendo todas las llamadas SAVE_MEMORY
+    cleanContent = content.replace(memoryRegex, '').trim();
+    
+    // Limpiar líneas vacías extra que puedan quedar
+    cleanContent = cleanContent.replace(/\n\s*\n\s*\n/g, '\n\n');
+
+    return {
+      cleanContent,
+      memoriesToSave
+    };
+  }
+
+  // Método mejorado para validar si una memoria vale la pena guardar
+  private isMemoryWorthSaving(memory: string, username?: string): boolean {
     const lowerMemory = memory.toLowerCase();
     
     // Muy corta o genérica
-    if (memory.length < 15) return false;
+    if (memory.length < 10) return false;
     
     // Frases genéricas que no aportan valor
     const genericPhrases = [
@@ -274,7 +313,12 @@ Responde con frases cortas y puntuales.`;
       'información general',
       'el usuario preguntó',
       'recuerda que',
-      'generando resumen'
+      'generando resumen',
+      'hola',
+      'gracias',
+      'de nada',
+      'usuario dice',
+      'conversación sobre'
     ];
     
     const isGeneric = genericPhrases.some(phrase => 
@@ -283,7 +327,7 @@ Responde con frases cortas y puntuales.`;
     
     if (isGeneric) return false;
     
-    // Información valiosa
+    // Información valiosa específica
     const valuableKeywords = [
       'le gusta',
       'favorito',
@@ -294,14 +338,80 @@ Responde con frases cortas y puntuales.`;
       'manhwa:',
       'interesado en',
       'género',
-      'creador',
-      'leon564'
+      'su anime',
+      'su manga',
+      'vio',
+      'leyó',
+      'está viendo',
+      'está leyendo',
+      'rating',
+      'puntuación',
+      'odia',
+      'no le gusta'
     ];
     
     const hasValue = valuableKeywords.some(keyword => 
       lowerMemory.includes(keyword)
     );
     
+    // Información específica del usuario (si se proporciona username)
+    if (username) {
+      const userSpecific = [
+        username.toLowerCase(),
+        'su nombre',
+        'se llama',
+        'edad',
+        'años',
+        'país',
+        'ciudad'
+      ];
+      
+      const isUserSpecific = userSpecific.some(keyword => 
+        lowerMemory.includes(keyword)
+      );
+      
+      if (isUserSpecific) return true;
+    }
+    
     return hasValue;
+  }
+
+  // Método para generar ejemplos de uso de memoria en el prompt
+  private generateMemoryExamples(username?: string): string {
+    if (!Boolean(process.env.USE_MEMORY)) return '';
+    
+    return `
+
+EJEMPLOS de uso correcto de SAVE_MEMORY:
+- Usuario dice que le gusta el shounen → SAVE_MEMORY("Le gusta el género shounen")
+- Usuario menciona que vio Naruto → SAVE_MEMORY("Ha visto Naruto completo")
+- Usuario pide recomendación de romance → SAVE_MEMORY("Interesado en anime de romance")
+- Usuario dice que no le gusta el gore → SAVE_MEMORY("No le gusta el contenido gore")
+
+NO uses SAVE_MEMORY para:
+- Información ya conocida del bot
+- Respuestas genéricas
+- Saludos o despedidas
+- Información que no es específica del usuario`;
+  }
+
+  // Método de debug para probar el sistema de memoria
+  async testMemorySystem(testResponses: string[]): Promise<void> {
+    console.log('🧪 Probando sistema de memoria refactorizado...');
+    
+    for (let i = 0; i < testResponses.length; i++) {
+      const response = testResponses[i];
+      console.log(`\n--- Prueba ${i + 1} ---`);
+      console.log(`Respuesta original: ${response}`);
+      
+      const results = this.extractMemoryFromResponse(response, 'TestUser');
+      console.log(`Contenido limpio: ${results.cleanContent}`);
+      console.log(`Memorias a guardar: ${JSON.stringify(results.memoriesToSave)}`);
+      
+      results.memoriesToSave.forEach((memory, index) => {
+        const isValid = this.isMemoryWorthSaving(memory, 'TestUser');
+        console.log(`  Memoria ${index + 1}: "${memory}" - ${isValid ? '✅ Válida' : '❌ Rechazada'}`);
+      });
+    }
   }
 }
