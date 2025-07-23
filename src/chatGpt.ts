@@ -12,6 +12,16 @@ export class Gpt {
   async chat(message: string, botName?: string, username?: string) {
     const rules = "[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!";
 
+    // Generar instrucciones de memoria dinámicamente
+    const memoryInstructions = Boolean(process.env.USE_MEMORY) 
+      ? `\n\nMEMORIA: Solo usa <memory>información específica y valiosa</memory> al final para:
+- Preferencias del usuario (gustos, géneros favoritos)
+- Recomendaciones específicas hechas
+- Información personal relevante del usuario
+- Datos únicos de la conversación
+NO guardes información genérica o repetitiva.`
+      : '';
+
     // Optimized single system prompt for better coherence and reduced tokens
     const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa. Usuario actual: ${username}.
 
@@ -26,26 +36,28 @@ RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Tu creador: Leon564 (<@6851018|Sleepy Ash>)
 - Reglas del chat: ${rules}
 - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
-- Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"
-
-MEMORIA: Si algo es importante para recordar, úsalo al final: <memory>información importante</memory>
+- Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"${memoryInstructions}
 
 Sé conciso y relevante en tus respuestas.`;
 
     const context = await this.getContext();
-    const memory = await getMemory();
+    const memory = Boolean(process.env.USE_MEMORY) ? await getMemory() : [];
 
     // Optimized payload structure to reduce token usage
     const messages: Array<{role: "system" | "user" | "assistant", content: string}> = [
       { role: "system", content: systemPrompt }
     ];
 
-    // Add memory context if available
-    if (memory && memory.length > 0) {
-      messages.push({
-        role: "system", 
-        content: `Memoria importante: ${memory.slice(-3).join('; ')}`
-      });
+    // Add memory context if available (optimized and filtered) and enabled
+    if (Boolean(process.env.USE_MEMORY) && memory && memory.length > 0) {
+      // Solo usar memoria relevante, máximo 3 elementos
+      const relevantMemories = memory.slice(-3);
+      if (relevantMemories.length > 0) {
+        messages.push({
+          role: "system", 
+          content: `Contexto relevante recordado: ${relevantMemories.join(' | ')}`
+        });
+      }
     }
 
     // Add conversation context more efficiently
@@ -73,12 +85,14 @@ Sé conciso y relevante en tus respuestas.`;
 
       // Remove commented code and fix error message
       let content = response.choices[0].message.content || "";
-
-      if (content.includes("<memory>")) {
-        if (Boolean(process.env.USE_MEMORY)) {
-          await saveMemory(
-            content.split("<memory>")[1]?.replace("</memory>", "").trim()
-          );
+      console.log(`Respuesta de OpenAI: ${content}`);
+      // Solo procesar memoria si está habilitada
+      if (Boolean(process.env.USE_MEMORY) && content.includes("<memory>")) {
+        const memoryContent = content.split("<memory>")[1]?.replace("</memory>", "").trim();
+        
+        // Solo guardar memoria si es realmente útil
+        if (memoryContent && this.isMemoryWorthSaving(memoryContent)) {
+          await saveMemory(memoryContent);
         }
         content = content.split("<memory>")[0].trim();
       }
@@ -240,5 +254,50 @@ Responde con frases cortas y puntuales.`;
     }
     
     return chunks;
+  }
+
+  // Función para determinar si una memoria vale la pena guardar
+  private isMemoryWorthSaving(memory: string): boolean {
+    const lowerMemory = memory.toLowerCase();
+    
+    // Muy corta o genérica
+    if (memory.length < 15) return false;
+    
+    // Frases genéricas que no aportan valor
+    const genericPhrases = [
+      'debo recordar',
+      'es importante',
+      'información general',
+      'el usuario preguntó',
+      'recuerda que',
+      'generando resumen'
+    ];
+    
+    const isGeneric = genericPhrases.some(phrase => 
+      lowerMemory.includes(phrase)
+    );
+    
+    if (isGeneric) return false;
+    
+    // Información valiosa
+    const valuableKeywords = [
+      'le gusta',
+      'favorito',
+      'prefiere',
+      'recomendación',
+      'anime:',
+      'manga:',
+      'manhwa:',
+      'interesado en',
+      'género',
+      'creador',
+      'leon564'
+    ];
+    
+    const hasValue = valuableKeywords.some(keyword => 
+      lowerMemory.includes(keyword)
+    );
+    
+    return hasValue;
   }
 }

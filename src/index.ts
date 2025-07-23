@@ -10,6 +10,7 @@ import {
   saveEventsLog,
   saveLog,
   sleep,
+  cleanExistingMemories,
 } from "./utils";
 
 class Bot {
@@ -52,6 +53,11 @@ class Bot {
   }
 
   public static async start() {
+    // Limpiar memorias duplicadas al iniciar solo si la memoria está habilitada
+    if (Boolean(process.env.USE_MEMORY)) {
+      await cleanExistingMemories();
+    }
+    
     const { boxId, boxTag, iframeUrl, socketUrl } = await boxDetails(
       process.env.CBOX_URL!
     );
@@ -70,6 +76,7 @@ class Bot {
     const { nme, key, pic } = dataLogin.udata;
 
     console.log(`starting bot as ${nme}`);
+    console.log(`Memory system: ${Boolean(process.env.USE_MEMORY) ? 'ENABLED' : 'DISABLED'}`);
 
     new Bot(
       nme || process.env.CBOX_USERNAME!,
