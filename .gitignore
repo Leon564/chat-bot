@@ -5,3 +5,4 @@ context.json
 /data/messages_log.json
 /data/events_log.json
 /data/memory.json
+/dist
