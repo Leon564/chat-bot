@@ -51,10 +51,7 @@ export const sendMessage = async ({
         Referer: "https://www4.cbox.ws/",
         "Referrer-Policy": "origin",
       },
-      body: `aj=1063&lp=2529196&pst=${message?.substring(
-        0,
-        Number(process.env.MAX_LENGTH_RESPONSE || 300)
-      )}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
+      body: `aj=1063&lp=2529196&pst=${message}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
       method: "POST",
     }
   );

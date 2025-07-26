@@ -1,6 +1,100 @@
 import path from "path";
 import fs from "fs";
 
+/**
+ * Divide un texto en múltiples partes respetando el límite de caracteres y sin cortar palabras
+ * @param text - Texto a dividir
+ * @param maxLength - Longitud máxima por parte
+ * @returns Array de strings con las partes divididas
+ */
+export const splitMessageIntoParts = (text: string, maxLength: number): string[] => {
+  if (!text || text.length <= maxLength) {
+    return [text];
+  }
+
+  const parts: string[] = [];
+  
+  // Primero intentar dividir por párrafos (doble salto de línea)
+  const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+  
+  let currentPart = "";
+  
+  for (const paragraph of paragraphs) {
+    const trimmedParagraph = paragraph.trim();
+    
+    // Si el párrafo completo cabe en la parte actual
+    if ((currentPart + (currentPart ? "\n\n" : "") + trimmedParagraph).length <= maxLength) {
+      currentPart += (currentPart ? "\n\n" : "") + trimmedParagraph;
+    } else {
+      // Guardar la parte actual si tiene contenido
+      if (currentPart.trim()) {
+        parts.push(currentPart.trim());
+        currentPart = "";
+      }
+      
+      // Si el párrafo es muy largo, dividirlo por oraciones
+      if (trimmedParagraph.length > maxLength) {
+        const sentences = trimmedParagraph.split(/[.!?]\s+/).filter(s => s.trim().length > 0);
+        
+        for (let sentence of sentences) {
+          // Agregar puntuación si no la tiene
+          if (!sentence.trim().match(/[.!?]$/)) {
+            sentence = sentence.trim() + ".";
+          }
+          
+          // Si la oración cabe en la parte actual
+          if ((currentPart + (currentPart ? " " : "") + sentence).length <= maxLength) {
+            currentPart += (currentPart ? " " : "") + sentence;
+          } else {
+            // Guardar la parte actual si tiene contenido
+            if (currentPart.trim()) {
+              parts.push(currentPart.trim());
+              currentPart = "";
+            }
+            
+            // Si la oración sola es muy larga, dividirla por palabras
+            if (sentence.length > maxLength) {
+              const words = sentence.split(" ");
+              let wordPart = "";
+              
+              for (const word of words) {
+                if ((wordPart + (wordPart ? " " : "") + word).length <= maxLength) {
+                  wordPart += (wordPart ? " " : "") + word;
+                } else {
+                  if (wordPart.trim()) {
+                    parts.push(wordPart.trim());
+                  }
+                  wordPart = word;
+                }
+              }
+              
+              if (wordPart.trim()) {
+                currentPart = wordPart;
+              }
+            } else {
+              currentPart = sentence;
+            }
+          }
+        }
+      } else {
+        currentPart = trimmedParagraph;
+      }
+    }
+  }
+  
+  // Agregar la última parte si tiene contenido
+  if (currentPart.trim()) {
+    parts.push(currentPart.trim());
+  }
+  
+  // Si no hay partes válidas, devolver el texto original truncado
+  if (parts.length === 0) {
+    return [text.substring(0, maxLength)];
+  }
+  
+  return parts;
+};
+
 export const getLastMessages = async () => {
   //get last 200 messages
   const filePath = path.join(__dirname, "../data/messages_log.json");

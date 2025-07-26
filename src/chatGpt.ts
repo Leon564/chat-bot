@@ -111,14 +111,6 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
       await this.saveContext({ question: message, answer: content || "", user: username });
 
-      // Dividir respuesta si es demasiado larga (excepto para resúmenes que ya se manejan aparte)
-      if (content && !content.includes("{{resumen}}")) {
-        const maxLength = parseInt(process.env.MAX_LENGTH_RESPONSE || "200");
-        if (content.length > maxLength) {
-          const parts = this.splitTextIntoChunks(content, maxLength);
-          content = parts.join("{{split}}"); // Usar {{split}} para respuestas normales
-        }
-      }
       console.log(`Respuesta generada: ${content}`);
       return content || "No hay respuesta disponible.";
     } catch (error) {
@@ -192,80 +184,12 @@ Responde con frases cortas y puntuales.`;
         return "He estado participando en conversaciones sobre anime, manga y manhwa con los usuarios del chat.";
       }
 
-      // Dividir el resumen en partes que no superen MAX_LENGTH_RESPONSE
-      const parts = this.splitTextIntoChunks(content, maxLength);
-      
-      // Unir las partes con {{skip}} para indicar separación
-      return parts.join("{{skip}}");
+      console.log(`Resumen generado: ${content}`);
+      return content;
     } catch (error) {
       console.error("Error generating summary:", error);
       return "No se pudo generar el resumen debido a un error técnico.";
     }
-  }
-
-  // Nueva función auxiliar para dividir texto respetando el límite de caracteres
-  private splitTextIntoChunks(text: string, maxLength: number): string[] {
-    const chunks: string[] = [];
-    
-    // Primero intentar dividir por párrafos o oraciones
-    const sentences = text.split(/[.!?]\s+/).filter(s => s.trim().length > 0);
-    
-    let currentChunk = "";
-    
-    for (let sentence of sentences) {
-      // Agregar el punto final si no lo tiene
-      const fullSentence = sentence.trim() + (sentence.trim().match(/[.!?]$/) ? "" : ".");
-      
-      // Si la oración sola es muy larga, dividirla por palabras
-      if (fullSentence.length > maxLength) {
-        // Guardar el chunk actual si tiene contenido
-        if (currentChunk.trim()) {
-          chunks.push(currentChunk.trim());
-          currentChunk = "";
-        }
-        
-        // Dividir la oración larga por palabras
-        const words = fullSentence.split(" ");
-        let wordChunk = "";
-        
-        for (let word of words) {
-          if ((wordChunk + " " + word).length <= maxLength) {
-            wordChunk += (wordChunk ? " " : "") + word;
-          } else {
-            if (wordChunk) {
-              chunks.push(wordChunk);
-            }
-            wordChunk = word;
-          }
-        }
-        
-        if (wordChunk) {
-          chunks.push(wordChunk);
-        }
-      } else {
-        // Si agregar esta oración supera el límite, guardar el chunk actual
-        if ((currentChunk + " " + fullSentence).length > maxLength) {
-          if (currentChunk.trim()) {
-            chunks.push(currentChunk.trim());
-          }
-          currentChunk = fullSentence;
-        } else {
-          currentChunk += (currentChunk ? " " : "") + fullSentence;
-        }
-      }
-    }
-    
-    // Agregar el último chunk si tiene contenido
-    if (currentChunk.trim()) {
-      chunks.push(currentChunk.trim());
-    }
-    
-    // Si no hay chunks válidos, devolver un mensaje por defecto
-    if (chunks.length === 0) {
-      return ["He estado participando en conversaciones del chat."];
-    }
-    
-    return chunks;
   }
 
   // Método para extraer memorias de la respuesta usando el nuevo formato

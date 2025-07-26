@@ -12,6 +12,7 @@ import {
   sleep,
   cleanExistingMemories,
   migrateMemoriesToUserFormat,
+  splitMessageIntoParts,
 } from "./utils";
 
 class Bot {
@@ -123,13 +124,13 @@ class Bot {
 
       if (!response) return;
 
-      // Verificar si la respuesta necesita ser dividida
-      const isMultiPart = response.includes("{{split}}");
-      const parts = isMultiPart ? response.split("{{split}}").filter(part => part.trim()) : [response];
+      // Dividir la respuesta usando nuestra función local
+      const maxLength = parseInt(process.env.MAX_LENGTH_RESPONSE || "200");
+      const messageParts = splitMessageIntoParts(response, maxLength);
 
-      const responseData = {
+      // Crear los datos base para el mensaje
+      const baseMessageData = {
         key: this.ukey,
-        message: `${textColor}<@${name}> ${parts[0].replace("{{resumen}}", "")}`,
         pic: this.pic,
         username: this.uname,
         boxTag: this.boxTag,
@@ -137,29 +138,22 @@ class Bot {
         iframeUrl: this.iframeUrl,
       };
 
+      // Crear las partes del mensaje con el formato correcto
+      const messagesToSend = messageParts.map((part, index) => ({
+        ...baseMessageData,
+        message: index === 0 
+          ? `${textColor}<@${name}> ${part}` // Primera parte con mención
+          : `${textColor}${part}`, // Partes siguientes sin mención
+      }));
+
       if (
         Date.now() - this.lastSentTime <
         Number(process.env.RESPONSE_DELAY || 20500)
       ) {
-        // Si hay múltiples partes, agregar todas a la cola
-        if (isMultiPart) {
-          parts.forEach((part, index) => {
-            const partData = {
-              key: this.ukey,
-              message: index === 0 
-                ? `${textColor}<@${name}> ${part.replace("{{resumen}}", "")}` 
-                : `${textColor}${part}`,
-              pic: this.pic,
-              username: this.uname,
-              boxTag: this.boxTag,
-              boxId: this.boxId,
-              iframeUrl: this.iframeUrl,
-            };
-            this.responseQueue.push(partData);
-          });
-        } else {
-          this.responseQueue.push(responseData);
-        }
+        // Agregar todos los mensajes a la cola
+        messagesToSend.forEach(msgData => {
+          this.responseQueue.push(msgData);
+        });
         return;
       }
 
@@ -198,15 +192,17 @@ class Bot {
         // Generar y enviar el resumen
         try {
           const resumen = await this.gpt.generateSummary();
-          const responses = resumen.split("{{skip}}").filter(part => part.trim());
           
-          console.log(`Enviando resumen en ${responses.length} parte(s)`);
+          // Dividir el resumen usando nuestra función local
+          const resumenParts = splitMessageIntoParts(resumen, maxLength);
+          
+          console.log(`Enviando resumen en ${resumenParts.length} parte(s)`);
           
           // Enviar el resumen con un delay entre cada parte
-          for (let i = 0; i < responses.length; i++) {
-            const part = responses[i].trim();
-            if (part && part !== "{{skip}}" && part !== "{{resumen}}") {
-              const partNumber = responses.length > 1 ? ` (${i + 1}/${responses.length})` : "";
+          for (let i = 0; i < resumenParts.length; i++) {
+            const part = resumenParts[i].trim();
+            if (part) {
+              const partNumber = resumenParts.length > 1 ? ` (${i + 1}/${resumenParts.length})` : "";
               const responseData = {
                 key: this.ukey,
                 message: `${textColor}📋${partNumber} ${part}`,
@@ -220,8 +216,8 @@ class Bot {
               await sendMessage(responseData);
               
               // Solo esperar entre partes si hay más de una
-              if (i < responses.length - 1) {
-                await sleep(Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY entre partes del resumen
+              if (i < resumenParts.length - 1) {
+                await sleep(Number(process.env.RESPONSE_DELAY || 1000));
               }
             }
           }
@@ -245,30 +241,21 @@ class Bot {
         return;
       }
 
-      // Enviar respuesta normal si no es resumen
-      if (isMultiPart) {
-        // Enviar la primera parte inmediatamente
-        await sendMessage(responseData);
+      // Enviar respuesta normal
+      if (messagesToSend.length === 1) {
+        // Mensaje único, enviar directamente
+        await sendMessage(messagesToSend[0]);
+        this.lastSentTime = Date.now();
+      } else {
+        // Mensajes múltiples, enviar con delay
+        await sendMessage(messagesToSend[0]);
         this.lastSentTime = Date.now();
         
         // Enviar las partes restantes con delay
-        for (let i = 1; i < parts.length; i++) {
-          const partData = {
-            key: this.ukey,
-            message: `${textColor}${parts[i]}`,
-            pic: this.pic,
-            username: this.uname,
-            boxTag: this.boxTag,
-            boxId: this.boxId,
-            iframeUrl: this.iframeUrl,
-          };
-          
-          await sleep(Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY entre partes de respuesta normal
-          await sendMessage(partData);
+        for (let i = 1; i < messagesToSend.length; i++) {
+          await sleep(Number(process.env.RESPONSE_DELAY || 1000));
+          await sendMessage(messagesToSend[i]);
         }
-      } else {
-        await sendMessage(responseData);
-        this.lastSentTime = Date.now();
       }
     });
     // Manejar errores en la conexión
