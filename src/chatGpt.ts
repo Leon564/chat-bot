@@ -40,10 +40,13 @@ COMPORTAMIENTO:
 
 RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Tu propósito: Ayudar por órdenes de Leon564 (<@6851018|Sleepy Ash>)
-- Tu creador: Leon564 (<@6851018|Sleepy Ash>)
+- Tu creador: León564 (<@6851018|Sleepy Ash>)
 - Reglas del chat: ${rules}
 - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
-- Resumen del chat: Responde exactamente "Generando resumen del chat... {{resumen}}"${memoryInstructions}${this.generateMemoryExamples(username)}
+
+DETECCIÓN DE SOLICITUD DE RESUMEN:
+Si el usuario solicita un resumen del chat de cualquier forma (ej: "resumen", "resume", "qué pasó", "de qué hablaron", "que se habló", "resúmeme", "recap", etc.), responde exactamente:
+"¡Perfecto! Voy a generar un resumen del chat con los momentos más interesantes y jugosos 📋✨ {{resumen}}"${memoryInstructions}${this.generateMemoryExamples(username)}
 
 Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
@@ -142,8 +145,8 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
   async generateSummary() {
     const history = await getLastMessages();
     
-    // Filtrar solo los últimos 50 mensajes para evitar resúmenes demasiado largos
-    const recentMessages = history.slice(-50);
+    // Filtrar solo los últimos 80 mensajes para incluir más contexto y chismes
+    const recentMessages = history.slice(-200);
     
     if (recentMessages.length === 0) {
       return "No hay mensajes recientes para resumir.";
@@ -155,17 +158,33 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
     const maxLength = parseInt(process.env.MAX_LENGTH_RESPONSE || "200");
 
-    // Optimized single prompt for summary generation
-    const systemPrompt = `Genera un resumen conciso y útil de la conversación del chat. 
-Habla en primera persona como ${process.env.CBOX_USERNAME}. 
-Enfócate en los temas principales discutidos, preguntas importantes y conclusiones.
-Omite saludos, spam y mensajes irrelevantes.
-Responde con frases cortas y puntuales.`;
+    // Prompt mejorado para incluir chismes y momentos jugosos
+    const systemPrompt = `Genera un resumen entretenido y jugoso de la conversación del chat.
+    
+Tu username es: ${process.env.CBOX_USERNAME}.
+
+INSTRUCCIONES IMPORTANTES:
+- Habla en primera persona como si fueras el bot del chat
+- Incluye los CHISMES más interesantes y divertidos
+- Menciona las conversaciones más jugosas o entretenidas
+- Incluye bromas, momentos graciosos o situaciones curiosas
+- Destaca recomendaciones de anime/manga/manhwa importantes
+- Menciona discusiones interesantes o debates
+- Incluye cualquier drama menor o situaciones divertidas
+- Usa un tono casual y entretenido
+- Agrega emojis para hacer más ameno el resumen
+- Omite solo saludos simples y spam obvio
+
+FORMATO:
+- Frases cortas y directas
+- Incluye nombres de usuarios cuando sea relevante
+- Agrupa temas relacionados
+- Termina con una conclusión divertida o comentario final`;
 
     const payload = {
       messages: [
         { role: "system" as const, content: systemPrompt },
-        { role: "user" as const, content: `Conversación reciente del chat:\n${messages}` }
+        { role: "system" as const, content: `Conversación reciente del chat:\n${messages}` }
       ],
     };
 

@@ -176,10 +176,11 @@ class Bot {
           return;
         }
 
-        // Enviar mensaje de confirmación primero
+        // Enviar mensaje de confirmación primero (sin {{resumen}})
+        const confirmationMessage = response.replace("{{resumen}}", "").trim();
         const confirmationData = {
           key: this.ukey,
-          message: `${textColor}<@${name}> ${response.replace("{{resumen}}", "")}`,
+          message: `${textColor}<@${name}> ${confirmationMessage}`,
           pic: this.pic,
           username: this.uname,
           boxTag: this.boxTag,
@@ -189,8 +190,12 @@ class Bot {
         await sendMessage(confirmationData);
         this.lastSentTime = Date.now();
 
+        // Esperar un momento antes de empezar a generar el resumen
+        await sleep(2000);
+
         // Generar y enviar el resumen
         try {
+          console.log("Generando resumen del chat...");
           const resumen = await this.gpt.generateSummary();
           
           // Dividir el resumen usando nuestra función local
@@ -198,14 +203,30 @@ class Bot {
           
           console.log(`Enviando resumen en ${resumenParts.length} parte(s)`);
           
-          // Enviar el resumen con un delay entre cada parte
+          // Enviar cada parte del resumen como mensaje independiente
           for (let i = 0; i < resumenParts.length; i++) {
             const part = resumenParts[i].trim();
             if (part) {
-              const partNumber = resumenParts.length > 1 ? ` (${i + 1}/${resumenParts.length})` : "";
+              // Formato mejorado para las partes del resumen
+              const isFirstPart = i === 0;
+              const isLastPart = i === resumenParts.length - 1;
+              const partIndicator = resumenParts.length > 1 ? ` (${i + 1}/${resumenParts.length})` : "";
+              
+              let messagePrefix = "";
+              if (isFirstPart) {
+                messagePrefix = "📋✨ RESUMEN DEL CHAT" + partIndicator + "\n\n";
+              } else {
+                messagePrefix = `📋 RESUMEN${partIndicator}\n\n`;
+              }
+              
+              let messageSuffix = "";
+              if (isLastPart && resumenParts.length > 1) {
+                messageSuffix = "\n\n¡Eso es todo por ahora! 🎬";
+              }
+              
               const responseData = {
                 key: this.ukey,
-                message: `${textColor}📋${partNumber} ${part}`,
+                message: `${textColor}${messagePrefix}${part}${messageSuffix}`,
                 pic: this.pic,
                 username: this.uname,
                 boxTag: this.boxTag,
@@ -215,9 +236,9 @@ class Bot {
 
               await sendMessage(responseData);
               
-              // Solo esperar entre partes si hay más de una
+              // Esperar entre partes para que se lean mejor
               if (i < resumenParts.length - 1) {
-                await sleep(Number(process.env.RESPONSE_DELAY || 1000));
+                await sleep(Number(process.env.RESPONSE_DELAY || 3000));
               }
             }
           }
@@ -225,6 +246,8 @@ class Bot {
           // Guardar evento de resumen y limpiar log
           await saveEventsLog("Resumen", name);
           await clearMessagesLog();
+          console.log("Resumen completado y log limpiado");
+          
         } catch (error) {
           console.error("Error generating summary:", error);
           const errorData = {
