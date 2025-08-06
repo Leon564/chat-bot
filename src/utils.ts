@@ -115,7 +115,15 @@ export const saveLog = async (user: string, message: string) => {
 
 export const clearMessagesLog = async () => {
   const filePath = path.join(__dirname, "../data/messages_log.json");
+  const messagesLog = fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
+    : [];
+  
+  const messageCount = messagesLog.length;
   fs.writeFileSync(filePath, JSON.stringify([]));
+  
+  console.log(`📝 Log de mensajes limpiado: ${messageCount} mensajes eliminados`);
+  return messageCount;
 };
 
 export const saveEventsLog = async (event: string, user: string) => {
@@ -682,4 +690,22 @@ export const migrateMemoriesToUserFormat = async (): Promise<void> => {
 
 export const sleep = (ms: number) => {
   return new Promise((resolve) => setTimeout(resolve, ms));
+};
+
+export const cleanBotMessagesFromLog = async (botUsername: string) => {
+  const filePath = path.join(__dirname, "../data/messages_log.json");
+  const messagesLog = fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
+    : [];
+  
+  const originalCount = messagesLog.length;
+  const cleanedLog = messagesLog.filter((msg: any) => msg.user !== botUsername);
+  const removedCount = originalCount - cleanedLog.length;
+  
+  if (removedCount > 0) {
+    fs.writeFileSync(filePath, JSON.stringify(cleanedLog));
+    console.log(`🧹 Limpieza del log: ${removedCount} mensajes del bot eliminados`);
+  }
+  
+  return removedCount;
 };

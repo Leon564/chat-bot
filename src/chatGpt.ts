@@ -46,7 +46,9 @@ RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 
 DETECCIÓN DE SOLICITUD DE RESUMEN:
 Si el usuario solicita un resumen del chat de cualquier forma (ej: "resumen", "resume", "qué pasó", "de qué hablaron", "que se habló", "resúmeme", "recap", etc.), responde exactamente:
-"¡Perfecto! Voy a generar un resumen del chat con los momentos más interesantes y jugosos 📋✨ {{resumen}}"${memoryInstructions}${this.generateMemoryExamples(username)}
+"¡Perfecto! Voy a generar un resumen del chat 📋✨ {{resumen}}"
+
+IMPORTANTE: La palabra {{resumen}} debe aparecer SIEMPRE en la respuesta cuando se solicite un resumen.${memoryInstructions}${this.generateMemoryExamples(username)}
 
 Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
@@ -88,20 +90,45 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
     const payload = { messages };
 
     try {
+      // Verificar si es una solicitud de resumen y ajustar tokens si es necesario
+      const isResumenRequest = message.toLowerCase().match(/(resumen|resume|qué pasó|de qué hablaron|que se habló|resúmeme|recap)/);
+      const baseMaxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "500");
+      const maxTokens = isResumenRequest ? Math.max(baseMaxTokens, 300) : baseMaxTokens;
+      
+      if (isResumenRequest && baseMaxTokens < 300) {
+        console.log(`⚠️ MAX_LENGTH_RESPONSE (${baseMaxTokens}) muy bajo para resumen, usando ${maxTokens} tokens`);
+      }
+      
       const response = await this.openai.chat.completions.create({
         messages: payload.messages as any,
         model: "gpt-3.5-turbo",
         temperature: 0.7, // Increased for more natural responses
-        max_tokens: parseInt(process.env.MAX_LENGTH_RESPONSE || "500"),
+        max_tokens: maxTokens,
       });
 
       // Remove commented code and fix error message
       let content = response.choices[0].message.content || "";
       console.log(`Respuesta de OpenAI: ${content}`);
+      
+      // Verificar si contiene token de resumen ANTES del procesamiento
+      const containsResumenToken = content.includes("{{resumen}}");
+      console.log(`🔍 Contiene token {{resumen}}: ${containsResumenToken}`);
+      
       // Procesar función de memoria si está habilitada
       if (Boolean(process.env.USE_MEMORY) && content.includes("SAVE_MEMORY(")) {
         const memoryResults = this.extractMemoryFromResponse(content, username);
         content = memoryResults.cleanContent;
+        
+        // Verificar si el token se perdió durante el procesamiento de memoria
+        if (containsResumenToken && !content.includes("{{resumen}}")) {
+          console.log("⚠️ Token {{resumen}} se perdió durante el procesamiento de memoria, restaurando...");
+          // Buscar dónde debería ir el token y agregarlo
+          if (content.includes("📋✨")) {
+            content = content.replace("📋✨", "📋✨ {{resumen}}");
+          } else {
+            content += " {{resumen}}";
+          }
+        }
         
         // Guardar todas las memorias extraídas
         for (const memoryItem of memoryResults.memoriesToSave) {
@@ -115,6 +142,16 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
       await this.saveContext({ question: message, answer: content || "", user: username });
 
       console.log(`Respuesta generada: ${content}`);
+      
+      // Log adicional para debugging de resúmenes
+      if (content.includes("{{resumen}}")) {
+        console.log("✅ Token {{resumen}} preservado en la respuesta final");
+      } else if (message.toLowerCase().includes("resumen") || message.toLowerCase().includes("resume")) {
+        console.log("⚠️ Se solicitó resumen pero no se detectó token {{resumen}} en la respuesta final");
+        console.log(`Mensaje original: "${message}"`);
+        console.log(`Respuesta final: "${content}"`);
+      }
+      
       return content || "No hay respuesta disponible.";
     } catch (error) {
       throw error;
@@ -145,18 +182,18 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
   async generateSummary() {
     const history = await getLastMessages();
     
-    // Filtrar solo los últimos 80 mensajes para incluir más contexto y chismes
-    const recentMessages = history.slice(-200);
+    const recentMessages = history;
+
+    console.log(`Generando resumen de los últimos ${recentMessages.length} mensajes...`);
     
     if (recentMessages.length === 0) {
       return "No hay mensajes recientes para resumir.";
     }
 
-    const messages = recentMessages
-      .map(({ user, message }: any) => `${user}: ${message}`)
-      .join("\n");
-
-    const maxLength = parseInt(process.env.MAX_LENGTH_RESPONSE || "200");
+    // Filtrar mensajes para mejorar la calidad del resumen
+    const filteredMessages = this.filterMessagesForSummary(recentMessages);
+    
+    console.log(`Filtrando mensajes: ${recentMessages.length} → ${filteredMessages.length} mensajes útiles`);
 
     // Prompt mejorado para incluir chismes y momentos jugosos
     const systemPrompt = `Genera un resumen entretenido y jugoso de la conversación del chat.
@@ -175,16 +212,65 @@ INSTRUCCIONES IMPORTANTES:
 - Agrega emojis para hacer más ameno el resumen
 - Omite solo saludos simples y spam obvio
 
+CONTEXTO ADICIONAL:
+- Solo incluye conversaciones que realmente aporten valor
+- Agrupa temas relacionados y evita repeticiones
+- Si hay pocos temas, profundiza más en cada uno
+- Menciona interacciones únicas entre usuarios
+
 FORMATO:
 - Frases cortas y directas
 - Incluye nombres de usuarios cuando sea relevante
 - Agrupa temas relacionados
 - Termina con una conclusión divertida o comentario final`;
 
+    if (filteredMessages.length === 0) {
+      return "No hay suficientes conversaciones interesantes para resumir. ¡Hagamos que el chat sea más activo! 🎉";
+    }
+
+    if (filteredMessages.length < 5) {
+      // Si hay muy pocos mensajes, usar todos los mensajes originales pero con mejor análisis
+      console.log("Pocos mensajes filtrados, usando todos los mensajes para análisis...");
+      const allMessages = recentMessages
+        .map(({ user, message }: any) => `${user}: ${message}`)
+        .join("\n");
+      
+      const fallbackPayload = {
+        messages: [
+          { role: "system" as const, content: systemPrompt },
+          { role: "system" as const, content: `Conversación completa del chat (analiza lo más relevante):\n${allMessages}` }
+        ],
+      };
+      
+      try {
+        const response = await this.openai.chat.completions.create({
+          messages: fallbackPayload.messages,
+          model: "gpt-3.5-turbo",
+          temperature: 0.4,
+          max_tokens: 600,
+        });
+
+        let content = response.choices[0].message.content || "";
+        if (!content || content.trim().length === 0) {
+          return "He estado observando el chat, pero no hay mucho que contar por el momento. ¡Charlemos más! 💬";
+        }
+        
+        console.log(`Resumen generado (modo fallback): ${content}`);
+        return content;
+      } catch (error) {
+        console.error("Error generating fallback summary:", error);
+        return "El chat ha estado tranquilo últimamente. ¡Vamos a animarlo con más conversaciones interesantes! 🚀";
+      }
+    }
+
+    const messages = filteredMessages
+      .map(({ user, message }: any) => `${user}: ${message}`)
+      .join("\n");
+
     const payload = {
       messages: [
         { role: "system" as const, content: systemPrompt },
-        { role: "system" as const, content: `Conversación reciente del chat:\n${messages}` }
+        { role: "system" as const, content: `Conversación filtrada del chat (${filteredMessages.length} mensajes relevantes):\n${messages}` }
       ],
     };
 
@@ -200,15 +286,135 @@ FORMATO:
       
       // Asegurar que el resumen no esté vacío
       if (!content || content.trim().length === 0) {
+        console.log("⚠️ OpenAI devolvió contenido vacío para el resumen");
         return "He estado participando en conversaciones sobre anime, manga y manhwa con los usuarios del chat.";
       }
 
-      console.log(`Resumen generado: ${content}`);
+      console.log(`✅ Resumen generado exitosamente: ${content.length} caracteres`);
       return content;
     } catch (error) {
-      console.error("Error generating summary:", error);
+      console.error("❌ Error generating summary:", error);
+      
+      // Información adicional de debug
+      console.log(`📊 Datos del intento de resumen:
+        - Mensajes originales: ${recentMessages.length}
+        - Mensajes filtrados: ${filteredMessages.length}
+        - Longitud del prompt: ${JSON.stringify(payload).length} caracteres`);
+        
       return "No se pudo generar el resumen debido a un error técnico.";
     }
+  }
+
+  // Función para filtrar mensajes y mejorar la calidad del resumen
+  private filterMessagesForSummary(messages: any[]): any[] {
+    const filtered: any[] = [];
+    const seenMessages = new Set<string>();
+    const botUsername = process.env.CBOX_USERNAME;
+    
+    for (const msg of messages) {
+      const { user, message } = msg;
+      const lowerMessage = message.toLowerCase().trim();
+      
+      // Saltar mensajes del bot (protección adicional)
+      if (user === botUsername) {
+        console.log(`🚫 Mensaje del bot excluido del resumen: ${user} - "${message.substring(0, 30)}..."`);
+        continue;
+      }
+      
+      // Saltar mensajes muy cortos (menos de 10 caracteres)
+      if (lowerMessage.length < 10) continue;
+      
+      // Saltar mensajes repetitivos comunes
+      const repetitivePatterns = [
+        /^(hola|hi|hello|hey)$/i,
+        /^bot$/i,
+        /^@\w+\s*(hola|hi|hello|hey)?$/i,
+        /^no hay respuesta disponible/i,
+        /^lo siento.*no tengo información/i,
+        /^¿hay algo.*en lo que pueda ayudarte/i,
+        /^estoy aquí para.*ayudarte/i
+      ];
+      
+      const isRepetitive = repetitivePatterns.some(pattern => pattern.test(lowerMessage));
+      if (isRepetitive) continue;
+      
+      // Evitar duplicados exactos
+      const messageKey = `${user}:${lowerMessage}`;
+      if (seenMessages.has(messageKey)) continue;
+      seenMessages.add(messageKey);
+      
+      // Priorizar mensajes con contenido valioso
+      const valuableKeywords = [
+        'anime', 'manga', 'manhwa', 'recomend', 'gusta', 'favorito',
+        'visto', 'leído', 'rating', 'puntuación', 'género', 'isekai',
+        'shounen', 'romance', 'fantasía', 'acción', 'slice of life',
+        'misterio', 'horror', 'comedia', 'drama', 'aventura',
+        'recuerda', 'memoria', 'información', 'sinopsis', 'historia',
+        'personaje', 'protagonista', 'trama', 'teoría', 'explicar'
+      ];
+      
+      const hasValuableContent = valuableKeywords.some(keyword => 
+        lowerMessage.includes(keyword)
+      );
+      
+      // Incluir mensajes con contenido valioso o conversaciones largas (>30 chars)
+      if (hasValuableContent || lowerMessage.length > 30) {
+        filtered.push(msg);
+      }
+    }
+    
+    return filtered;
+  }
+
+  // Función de debug para testear el filtrado de mensajes
+  async debugMessageFiltering(): Promise<void> {
+    console.log('🔍 Analizando calidad del log de mensajes...');
+    
+    const history = await getLastMessages();
+    const recentMessages = history.slice(-50); // Solo los últimos 50 para debug
+    const botUsername = process.env.CBOX_USERNAME;
+    
+    // Contar mensajes del bot
+    const botMessages = recentMessages.filter((msg: any) => msg.user === botUsername);
+    const userMessages = recentMessages.filter((msg: any) => msg.user !== botUsername);
+    
+    console.log(`📊 Estadísticas del log:
+      - Total mensajes: ${history.length}
+      - Mensajes recientes analizados: ${recentMessages.length}
+      - Mensajes de usuarios: ${userMessages.length}
+      - Mensajes del bot: ${botMessages.length} ${botMessages.length > 0 ? '⚠️ PROBLEMA!' : '✅'}`);
+    
+    if (botMessages.length > 0) {
+      console.log('\n🚨 MENSAJES DEL BOT DETECTADOS EN EL LOG:');
+      botMessages.slice(0, 3).forEach((msg: any, index: number) => {
+        console.log(`  ${index + 1}. ${msg.user}: ${msg.message.substring(0, 60)}${msg.message.length > 60 ? '...' : ''}`);
+      });
+    }
+    
+    const filteredMessages = this.filterMessagesForSummary(recentMessages);
+    
+    console.log(`🔄 Resultado del filtrado:
+      - Mensajes antes: ${recentMessages.length}
+      - Mensajes después: ${filteredMessages.length}
+      - Porcentaje útil: ${((filteredMessages.length / recentMessages.length) * 100).toFixed(1)}%`);
+    
+    // Mostrar algunos ejemplos de mensajes filtrados
+    console.log('\n📝 Ejemplos de mensajes que PASARON el filtro:');
+    filteredMessages.slice(0, 5).forEach((msg, index) => {
+      console.log(`  ${index + 1}. ${msg.user}: ${msg.message.substring(0, 60)}${msg.message.length > 60 ? '...' : ''}`);
+    });
+    
+    // Mostrar algunos ejemplos de mensajes eliminados
+    const removedMessages = recentMessages.filter((msg: any) => 
+      !filteredMessages.some((filtered: any) => 
+        filtered.user === msg.user && filtered.message === msg.message
+      )
+    );
+    
+    console.log('\n🗑️ Ejemplos de mensajes que fueron ELIMINADOS:');
+    removedMessages.slice(0, 5).forEach((msg: any, index: number) => {
+      console.log(`  ${index + 1}. ${msg.user}: ${msg.message.substring(0, 60)}${msg.message.length > 60 ? '...' : ''}`);
+    });
   }
 
   // Método para extraer memorias de la respuesta usando el nuevo formato
@@ -356,5 +562,24 @@ NO uses SAVE_MEMORY para:
         console.log(`  Memoria ${index + 1}: "${memory}" - ${isValid ? '✅ Válida' : '❌ Rechazada'}`);
       });
     }
+  }
+
+  // Función para verificar configuración del sistema
+  static verifyConfiguration(): void {
+    const maxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "500");
+    
+    console.log("🔧 Verificando configuración del bot...");
+    console.log(`📊 MAX_LENGTH_RESPONSE: ${maxTokens} tokens`);
+    
+    if (maxTokens < 250) {
+      console.log("⚠️ ADVERTENCIA: MAX_LENGTH_RESPONSE muy bajo para resúmenes");
+      console.log("   Recomendado: mínimo 300 tokens para funcionalidad completa");
+    }
+    
+    if (!process.env.OPENAI_API_KEY) {
+      console.log("❌ ERROR: OPENAI_API_KEY no configurada");
+    }
+    
+    console.log("✅ Verificación de configuración completada");
   }
 }

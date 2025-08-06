@@ -7,12 +7,14 @@ import { sendMessage, toDomain } from "./messages";
 import {
   clearMessagesLog,
   getLastEventType,
+  getLastMessages,
   saveEventsLog,
   saveLog,
   sleep,
   cleanExistingMemories,
   migrateMemoriesToUserFormat,
   splitMessageIntoParts,
+  cleanBotMessagesFromLog,
 } from "./utils";
 
 class Bot {
@@ -55,11 +57,18 @@ class Bot {
   }
 
   public static async start() {
+    // Verificar configuración del sistema
+    Gpt.verifyConfiguration();
+    
     // Migrar memorias al nuevo formato al iniciar si es necesario
     if (Boolean(process.env.USE_MEMORY)) {
       await migrateMemoriesToUserFormat();
       await cleanExistingMemories();
     }
+    
+    // Limpiar mensajes del bot del log existente
+    const botUsername = process.env.CBOX_USERNAME!;
+    await cleanBotMessagesFromLog(botUsername);
     
     const { boxId, boxTag, iframeUrl, socketUrl } = await boxDetails(
       process.env.CBOX_URL!
@@ -102,8 +111,12 @@ class Bot {
     this.socket.on("message", async (data: WebSocket.Data) => {
       const { date, id, lvl, message, name } = toDomain(data);
 
-      if (name && message) {
+      // Solo guardar mensajes que NO sean del bot para evitar ciclos recursivos en resúmenes
+      if (name && message && name !== this.uname) {
         await saveLog(name, message);
+      } else if (name === this.uname && message) {
+        // Log cuando se excluye un mensaje del bot (solo para debugging)
+        console.log(`🚫 Mensaje del bot excluido del log: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
       }
 
       if (
@@ -245,8 +258,8 @@ class Bot {
           
           // Guardar evento de resumen y limpiar log
           await saveEventsLog("Resumen", name);
-          await clearMessagesLog();
-          console.log("Resumen completado y log limpiado");
+          const clearedCount = await clearMessagesLog();
+          console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
           
         } catch (error) {
           console.error("Error generating summary:", error);
@@ -262,6 +275,67 @@ class Bot {
           await sendMessage(errorData);
         }
         return;
+      }
+
+      // Comandos de debug especiales (solo para el creador)
+      if (name === "Leon564" && message.toLowerCase().includes("debug")) {
+        if (message.toLowerCase().includes("filter")) {
+          console.log("🔧 Ejecutando debug de filtrado de mensajes...");
+          await this.gpt.debugMessageFiltering();
+          const debugResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> Debug de filtrado ejecutado. Revisa la consola para ver los resultados. 🔍`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(debugResponse);
+          this.lastSentTime = Date.now();
+          return;
+        }
+        
+        if (message.toLowerCase().includes("log")) {
+          const history = await getLastMessages();
+          const botMessages = history.filter((msg: any) => msg.user === this.uname);
+          const userMessages = history.filter((msg: any) => msg.user !== this.uname);
+          
+          console.log(`📊 Análisis del log de mensajes:
+            - Total mensajes: ${history.length}
+            - Mensajes de usuarios: ${userMessages.length}
+            - Mensajes del bot: ${botMessages.length}
+            ${botMessages.length > 0 ? '⚠️ HAY MENSAJES DEL BOT EN EL LOG!' : '✅ No hay mensajes del bot en el log'}`);
+          
+          const debugResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> Log: ${history.length} total, ${userMessages.length} usuarios, ${botMessages.length} bot ${botMessages.length > 0 ? '⚠️' : '✅'}`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(debugResponse);
+          this.lastSentTime = Date.now();
+          return;
+        }
+        
+        if (message.toLowerCase().includes("config")) {
+          const maxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "500");
+          const debugResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> Configuración: MAX_TOKENS=${maxTokens}, MEMORY=${Boolean(process.env.USE_MEMORY)} 🔧`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(debugResponse);
+          this.lastSentTime = Date.now();
+          return;
+        }
       }
 
       // Enviar respuesta normal
