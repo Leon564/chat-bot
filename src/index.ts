@@ -119,11 +119,35 @@ class Bot {
         console.log(`🚫 Mensaje del bot excluido del log: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
       }
 
+      // Función auxiliar para verificar si el mensaje contiene el nombre exacto del bot
+      const containsExactBotName = (msg: string, botName: string): boolean => {
+        const lowerMsg = msg.toLowerCase();
+        const lowerBotName = botName.toLowerCase();
+        
+        // Buscar el nombre como palabra completa (con límites de palabra)
+        const regex = new RegExp(`\\b${lowerBotName}\\b`, 'i');
+        return regex.test(lowerMsg);
+      };
+
+      // Función auxiliar para verificar si el mensaje contiene la palabra "bot"
+      const containsBotWord = (msg: string): boolean => {
+        const lowerMsg = msg.toLowerCase();
+        // Buscar "bot" como palabra completa
+        const botRegex = /\bbot\b/i;
+        return botRegex.test(lowerMsg);
+      };
+
+      // Condiciones para responder:
+      // 1. El mensaje no debe estar vacío
+      // 2. El mensaje no debe ser del propio bot
+      // 3. El mensaje debe contener:
+      //    - La palabra "bot" (como palabra completa), O
+      //    - El nombre exacto del bot (como palabra completa), O
+      //    - Ser dirigido específicamente al bot (name === this.uname)
       if (
         !message ||
         name === this.uname ||
-        (!message.toLowerCase().includes("bot") &&
-          !message.toLowerCase().includes(this.uname.toLowerCase()))
+        (!containsBotWord(message) && !containsExactBotName(message, this.uname))
       )
         return;
 
