@@ -49,6 +49,7 @@ class Bot {
             const nextResponse = this.responseQueue.shift();
             if (nextResponse) {
               sendMessage(nextResponse);
+              this.lastSentTime = Date.now(); // Actualizar timestamp
             }
           }, Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY para partes adicionales
         }
@@ -58,7 +59,7 @@ class Bot {
 
   public static async start() {
     // Verificar configuración del sistema
-    Gpt.verifyConfiguration();
+    //Gpt.verifyConfiguration();
     
     // Migrar memorias al nuevo formato al iniciar si es necesario
     if (Boolean(process.env.USE_MEMORY)) {
@@ -227,8 +228,8 @@ class Bot {
         await sendMessage(confirmationData);
         this.lastSentTime = Date.now();
 
-        // Esperar un momento antes de empezar a generar el resumen
-        await sleep(2000);
+        // Esperar un momento antes de empezar a generar el resumen respetando RESPONSE_DELAY
+        await sleep(Number(process.env.RESPONSE_DELAY || 1000));
 
         // Generar y enviar el resumen
         try {
@@ -272,10 +273,11 @@ class Bot {
               };
 
               await sendMessage(responseData);
+              this.lastSentTime = Date.now(); // Actualizar timestamp después de cada envío
               
-              // Esperar entre partes para que se lean mejor
+              // Esperar entre partes respetando el RESPONSE_DELAY del .env
               if (i < resumenParts.length - 1) {
-                await sleep(Number(process.env.RESPONSE_DELAY || 3000));
+                await sleep(Number(process.env.RESPONSE_DELAY || 1000));
               }
             }
           }
@@ -376,6 +378,7 @@ class Bot {
         for (let i = 1; i < messagesToSend.length; i++) {
           await sleep(Number(process.env.RESPONSE_DELAY || 1000));
           await sendMessage(messagesToSend[i]);
+          this.lastSentTime = Date.now(); // Actualizar timestamp después de cada envío
         }
       }
     });

@@ -34,9 +34,11 @@ IMPORTANTE: Estás respondiendo específicamente a ${username}. Cuando menciones
 
 COMPORTAMIENTO:
 - Responde de forma natural y coherente, máximo ${process.env.MAX_LENGTH_RESPONSE} caracteres
+- Para saludos simples (hola, hi, hey), responde de forma breve y amigable
 - Evita repetir información del contexto previo
 - No menciones que eres un bot ni repitas tu nombre innecesariamente
 - Dirige tu respuesta específicamente a ${username} cuando sea relevante
+- Sé conciso: para mensajes cortos, da respuestas cortas; para preguntas complejas, da respuestas detalladas
 
 RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Tu propósito: Ayudar por órdenes de Leon564 (<@6851018|Sleepy Ash>)
@@ -45,8 +47,10 @@ RESPUESTAS ESPECIALES (solo si preguntan específicamente):
 - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
 
 DETECCIÓN DE SOLICITUD DE RESUMEN:
-Si el usuario solicita un resumen del chat de cualquier forma (ej: "resumen", "resume", "qué pasó", "de qué hablaron", "que se habló", "resúmeme", "recap", etc.), responde exactamente:
+Si el usuario solicita un resumen del chat de cualquier forma (ej: "resumen", "resume", "qué pasó", "de qué hablaron", "que se habló", "resúmeme", "recap", etc.), DEBES responder EXACTAMENTE con este formato:
 "¡Perfecto! Voy a generar un resumen del chat 📋✨ {{resumen}}"
+
+CRÍTICO: El token {{resumen}} es OBLIGATORIO y debe aparecer al final del mensaje cuando se solicite un resumen. NO omitas {{resumen}} bajo ninguna circunstancia.
 
 IMPORTANTE: La palabra {{resumen}} debe aparecer SIEMPRE en la respuesta cuando se solicite un resumen.${memoryInstructions}${this.generateMemoryExamples(username)}
 
@@ -59,6 +63,15 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
     const messages: Array<{role: "system" | "user" | "assistant", content: string}> = [
       { role: "system", content: systemPrompt }
     ];
+
+    // Agregar instrucción específica para saludos simples
+    const isSimpleGreeting = message.toLowerCase().match(/^(@\w+\s+)?(hola|hi|hey|hello|como estas|que tal|buenas|saludos)(\?|\!|\.)?$/i);
+    if (isSimpleGreeting) {
+      messages.push({
+        role: "system",
+        content: `El usuario te está saludando de forma simple. Responde de manera breve y amigable, máximo 1-2 frases cortas. Ejemplos: "¡Hola! ¿Cómo estás?" o "¡Hey! ¿En qué puedo ayudarte?"`
+      });
+    }
 
     // Add memory context if available (optimized and filtered) and enabled
     if (Boolean(process.env.USE_MEMORY) && memory && memory.length > 0) {
@@ -90,19 +103,24 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
     const payload = { messages };
 
     try {
-      // Verificar si es una solicitud de resumen y ajustar tokens si es necesario
+      // Configurar límite de tokens basado en el tipo de mensaje
+      // (isSimpleGreeting ya está definido arriba)
       const isResumenRequest = message.toLowerCase().match(/(resumen|resume|qué pasó|de qué hablaron|que se habló|resúmeme|recap)/);
-      const baseMaxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "500");
-      const maxTokens = isResumenRequest ? Math.max(baseMaxTokens, 300) : baseMaxTokens;
+      const baseMaxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "199");
       
-      if (isResumenRequest && baseMaxTokens < 300) {
-        console.log(`⚠️ MAX_LENGTH_RESPONSE (${baseMaxTokens}) muy bajo para resumen, usando ${maxTokens} tokens`);
+      let maxTokens = baseMaxTokens;
+      if (isSimpleGreeting) {
+        maxTokens = Math.min(50, baseMaxTokens); // Máximo 50 tokens para saludos
+        console.log(`🤝 Saludo simple detectado, limitando a ${maxTokens} tokens`);
+      } else if (isResumenRequest) {
+        maxTokens = Math.max(baseMaxTokens, 300); // Mínimo 300 tokens para resúmenes
+        console.log(`📋 Solicitud de resumen detectada, usando ${maxTokens} tokens`);
       }
       
       const response = await this.openai.chat.completions.create({
         messages: payload.messages as any,
         model: "gpt-3.5-turbo",
-        temperature: 0.7, // Increased for more natural responses
+        temperature: isSimpleGreeting ? 0.3 : 0.7, // Temperatura baja para saludos
         max_tokens: maxTokens,
       });
 
@@ -110,19 +128,46 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
       let content = response.choices[0].message.content || "";
       console.log(`Respuesta de OpenAI: ${content}`);
       
+      // Detectar si es una solicitud de resumen por patrones en el mensaje original
+      // (Esta variable ya está definida arriba en el try block)
+      
       // Verificar si contiene token de resumen ANTES del procesamiento
       const containsResumenToken = content.includes("{{resumen}}");
       console.log(`🔍 Contiene token {{resumen}}: ${containsResumenToken}`);
+      console.log(`🎯 Es solicitud de resumen: ${!!isResumenRequest}`);
+      
+      // Si es una solicitud de resumen pero OpenAI no incluyó el token, forzarlo
+      if (isResumenRequest && !containsResumenToken) {
+        console.log("🔧 Forzando inserción del token {{resumen}} porque OpenAI lo omitió...");
+        if (content.includes("📋✨")) {
+          content = content.replace("📋✨", "📋✨ {{resumen}}");
+        } else if (content.toLowerCase().includes("resumen del chat")) {
+          content = content.replace(/resumen del chat/i, "resumen del chat {{resumen}}");
+        } else if (content.toLowerCase().includes("generar") && content.toLowerCase().includes("resumen")) {
+          content = content.replace(/generar.*resumen/i, match => `${match} {{resumen}}`);
+        } else {
+          // Como último recurso, agregarlo al final
+          content += " {{resumen}}";
+        }
+        console.log(`✅ Token {{resumen}} insertado forzadamente. Nueva respuesta: ${content}`);
+      }
+      
+      if (containsResumenToken) {
+        console.log(`📍 Posición del token en respuesta original: ${content.indexOf("{{resumen}}")}`);
+      }
+      
+      // Actualizar la variable después de la posible inserción forzada
+      const finalContainsResumenToken = content.includes("{{resumen}}");
       
       // Procesar función de memoria si está habilitada
       if (Boolean(process.env.USE_MEMORY) && content.includes("SAVE_MEMORY(")) {
         const memoryResults = this.extractMemoryFromResponse(content, username);
         content = memoryResults.cleanContent;
         
-        // Verificar si el token se perdió durante el procesamiento de memoria
-        if (containsResumenToken && !content.includes("{{resumen}}")) {
-          console.log("⚠️ Token {{resumen}} se perdió durante el procesamiento de memoria, restaurando...");
-          // Buscar dónde debería ir el token y agregarlo
+        // Verificación adicional: el token debería estar preservado por extractMemoryFromResponse
+        if (finalContainsResumenToken && !content.includes("{{resumen}}")) {
+          console.log("⚠️ FALLO CRÍTICO: Token {{resumen}} se perdió a pesar de las protecciones, forzando restauración...");
+          // Forzar restauración como último recurso
           if (content.includes("📋✨")) {
             content = content.replace("📋✨", "📋✨ {{resumen}}");
           } else {
@@ -141,15 +186,18 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
 
       await this.saveContext({ question: message, answer: content || "", user: username });
 
-      console.log(`Respuesta generada: ${content}`);
+      console.log(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
       
       // Log adicional para debugging de resúmenes
       if (content.includes("{{resumen}}")) {
         console.log("✅ Token {{resumen}} preservado en la respuesta final");
-      } else if (message.toLowerCase().includes("resumen") || message.toLowerCase().includes("resume")) {
+        console.log(`📍 Posición final del token: ${content.indexOf("{{resumen}}")}`);
+      } else if (message.toLowerCase().includes("resumen") || message.toLowerCase().includes("resume") || message.toLowerCase().includes("recap")) {
         console.log("⚠️ Se solicitó resumen pero no se detectó token {{resumen}} en la respuesta final");
         console.log(`Mensaje original: "${message}"`);
-        console.log(`Respuesta final: "${content}"`);
+        console.log(`Respuesta final completa: "${content}"`);
+        console.log(`Contenía token originalmente: ${containsResumenToken}`);
+        console.log(`Contenía token después de procesamiento: ${finalContainsResumenToken}`);
       }
       
       return content || "No hay respuesta disponible.";
@@ -425,6 +473,9 @@ FORMATO:
     const memoriesToSave: string[] = [];
     let cleanContent = content;
 
+    // Verificar si el contenido tiene token de resumen ANTES del procesamiento
+    const hasResumenToken = content.includes("{{resumen}}");
+
     // Buscar todas las instancias de SAVE_MEMORY()
     const memoryRegex = /SAVE_MEMORY\s*\(\s*["'`](.*?)["'`]\s*\)/gi;
     let match;
@@ -438,6 +489,20 @@ FORMATO:
 
     // Limpiar el contenido removiendo todas las llamadas SAVE_MEMORY
     cleanContent = content.replace(memoryRegex, '').trim();
+    
+    // Verificar si el token de resumen se perdió durante la limpieza y restaurarlo
+    if (hasResumenToken && !cleanContent.includes("{{resumen}}")) {
+      console.log("🔧 Restaurando token {{resumen}} perdido durante el procesamiento de memoria...");
+      // Buscar una ubicación lógica para insertar el token
+      if (cleanContent.includes("📋✨")) {
+        cleanContent = cleanContent.replace("📋✨", "📋✨ {{resumen}}");
+      } else if (cleanContent.includes("resumen del chat")) {
+        cleanContent = cleanContent.replace("resumen del chat", "resumen del chat {{resumen}}");
+      } else {
+        // Como último recurso, agregarlo al final
+        cleanContent += " {{resumen}}";
+      }
+    }
     
     // Limpiar líneas vacías extra que puedan quedar
     cleanContent = cleanContent.replace(/\n\s*\n\s*\n/g, '\n\n');
