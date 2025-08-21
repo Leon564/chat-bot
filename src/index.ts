@@ -4,6 +4,7 @@ import { login } from "./login";
 import { Gpt } from "./chatGpt";
 import { boxDetails } from "./boxDetails";
 import { sendMessage, toDomain } from "./messages";
+import { MusicService } from "./musicService";
 import {
   clearMessagesLog,
   getLastEventType,
@@ -27,6 +28,7 @@ class Bot {
     private ukey: string,
     private pic: string,
     private gpt: Gpt = new Gpt(),
+    private musicService: MusicService = new MusicService(),
     private socket: WebSocket,
     private boxId: string,
     private boxTag: string,
@@ -96,6 +98,7 @@ class Bot {
       key!,
       process.env.CBOX_DEFAULT_PIC || pic || "",
       new Gpt(),
+      new MusicService(),
       new WebSocket(socketUrl!),
       boxId!,
       boxTag!,
@@ -144,20 +147,120 @@ class Bot {
       // 3. El mensaje debe contener:
       //    - La palabra "bot" (como palabra completa), O
       //    - El nombre exacto del bot (como palabra completa), O
-      //    - Ser dirigido específicamente al bot (name === this.uname)
+      //    - Ser dirigido específicamente al bot (name === this.uname), O
+      //    - Ser un comando de música (!music o solicitud natural)
+      
+      // Verificar primero si es solicitud de música
+      // Agregar validación adicional para mensaje undefined/null
+      const isMusicRequest = message ? MusicService.isMusicRequest(message) : false;
+      
       if (
         !message ||
         name === this.uname ||
-        (!containsBotWord(message) && !containsExactBotName(message, this.uname))
+        (!containsBotWord(message) && !containsExactBotName(message, this.uname) && !isMusicRequest)
       )
         return;
 
       console.log(`Mensaje recibido: ${message} de ${name} el ${date}`);
 
       const _textColor = process.env.TEXT_COLOR;
-
       const textColor = _textColor ? `^#${_textColor} ` : "";
 
+      // Verificar si es una solicitud de música ANTES de enviar a GPT
+      console.log(`🔍 Verificando si "${message}" es solicitud de música...`);
+      console.log(`🔍 Resultado detección música: ${isMusicRequest}`);
+      
+      if (isMusicRequest) {
+        console.log(`🎵 Solicitud de música detectada de ${name}: "${message}"`);
+        
+        try {
+          const query = MusicService.extractMusicQuery(message);
+          console.log(`🔍 Query extraído: "${query}"`);
+          
+          if (!query || query.trim().length < 2) {
+            const errorResponse = {
+              key: this.ukey,
+              message: `${textColor}<@${name}> ❌ No pude entender qué música quieres. Intenta con: "!music nombre de la canción" o "reproduce [nombre de la canción]"`,
+              pic: this.pic,
+              username: this.uname,
+              boxTag: this.boxTag,
+              boxId: this.boxId,
+              iframeUrl: this.iframeUrl,
+            };
+            await sendMessage(errorResponse);
+            this.lastSentTime = Date.now();
+            return;
+          }
+
+          // Enviar mensaje de confirmación
+          const confirmationResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> 🎵 Buscando y descargando "${query}"... Esto puede tomar unos momentos.`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(confirmationResponse);
+          this.lastSentTime = Date.now();
+
+          console.log(`🎵 Iniciando procesamiento de música para ${name}...`);
+          
+          // Procesar música de forma asíncrona
+          this.musicService.processMusic(query, name)
+            .then(async (result) => {
+              console.log(`✅ Música procesada exitosamente: ${result.substring(0, 100)}...`);
+              const musicResponse = {
+                key: this.ukey,
+                message: `${textColor}${result}`,
+                pic: this.pic,
+                username: this.uname,
+                boxTag: this.boxTag,
+                boxId: this.boxId,
+                iframeUrl: this.iframeUrl,
+              };
+              
+              // Esperar el RESPONSE_DELAY antes de enviar
+              await sleep(Number(process.env.RESPONSE_DELAY || 1000));
+              await sendMessage(musicResponse);
+            })
+            .catch(async (error) => {
+              console.error(`❌ Error en procesamiento de música:`, error);
+              const errorResponse = {
+                key: this.ukey,
+                message: `${textColor}<@${name}> ❌ ${error.message}`,
+                pic: this.pic,
+                username: this.uname,
+                boxTag: this.boxTag,
+                boxId: this.boxId,
+                iframeUrl: this.iframeUrl,
+              };
+              
+              await sleep(Number(process.env.RESPONSE_DELAY || 1000));
+              await sendMessage(errorResponse);
+            });
+
+          console.log(`🎵 Retornando sin procesar con GPT para mensaje: "${message}"`);
+          return; // No procesar con GPT
+        } catch (error) {
+          console.error(`❌ Error procesando solicitud de música:`, error);
+          const errorResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> ❌ Error interno procesando música. Intenta más tarde.`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(errorResponse);
+          this.lastSentTime = Date.now();
+          return;
+        }
+      }
+
+      console.log(`🤖 Enviando mensaje a GPT: "${message}"`);
       const response = await this.gpt.chat(message, this.uname, name);
 
       if (!response) return;
@@ -352,6 +455,22 @@ class Bot {
           const debugResponse = {
             key: this.ukey,
             message: `${textColor}<@${name}> Configuración: MAX_TOKENS=${maxTokens}, MEMORY=${Boolean(process.env.USE_MEMORY)} 🔧`,
+            pic: this.pic,
+            username: this.uname,
+            boxTag: this.boxTag,
+            boxId: this.boxId,
+            iframeUrl: this.iframeUrl,
+          };
+          await sendMessage(debugResponse);
+          this.lastSentTime = Date.now();
+          return;
+        }
+        
+        if (message.toLowerCase().includes("music")) {
+          const queueStatus = this.musicService.getQueueStatus();
+          const debugResponse = {
+            key: this.ukey,
+            message: `${textColor}<@${name}> Música: Procesando=${queueStatus.isProcessing}, Cola=${queueStatus.queueLength} 🎵`,
             pic: this.pic,
             username: this.uname,
             boxTag: this.boxTag,

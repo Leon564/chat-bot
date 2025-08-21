@@ -59,25 +59,37 @@ export const sendMessage = async ({
 
 export const toDomain = (data: WebSocket.Data): ToDomainResponse => {
   const splitedData = data.toString().split("\t");
-  if (splitedData.length <= 1) return {} as ToDomainResponse;
+  if (splitedData.length <= 1) {
+    return {
+      id: '',
+      date: '',
+      name: '',
+      lvl: '',
+      message: ''
+    };
+  }
 
   const [n, id, date, name, lvl, x, message, y, z, id2, w, id3] = splitedData;
   return {
-    id,
-    date,
-    name,
-    lvl,
-    message: cleanMessage(message),
+    id: id || '',
+    date: date || '',
+    name: name || '',
+    lvl: lvl || '',
+    message: cleanMessage(message) || '',
   };
 };
 
 function cleanMessage(message: string): string {
   try {
-    const text = he.decode(String(message || ""));
-
+    // Manejar casos donde message es undefined, null o no es string
+    if (!message || typeof message !== 'string') {
+      return '';
+    }
+    
+    const text = he.decode(String(message));
     return text.replace(/<[^>]*>/g, "");
   } catch (e) {
-    console.log(e);
-    return message;
+    console.log('Error cleaning message:', e);
+    return message || '';
   }
 }
