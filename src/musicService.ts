@@ -238,12 +238,13 @@ export class MusicService {
         : await this.uploadToCatbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`);
       
       // Crear mensaje con formato de audio
-      const serviceInfo = this.uploadService === 'litterbox' 
-        ? `📦 _Archivo temporal (${this.litterboxExpiry})_`
-        : `📦 _Archivo permanente_`;
+      // const serviceInfo = this.uploadService === 'litterbox' 
+      //   ? `📦 _Archivo temporal (${this.litterboxExpiry})_`
+      //   : `📦 _Archivo permanente_`;
       
-      const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_ • ${serviceInfo}`;
-      
+      //const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_ • ${serviceInfo}`;
+      const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_`;
+
       console.log(`✅ [ÉXITO] Música procesada exitosamente para ${username}`);
       resolve(finalResult);
 
