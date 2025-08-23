@@ -21,10 +21,21 @@ interface MusicRequest {
 export class MusicService {
   private isProcessing: boolean;
   private queue: MusicRequest[];
+  private uploadService: 'catbox' | 'litterbox';
+  private litterboxExpiry: string;
 
   constructor() {
     this.isProcessing = false;
     this.queue = [];
+    
+    // Configurar servicio de subida desde variables de entorno
+    this.uploadService = (process.env.UPLOAD_SERVICE as 'catbox' | 'litterbox') || 'catbox';
+    this.litterboxExpiry = process.env.LITTERBOX_EXPIRY || '1h';
+    
+    console.log(`🔧 [CONFIG] Servicio de subida: ${this.uploadService}`);
+    if (this.uploadService === 'litterbox') {
+      console.log(`🔧 [CONFIG] Expiración Litterbox: ${this.litterboxExpiry}`);
+    }
   }
 
   /**
@@ -220,12 +231,18 @@ export class MusicService {
 
       console.log(`📥 [PREPARADO] Audio MP3 preparado - Tamaño: ${mp3Buffer.length} bytes`);
 
-      // Subir a catbox.moe
-      console.log(`📤 [UPLOAD] Iniciando subida a catbox.moe...`);
-      const audioUrl = await this.uploadToCatbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`);
+      // Subir usando el servicio configurado
+      console.log(`📤 [UPLOAD] Iniciando subida a ${this.uploadService}...`);
+      const audioUrl = this.uploadService === 'litterbox' 
+        ? await this.uploadToLitterbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`)
+        : await this.uploadToCatbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`);
       
       // Crear mensaje con formato de audio
-      const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_`;
+      const serviceInfo = this.uploadService === 'litterbox' 
+        ? `📦 _Archivo temporal (${this.litterboxExpiry})_`
+        : `📦 _Archivo permanente_`;
+      
+      const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_ • ${serviceInfo}`;
       
       console.log(`✅ [ÉXITO] Música procesada exitosamente para ${username}`);
       resolve(finalResult);
@@ -235,7 +252,10 @@ export class MusicService {
       if (error instanceof Error) {
         console.error(`❌ [ERROR] Stack trace:`, error.stack);
       }
-      reject(new Error(`No se pudo procesar la música "${query}". Intenta con otro término de búsqueda.`));
+      
+      // Mensaje de error más específico según el servicio
+      const serviceText = this.uploadService === 'litterbox' ? 'Litterbox (temporal)' : 'Catbox (permanente)';
+      reject(new Error(`No se pudo procesar la música "${query}" usando ${serviceText}. Intenta con otro término de búsqueda.`));
     } finally {
       this.isProcessing = false;
       console.log(`🔄 [FINAL] Procesamiento terminado, procesando siguiente en cola...`);
@@ -441,6 +461,90 @@ export class MusicService {
     } catch (error) {
       console.error('❌ [ALT] Error en método alternativo:', error);
       throw new Error('Todos los métodos de subida fallaron');
+    }
+  }
+
+  /**
+   * Sube un archivo a litterbox.catbox.moe (temporal)
+   * @param buffer Buffer del archivo
+   * @param filename Nombre del archivo
+   * @returns URL del archivo subido
+   */
+  private async uploadToLitterbox(buffer: Buffer, filename: string): Promise<string> {
+    try {
+      console.log(`📤 [LITTERBOX] Subiendo "${filename}" a litterbox.catbox.moe...`);
+      console.log(`📤 [LITTERBOX] Buffer size: ${buffer.length} bytes`);
+      console.log(`📤 [LITTERBOX] Expiración: ${this.litterboxExpiry}`);
+      
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        throw new Error(`Buffer inválido: tipo=${typeof buffer}, longitud=${buffer?.length}, esBuffer=${Buffer.isBuffer(buffer)}`);
+      }
+      
+      const form = new FormData();
+      form.append('time', this.litterboxExpiry);
+      form.append('fileNameLength', '16'); // Longitud por defecto
+      form.append('reqtype', 'fileupload');
+      
+      // Usar el buffer directamente con filename como opciones
+      form.append('fileToUpload', buffer, {
+        filename: filename.replace(/[^a-zA-Z0-9.-]/g, '_'), // Sanitizar filename
+        contentType: 'audio/mpeg',
+        knownLength: buffer.length
+      });
+
+      console.log(`📤 [LITTERBOX] FormData headers:`, form.getHeaders());
+
+      // Añadir timeout y configuración de conexión
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout
+
+      try {
+        const response = await fetch('https://litterbox.catbox.moe/resources/internals/api.php', {
+          method: 'POST',
+          body: form,
+          headers: {
+            ...form.getHeaders(),
+            'accept': 'application/json',
+            'accept-language': 'es-419,es;q=0.9,es-ES;q=0.8,en;q=0.7,en-GB;q=0.6,en-US;q=0.5',
+            'cache-control': 'no-cache',
+            'origin': 'https://litterbox.catbox.moe',
+            'referer': 'https://litterbox.catbox.moe/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+            'x-requested-with': 'XMLHttpRequest'
+          },
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+        console.log(`📤 [LITTERBOX] Response status: ${response.status}`);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.log(`📤 [LITTERBOX] Error response text: "${errorText}"`);
+          throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
+        }
+
+        const result = await response.text();
+        console.log(`📤 [LITTERBOX] Response text: "${result}"`);
+        
+        if (result.startsWith('https://litter.catbox.moe/')) {
+          console.log(`✅ [LITTERBOX] Archivo subido exitosamente: ${result}`);
+          console.log(`⏰ [LITTERBOX] El archivo expirará en: ${this.litterboxExpiry}`);
+          return result.trim();
+        } else {
+          throw new Error(`Respuesta inesperada de litterbox.catbox.moe: ${result}`);
+        }
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        throw fetchError;
+      }
+
+    } catch (error) {
+      console.error('❌ [LITTERBOX] Error subiendo a litterbox.catbox.moe:', error);
+      
+      // Fallback a catbox si litterbox falla
+      console.log('🔄 [FALLBACK] Intentando con catbox.moe como respaldo...');
+      return await this.uploadToCatbox(buffer, filename);
     }
   }
 
