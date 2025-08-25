@@ -18,11 +18,21 @@ interface MusicRequest {
   reject: (error: Error) => void;
 }
 
+interface YouTubeCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+}
+
 export class MusicService {
   private isProcessing: boolean;
   private queue: MusicRequest[];
   private uploadService: 'catbox' | 'litterbox';
   private litterboxExpiry: string;
+  private youtubeCookies: string | null;
 
   constructor() {
     this.isProcessing = false;
@@ -35,6 +45,81 @@ export class MusicService {
     console.log(`🔧 [CONFIG] Servicio de subida: ${this.uploadService}`);
     if (this.uploadService === 'litterbox') {
       console.log(`🔧 [CONFIG] Expiración Litterbox: ${this.litterboxExpiry}`);
+    }
+    
+    // Cargar cookies de YouTube si están configuradas
+    this.youtubeCookies = this.loadYouTubeCookies();
+    if (this.youtubeCookies) {
+      console.log(`🍪 [CONFIG] Cookies de YouTube cargadas exitosamente`);
+    } else {
+      console.log(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
+    }
+  }
+
+  /**
+   * Carga las cookies de YouTube desde el archivo JSON
+   * @returns String de cookies formateado para HTTP o null si no hay cookies
+   */
+  private loadYouTubeCookies(): string | null {
+    try {
+      const cookiesPath = process.env.YOUTUBE_COOKIES_PATH;
+      
+      if (!cookiesPath) {
+        console.log(`🍪 [DEBUG] No se especificó YOUTUBE_COOKIES_PATH en el .env`);
+        return null;
+      }
+
+      // Resolver ruta relativa desde el directorio raíz del proyecto
+      const fullPath = path.resolve(cookiesPath);
+      
+      if (!fs.existsSync(fullPath)) {
+        console.log(`🍪 [DEBUG] Archivo de cookies no encontrado: ${fullPath}`);
+        return null;
+      }
+
+      console.log(`🍪 [DEBUG] Cargando cookies desde: ${fullPath}`);
+      const cookiesData = fs.readFileSync(fullPath, 'utf8');
+      
+      if (!cookiesData.trim()) {
+        console.log(`🍪 [DEBUG] Archivo de cookies vacío`);
+        return null;
+      }
+      
+      const cookies: YouTubeCookie[] = JSON.parse(cookiesData);
+
+      if (!Array.isArray(cookies) || cookies.length === 0) {
+        console.log(`🍪 [DEBUG] Archivo de cookies vacío o formato inválido`);
+        return null;
+      }
+
+      // Validar que las cookies tengan el formato correcto
+      const validCookies = cookies.filter(cookie => 
+        cookie.name && 
+        cookie.value && 
+        typeof cookie.name === 'string' && 
+        typeof cookie.value === 'string'
+      );
+
+      if (validCookies.length === 0) {
+        console.log(`🍪 [DEBUG] No se encontraron cookies válidas en el archivo`);
+        return null;
+      }
+
+      if (validCookies.length !== cookies.length) {
+        console.log(`🍪 [WARNING] Se ignoraron ${cookies.length - validCookies.length} cookies con formato inválido`);
+      }
+
+      // Convertir cookies a formato de string para HTTP headers
+      const cookieString = validCookies
+        .map(cookie => `${cookie.name}=${cookie.value}`)
+        .join('; ');
+
+      console.log(`🍪 [DEBUG] ${validCookies.length} cookies válidas cargadas exitosamente`);
+      return cookieString;
+
+    } catch (error) {
+      console.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
+      return null;
     }
   }
 
@@ -190,7 +275,16 @@ export class MusicService {
       }
 
       // Obtener información del video
-      const videoInfo = await ytdl.getInfo(video.url);
+      const getInfoOptions = this.youtubeCookies ? {
+        requestOptions: {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Cookie': this.youtubeCookies
+          }
+        }
+      } : undefined;
+      
+      const videoInfo = await ytdl.getInfo(video.url, getInfoOptions);
       console.log(`� [INFO] Video: ${videoInfo.videoDetails.title} - ${videoInfo.videoDetails.lengthSeconds}s`);
 
       // Verificar duración del video (máximo 10 minutos = 600 segundos)
@@ -211,10 +305,17 @@ export class MusicService {
         filter: 'audioonly',
         requestOptions: {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            ...(this.youtubeCookies ? { 'Cookie': this.youtubeCookies } : {})
           }
         }
       };
+
+      if (this.youtubeCookies) {
+        console.log(`🍪 [DESCARGA] Usando cookies personalizadas de YouTube`);
+      } else {
+        console.log(`🔓 [DESCARGA] Usando acceso público a YouTube`);
+      }
 
       console.log(`� [DESCARGA] Descargando audio...`);
       

@@ -1,8 +1,64 @@
 [
   {
-    "name": "cookie_name",
-    "value": "cookie_value",
+    "name": "VISITOR_INFO1_LIVE",
+    "value": "your_visitor_info_value",
     "domain": ".youtube.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": false
+  },
+  {
+    "name": "YSC", 
+    "value": "your_ysc_value",
+    "domain": ".youtube.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  },
+  {
+    "name": "LOGIN_INFO",
+    "value": "your_login_info_value",
+    "domain": ".youtube.com", 
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  },
+  {
+    "name": "SID",
+    "value": "your_sid_value",
+    "domain": ".youtube.com",
+    "path": "/", 
+    "secure": true,
+    "httpOnly": false
+  },
+  {
+    "name": "HSID",
+    "value": "your_hsid_value",
+    "domain": ".youtube.com",
+    "path": "/",
+    "secure": false,
+    "httpOnly": true
+  },
+  {
+    "name": "SSID",
+    "value": "your_ssid_value", 
+    "domain": ".youtube.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  },
+  {
+    "name": "APISID",
+    "value": "your_apisid_value",
+    "domain": ".youtube.com",
+    "path": "/",
+    "secure": false,
+    "httpOnly": false
+  },
+  {
+    "name": "SAPISID",
+    "value": "your_sapisid_value",
+    "domain": ".youtube.com", 
     "path": "/",
     "secure": true,
     "httpOnly": false

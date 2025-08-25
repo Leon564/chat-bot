@@ -6,3 +6,6 @@ context.json
 /data/events_log.json
 /data/memory.json
 /dist
+
+# YouTube cookies (contiene información sensible)
+/auth_info/youtube-cookies.json
