@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
+import he from 'he';
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -184,7 +185,9 @@ export class MusicService {
     // Si es comando directo !music
     const commandMatch = message.match(/^!music\s+(.+)/i);
     if (commandMatch) {
-      return commandMatch[1].trim();
+      const rawQuery = commandMatch[1].trim();
+      // Decodificar entidades HTML en el query extraído
+      return he.decode(rawQuery);
     }
     
     // Patrones para extraer el nombre de la canción de solicitudes naturales
@@ -210,15 +213,20 @@ export class MusicService {
     for (const pattern of patterns) {
       const match = message.match(pattern);
       if (match && match[1]) {
-        return match[1].trim();
+        const rawQuery = match[1].trim();
+        // Decodificar entidades HTML en el query extraído
+        return he.decode(rawQuery);
       }
     }
     
     // Fallback: remover menciones y palabras comunes, devolver el resto
-    return message
+    const fallbackQuery = message
       .replace(/@\w+/g, '') // Remover menciones
       .replace(/\b(reproduce|pon|música|musica|canción|cancion|busca|quiero|escuchar|la|de|el|una|un)\b/gi, '')
       .trim();
+    
+    // Decodificar entidades HTML en el fallback también
+    return he.decode(fallbackQuery);
   }
 
   /**
@@ -334,9 +342,15 @@ export class MusicService {
 
       // Subir usando el servicio configurado
       console.log(`📤 [UPLOAD] Iniciando subida a ${this.uploadService}...`);
+      
+      // Sanitizar el título del video para evitar problemas con caracteres especiales
+      const sanitizedTitle = videoInfo.videoDetails.title
+        .replace(/[<>&"']/g, '') // Remover caracteres problemáticos para HTML/URLs
+        .trim();
+      
       const audioUrl = this.uploadService === 'litterbox' 
-        ? await this.uploadToLitterbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`)
-        : await this.uploadToCatbox(mp3Buffer, `${videoInfo.videoDetails.title}.mp3`);
+        ? await this.uploadToLitterbox(mp3Buffer, `${sanitizedTitle}.mp3`)
+        : await this.uploadToCatbox(mp3Buffer, `${sanitizedTitle}.mp3`);
       
       // Crear mensaje con formato de audio
       // const serviceInfo = this.uploadService === 'litterbox' 
@@ -344,7 +358,7 @@ export class MusicService {
       //   : `📦 _Archivo permanente_`;
       
       //const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_ • ${serviceInfo}`;
-      const finalResult = `🎵 **${videoInfo.videoDetails.title}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_`;
+      const finalResult = `🎵 **${sanitizedTitle}**\n[audio]${audioUrl}[/audio]\n_Solicitado por ${username}_`;
 
       console.log(`✅ [ÉXITO] Música procesada exitosamente para ${username}`);
       resolve(finalResult);
