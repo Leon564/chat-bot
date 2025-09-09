@@ -33,12 +33,6 @@ export const sendMessage = async ({
 }: SendMessageOptions) => {
   const baseUrl = iframeUrl?.split("?")[0];
 
-  // Codificar correctamente todos los parámetros para evitar problemas con caracteres especiales
-  const encodedMessage = encodeURIComponent(message);
-  const encodedUsername = encodeURIComponent(username);
-  const encodedPic = encodeURIComponent(pic);
-  const encodedKey = encodeURIComponent(key);
-
   fetch(
     `${baseUrl}?sec=submit&boxid=${boxId || ""}&boxtag=${boxTag || ""}&_v=1063`,
     {
@@ -57,7 +51,7 @@ export const sendMessage = async ({
         Referer: "https://www4.cbox.ws/",
         "Referrer-Policy": "origin",
       },
-      body: `aj=1063&lp=2529196&pst=${encodedMessage}&key=${encodedKey}&fp=0&lid=55837&nme=${encodedUsername}&pic=${encodedPic}`,
+      body: `aj=1063&lp=2529196&pst=${message}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
       method: "POST",
     }
   );
