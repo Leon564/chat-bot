@@ -33,8 +33,16 @@ export const sendMessage = async ({
 }: SendMessageOptions) => {
   const baseUrl = iframeUrl?.split("?")[0];
 
+  // Codificar parámetros para evitar problemas con caracteres especiales como &
+  const encodedMessage = encodeURIComponent(message);
+  const encodedKey = encodeURIComponent(key);
+  const encodedPic = encodeURIComponent(pic || "");
+  const encodedUsername = encodeURIComponent(username);
+  const encodedBoxId = encodeURIComponent(boxId || "");
+  const encodedBoxTag = encodeURIComponent(boxTag || "");
+
   fetch(
-    `${baseUrl}?sec=submit&boxid=${boxId || ""}&boxtag=${boxTag || ""}&_v=1063`,
+    `${baseUrl}?sec=submit&boxid=${encodedBoxId}&boxtag=${encodedBoxTag}&_v=1063`,
     {
       headers: {
         accept: "*/*",
@@ -51,7 +59,7 @@ export const sendMessage = async ({
         Referer: "https://www4.cbox.ws/",
         "Referrer-Policy": "origin",
       },
-      body: `aj=1063&lp=2529196&pst=${message}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
+      body: `aj=1063&lp=2529196&pst=${encodedMessage}&key=${encodedKey}&fp=0&lid=55837&nme=${encodedUsername}&pic=${encodedPic}`,
       method: "POST",
     }
   );
@@ -86,8 +94,13 @@ function cleanMessage(message: string): string {
       return '';
     }
     
-    const text = he.decode(String(message));
-    return text.replace(/<[^>]*>/g, "");
+    // Primero remover tags HTML
+    let text = message.replace(/<[^>]*>/g, "");
+    
+    // Luego decodificar entidades HTML (&amp; -> &, &lt; -> <, etc.)
+    text = he.decode(text);
+    
+    return text;
   } catch (e) {
     console.log('Error cleaning message:', e);
     return message || '';

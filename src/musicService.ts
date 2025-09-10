@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
+import he from 'he';
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -135,7 +136,9 @@ export class MusicService {
       return false;
     }
     
-    const lowerMessage = message.toLowerCase();
+    // Decodificar entidades HTML antes de procesar
+    const decodedMessage = he.decode(message);
+    const lowerMessage = decodedMessage.toLowerCase();
     
     // Detectar comando directo !music
     if (lowerMessage.match(/^!music\s+.+/)) {
@@ -179,10 +182,12 @@ export class MusicService {
       return '';
     }
     
-    const lowerMessage = message.toLowerCase();
+    // Decodificar entidades HTML antes de procesar
+    const decodedMessage = he.decode(message);
+    const lowerMessage = decodedMessage.toLowerCase();
     
     // Si es comando directo !music
-    const commandMatch = message.match(/^!music\s+(.+)/i);
+    const commandMatch = decodedMessage.match(/^!music\s+(.+)/i);
     if (commandMatch) {
       return commandMatch[1].trim();
     }
@@ -208,14 +213,14 @@ export class MusicService {
     ];
     
     for (const pattern of patterns) {
-      const match = message.match(pattern);
+      const match = decodedMessage.match(pattern);
       if (match && match[1]) {
         return match[1].trim();
       }
     }
     
     // Fallback: remover menciones y palabras comunes, devolver el resto
-    return message
+    return decodedMessage
       .replace(/@\w+/g, '') // Remover menciones
       .replace(/\b(reproduce|pon|música|musica|canción|cancion|busca|quiero|escuchar|la|de|el|una|un)\b/gi, '')
       .trim();
