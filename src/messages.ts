@@ -78,10 +78,11 @@ export const toDomain = (data: WebSocket.Data): ToDomainResponse => {
   }
 
   const [n, id, date, name, lvl, x, message, y, z, id2, w, id3] = splitedData;
+
   return {
     id: id || '',
     date: date || '',
-    name: name || '',
+    name: cleanName(name) || '',
     lvl: lvl || '',
     message: cleanMessage(message) || '',
   };
@@ -104,5 +105,28 @@ function cleanMessage(message: string): string {
   } catch (e) {
     console.log('Error cleaning message:', e);
     return message || '';
+  }
+}
+
+function cleanName(name: string): string {
+  try {
+    // Manejar casos donde name es undefined, null o no es string
+    if (!name || typeof name !== 'string') {
+      return '';
+    }
+    
+    // Primero decodificar entidades HTML (&lt; -> <, &gt; -> >, &quot; -> ", etc.)
+    let cleanedName = he.decode(name);
+    
+    // Luego remover tags HTML para extraer solo el texto del nombre
+    cleanedName = cleanedName.replace(/<[^>]*>/g, "");
+    
+    // Limpiar espacios extra
+    cleanedName = cleanedName.trim();
+    
+    return cleanedName;
+  } catch (e) {
+    console.log('Error cleaning name:', e);
+    return name || '';
   }
 }

@@ -1,5 +1,33 @@
 import path from "path";
 import fs from "fs";
+import he from "he";
+
+/**
+ * Limpia un mensaje removiendo etiquetas HTML y decodificando entidades
+ * @param message - Mensaje a limpiar
+ * @returns Mensaje limpio sin HTML
+ */
+const cleanHtmlFromMessage = (message: string): string => {
+  try {
+    if (!message || typeof message !== 'string') {
+      return '';
+    }
+    
+    // Primero decodificar entidades HTML (&amp; -> &, &lt; -> <, etc.)
+    let cleanMessage = he.decode(message);
+    
+    // Luego remover todas las etiquetas HTML
+    cleanMessage = cleanMessage.replace(/<[^>]*>/g, "");
+    
+    // Limpiar espacios extra y caracteres de control
+    cleanMessage = cleanMessage.trim().replace(/\s+/g, ' ');
+    
+    return cleanMessage;
+  } catch (e) {
+    console.log('Error cleaning HTML from message:', e);
+    return message || '';
+  }
+};
 
 /**
  * Divide un texto en múltiples partes respetando el límite de caracteres y sin cortar palabras
@@ -109,7 +137,12 @@ export const saveLog = async (user: string, message: string) => {
   const messagesLog = fs.existsSync(filePath)
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
     : [];
-  messagesLog.push({ user, message });
+  
+  // Limpiar HTML tanto del usuario como del mensaje
+  const cleanUser = cleanHtmlFromMessage(user);
+  const cleanMessage = cleanHtmlFromMessage(message);
+  
+  messagesLog.push({ user: cleanUser, message: cleanMessage });
   fs.writeFileSync(filePath, JSON.stringify(messagesLog.slice(-200)));
 };
 
@@ -131,7 +164,11 @@ export const saveEventsLog = async (event: string, user: string) => {
   const eventsLog = fs.existsSync(filePath)
     ? JSON.parse(fs.readFileSync(filePath, "utf-8"))
     : [];
-  eventsLog.push({ event, user, date: new Date().toISOString() });
+  
+  // Limpiar HTML del usuario
+  const cleanUser = cleanHtmlFromMessage(user);
+  
+  eventsLog.push({ event, user: cleanUser, date: new Date().toISOString() });
   fs.writeFileSync(filePath, JSON.stringify(eventsLog.slice(-200)));
 };
 
@@ -173,24 +210,26 @@ export const saveMemory = async (memory: string, username?: string) => {
   if (!memoryData.global) memoryData.global = [];
   if (!memoryData.users) memoryData.users = {};
   
-  const cleanMemory = memory.trim();
+  // Limpiar HTML del contenido de memoria y del username
+  const cleanMemory = cleanHtmlFromMessage(memory.trim());
+  const cleanUsername = username ? cleanHtmlFromMessage(username) : undefined;
   const timestamp = new Date().toISOString();
   
   // Crear objeto de memoria con metadata
   const memoryEntry = {
     content: cleanMemory,
     timestamp,
-    user: username || 'unknown'
+    user: cleanUsername || 'unknown'
   };
   
-  if (username) {
+  if (cleanUsername) {
     // Memoria específica del usuario
-    if (!memoryData.users[username]) {
-      memoryData.users[username] = [];
+    if (!memoryData.users[cleanUsername]) {
+      memoryData.users[cleanUsername] = [];
     }
     
     // Evitar duplicados para este usuario específico
-    const userMemories = memoryData.users[username];
+    const userMemories = memoryData.users[cleanUsername];
     const isDuplicate = userMemories.some((existingMemory: any) => {
       const similarity = calculateSimilarity(
         cleanMemory.toLowerCase(), 
@@ -200,9 +239,9 @@ export const saveMemory = async (memory: string, username?: string) => {
     });
     
     if (!isDuplicate) {
-      memoryData.users[username].push(memoryEntry);
+      memoryData.users[cleanUsername].push(memoryEntry);
       // Mantener solo las últimas 30 memorias por usuario
-      memoryData.users[username] = memoryData.users[username].slice(-30);
+      memoryData.users[cleanUsername] = memoryData.users[cleanUsername].slice(-30);
     }
   } else {
     // Memoria global
@@ -237,11 +276,14 @@ export const getMemory = async (username?: string): Promise<string[]> => {
   if (!memoryData.global) memoryData.global = [];
   if (!memoryData.users) memoryData.users = {};
   
+  // Limpiar HTML del username si existe
+  const cleanUsername = username ? cleanHtmlFromMessage(username) : undefined;
+  
   let relevantMemories: any[] = [];
   
-  if (username && memoryData.users[username]) {
+  if (cleanUsername && memoryData.users[cleanUsername]) {
     // Obtener memorias específicas del usuario
-    const userMemories = memoryData.users[username];
+    const userMemories = memoryData.users[cleanUsername];
     relevantMemories = [...userMemories];
     
     // Agregar algunas memorias globales relevantes si hay espacio
@@ -257,7 +299,7 @@ export const getMemory = async (username?: string): Promise<string[]> => {
   
   // Categorizar y filtrar las memorias
   const memoryContents = relevantMemories.map(m => m.content);
-  const categorizedMemories = categorizeMemoriesByUser(memoryContents, username);
+  const categorizedMemories = categorizeMemoriesByUser(memoryContents, cleanUsername);
   
   // Seleccionar las más importantes (máximo 5 elementos)
   return selectMostRelevantMemoriesForUser(categorizedMemories, 5);
@@ -388,7 +430,8 @@ const categorizeMemoriesByUser = (memories: string[], username?: string): {
   
   memories.forEach(memory => {
     const lowerMemory = memory.toLowerCase();
-    const userMention = username ? lowerMemory.includes(username.toLowerCase()) : false;
+    const cleanUsername = username ? cleanHtmlFromMessage(username) : undefined;
+    const userMention = cleanUsername ? lowerMemory.includes(cleanUsername.toLowerCase()) : false;
     
     if (lowerMemory.includes('le gusta') || lowerMemory.includes('favorito') || lowerMemory.includes('prefiere')) {
       categories.userPreferences.push(memory);
@@ -586,9 +629,12 @@ export const getUserMemories = async (username: string): Promise<any[]> => {
   
   const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
   
-  if (!memoryData.users || !memoryData.users[username]) return [];
+  // Limpiar HTML del username
+  const cleanUsername = cleanHtmlFromMessage(username);
   
-  return memoryData.users[username];
+  if (!memoryData.users || !memoryData.users[cleanUsername]) return [];
+  
+  return memoryData.users[cleanUsername];
 };
 
 // Limpiar memorias de un usuario específico
@@ -600,8 +646,11 @@ export const clearUserMemories = async (username: string): Promise<void> => {
   
   const memoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
   
-  if (memoryData.users && memoryData.users[username]) {
-    delete memoryData.users[username];
+  // Limpiar HTML del username
+  const cleanUsername = cleanHtmlFromMessage(username);
+  
+  if (memoryData.users && memoryData.users[cleanUsername]) {
+    delete memoryData.users[cleanUsername];
     fs.writeFileSync(filePath, JSON.stringify(memoryData, null, 2));
   }
 };
@@ -699,7 +748,11 @@ export const cleanBotMessagesFromLog = async (botUsername: string) => {
     : [];
   
   const originalCount = messagesLog.length;
-  const cleanedLog = messagesLog.filter((msg: any) => msg.user !== botUsername);
+  const cleanBotUsername = cleanHtmlFromMessage(botUsername);
+  const cleanedLog = messagesLog.filter((msg: any) => {
+    const cleanMsgUser = cleanHtmlFromMessage(msg.user || '');
+    return cleanMsgUser !== cleanBotUsername;
+  });
   const removedCount = originalCount - cleanedLog.length;
   
   if (removedCount > 0) {
