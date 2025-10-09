@@ -114,7 +114,7 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
     try {
       // Configurar límite de tokens basado en el tipo de mensaje
       // (isSimpleGreeting ya está definido arriba)
-      const isResumenRequest = message.toLowerCase().match(/(resumen|resume|qué pasó|de qué hablaron|que se habló|resúmeme|recap)/);
+      const isResumenRequest = message.toLowerCase().match(/(resumen|resume|qué pasó en el chat|de qué hablaron|que se habló|resúmeme|recap)/);
       const baseMaxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "199");
       
       let maxTokens = baseMaxTokens;
@@ -152,7 +152,7 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
           content = content.replace("📋✨", "📋✨ {{resumen}}");
         } else if (content.toLowerCase().includes("resumen del chat")) {
           content = content.replace(/resumen del chat/i, "resumen del chat {{resumen}}");
-        } else if (content.toLowerCase().includes("generar") && content.toLowerCase().includes("resumen")) {
+        } else if (content.toLowerCase().includes("generar resumen") && content.toLowerCase().includes("resumen")) {
           content = content.replace(/generar.*resumen/i, match => `${match} {{resumen}}`);
         } else {
           // Como último recurso, agregarlo al final
