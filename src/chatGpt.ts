@@ -74,7 +74,7 @@ Sé conciso y relevante en tus respuestas dirigidas a ${username}.`;
     ];
 
     // Agregar instrucción específica para saludos simples
-    const isSimpleGreeting = message.toLowerCase().match(/^(@\w+\s+)?(hola|hi|hey|hello|como estas|que tal|buenas|saludos)(\?|\!|\.)?$/i);
+    const isSimpleGreeting = message.toLowerCase().match(/^(@\w+\s+)?(hola|hi|hey|hello|como estas|que tal|buenas|saludos|bot)(\?|\!|\.)?$/i);
     if (isSimpleGreeting) {
       messages.push({
         role: "system",
