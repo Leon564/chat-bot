@@ -22,6 +22,8 @@ class Bot {
   private responseQueue: any[] = [];
   private lastSentTime: number =
     Date.now() - Number(process.env.RESPONSE_DELAY || 20500);
+  private lastLoginTime: number = Date.now();
+  private readonly SESSION_DURATION = 60 * 60 * 1000; // 1 hora en milisegundos
 
   constructor(
     private uname: string,
@@ -41,17 +43,15 @@ class Bot {
           Number(process.env.RESPONSE_DELAY || 20500)
       ) {
         const response = this.responseQueue.shift();
-        sendMessage(response);
-        this.lastSentTime = Date.now();
+        this.sendMessageWithSessionCheck(response);
         
         // Si hay más respuestas en la cola del mismo tipo (partes múltiples), 
         // procesarlas con un delay menor
         if (this.responseQueue.length > 0) {
-          setTimeout(() => {
+          setTimeout(async () => {
             const nextResponse = this.responseQueue.shift();
             if (nextResponse) {
-              sendMessage(nextResponse);
-              this.lastSentTime = Date.now(); // Actualizar timestamp
+              await this.sendMessageWithSessionCheck(nextResponse);
             }
           }, Number(process.env.RESPONSE_DELAY || 1000)); // Usar RESPONSE_DELAY para partes adicionales
         }
@@ -93,7 +93,7 @@ class Bot {
     console.log(`starting bot as ${nme}`);
     console.log(`Memory system: ${Boolean(process.env.USE_MEMORY) ? 'ENABLED' : 'DISABLED'}`);
 
-    new Bot(
+    const bot = new Bot(
       nme || process.env.CBOX_USERNAME!,
       key!,
       process.env.CBOX_DEFAULT_PIC || pic || "",
@@ -103,7 +103,81 @@ class Bot {
       boxId!,
       boxTag!,
       iframeUrl!
-    ).handleEvents();
+    );
+    
+    // Establecer el timestamp del login inicial
+    bot.lastLoginTime = Date.now();
+    
+    bot.handleEvents();
+  }
+
+  // Método para renovar la sesión cuando sea necesario
+  private async renewSessionIfNeeded(): Promise<boolean> {
+    const currentTime = Date.now();
+    const timeSinceLastLogin = currentTime - this.lastLoginTime;
+    
+    // Si ha pasado más de 1 hora desde el último login, renovar la sesión
+    if (timeSinceLastLogin > this.SESSION_DURATION) {
+      console.log(`🔄 Renovando sesión... (${Math.round(timeSinceLastLogin / (60 * 1000))} minutos desde último login)`);
+      
+      try {
+        const dataLogin = await login({
+          boxId: this.boxId,
+          boxTag: this.boxTag,
+          iframeUrl: this.iframeUrl,
+          password: process.env.CBOX_PASSWORD!,
+          username: process.env.CBOX_USERNAME!,
+        });
+        
+        if (dataLogin.error) {
+          console.error("❌ Error al renovar sesión:", dataLogin.error);
+          return false;
+        }
+        
+        const { nme, key, pic } = dataLogin.udata;
+        
+        // Actualizar datos de sesión
+        this.uname = nme || process.env.CBOX_USERNAME!;
+        this.ukey = key!;
+        this.pic = process.env.CBOX_DEFAULT_PIC || pic || "";
+        this.lastLoginTime = currentTime;
+        
+        console.log(`✅ Sesión renovada exitosamente para ${this.uname}`);
+        return true;
+      } catch (error) {
+        console.error("❌ Error inesperado al renovar sesión:", error);
+        return false;
+      }
+    }
+    
+    return true; // No necesita renovación
+  }
+
+  // Método auxiliar para enviar mensaje con renovación de sesión automática
+  private async sendMessageWithSessionCheck(messageData: any): Promise<boolean> {
+    // Verificar y renovar sesión si es necesario
+    const sessionValid = await this.renewSessionIfNeeded();
+    if (!sessionValid) {
+      console.error("❌ No se pudo renovar la sesión, mensaje no enviado");
+      return false;
+    }
+    
+    // Actualizar datos del mensaje con la sesión actual
+    const updatedMessageData = {
+      ...messageData,
+      key: this.ukey,
+      username: this.uname,
+      pic: this.pic,
+    };
+    
+    try {
+      await sendMessage(updatedMessageData);
+      this.lastSentTime = Date.now();
+      return true;
+    } catch (error) {
+      console.error("❌ Error al enviar mensaje:", error);
+      return false;
+    }
   }
 
   async handleEvents() {
@@ -179,31 +253,23 @@ class Bot {
           
           if (!query || query.trim().length < 2) {
             const errorResponse = {
-              key: this.ukey,
               message: `${textColor}<@${name}> ❌ No pude entender qué música quieres. Intenta con: "!music nombre de la canción" o "reproduce [nombre de la canción]"`,
-              pic: this.pic,
-              username: this.uname,
               boxTag: this.boxTag,
               boxId: this.boxId,
               iframeUrl: this.iframeUrl,
             };
-            await sendMessage(errorResponse);
-            this.lastSentTime = Date.now();
+            await this.sendMessageWithSessionCheck(errorResponse);
             return;
           }
 
           // Enviar mensaje de confirmación
           const confirmationResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> 🎵 Buscando y descargando "${query}"... Esto puede tomar unos momentos.`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(confirmationResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(confirmationResponse);
 
           console.log(`🎵 Iniciando procesamiento de música para ${name}...`);
           
@@ -212,10 +278,7 @@ class Bot {
             .then(async (result) => {
               console.log(`✅ Música procesada exitosamente: ${result.substring(0, 100)}...`);
               const musicResponse = {
-                key: this.ukey,
                 message: `${textColor}${result}`,
-                pic: this.pic,
-                username: this.uname,
                 boxTag: this.boxTag,
                 boxId: this.boxId,
                 iframeUrl: this.iframeUrl,
@@ -223,22 +286,19 @@ class Bot {
               
               // Esperar el RESPONSE_DELAY antes de enviar
               await sleep(Number(process.env.RESPONSE_DELAY || 1000));
-              await sendMessage(musicResponse);
+              await this.sendMessageWithSessionCheck(musicResponse);
             })
             .catch(async (error) => {
               console.error(`❌ Error en procesamiento de música:`, error);
               const errorResponse = {
-                key: this.ukey,
                 message: `${textColor}<@${name}> ❌ ${error.message}`,
-                pic: this.pic,
-                username: this.uname,
                 boxTag: this.boxTag,
                 boxId: this.boxId,
                 iframeUrl: this.iframeUrl,
               };
               
               await sleep(Number(process.env.RESPONSE_DELAY || 1000));
-              await sendMessage(errorResponse);
+              await this.sendMessageWithSessionCheck(errorResponse);
             });
 
           console.log(`🎵 Retornando sin procesar con GPT para mensaje: "${message}"`);
@@ -246,16 +306,12 @@ class Bot {
         } catch (error) {
           console.error(`❌ Error procesando solicitud de música:`, error);
           const errorResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> ❌ Error interno procesando música. Intenta más tarde.`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(errorResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(errorResponse);
           return;
         }
       }
@@ -271,9 +327,6 @@ class Bot {
 
       // Crear los datos base para el mensaje
       const baseMessageData = {
-        key: this.ukey,
-        pic: this.pic,
-        username: this.uname,
         boxTag: this.boxTag,
         boxId: this.boxId,
         iframeUrl: this.iframeUrl,
@@ -304,32 +357,24 @@ class Bot {
       if (response.includes("{{resumen}}")) {
         if (lastResumenEvent.minutesLeft < 10) {
           const responseData = {
-            key: this.ukey,
             message: `${textColor}<@${name}> Puedes leer el resumen anterior y esperar 10 minutos para poder generar uno nuevo. 🙂`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(responseData);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(responseData);
           return;
         }
 
         // Enviar mensaje de confirmación primero (sin {{resumen}})
         const confirmationMessage = response.replace("{{resumen}}", "").trim();
         const confirmationData = {
-          key: this.ukey,
           message: `${textColor}<@${name}> ${confirmationMessage}`,
-          pic: this.pic,
-          username: this.uname,
           boxTag: this.boxTag,
           boxId: this.boxId,
           iframeUrl: this.iframeUrl,
         };
-        await sendMessage(confirmationData);
-        this.lastSentTime = Date.now();
+        await this.sendMessageWithSessionCheck(confirmationData);
 
         // Esperar un momento antes de empezar a generar el resumen respetando RESPONSE_DELAY
         await sleep(Number(process.env.RESPONSE_DELAY || 1000));
@@ -366,17 +411,13 @@ class Bot {
               }
               
               const responseData = {
-                key: this.ukey,
                 message: `${textColor}${messagePrefix}${part}${messageSuffix}`,
-                pic: this.pic,
-                username: this.uname,
                 boxTag: this.boxTag,
                 boxId: this.boxId,
                 iframeUrl: this.iframeUrl,
               };
 
-              await sendMessage(responseData);
-              this.lastSentTime = Date.now(); // Actualizar timestamp después de cada envío
+              await this.sendMessageWithSessionCheck(responseData);
               
               // Esperar entre partes respetando el RESPONSE_DELAY del .env
               if (i < resumenParts.length - 1) {
@@ -393,15 +434,12 @@ class Bot {
         } catch (error) {
           console.error("Error generating summary:", error);
           const errorData = {
-            key: this.ukey,
             message: `${textColor}❌ Error al generar el resumen. Inténtalo más tarde.`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(errorData);
+          await this.sendMessageWithSessionCheck(errorData);
         }
         return;
       }
@@ -412,16 +450,12 @@ class Bot {
           console.log("🔧 Ejecutando debug de filtrado de mensajes...");
           await this.gpt.debugMessageFiltering();
           const debugResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> Debug de filtrado ejecutado. Revisa la consola para ver los resultados. 🔍`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(debugResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(debugResponse);
           return;
         }
         
@@ -437,48 +471,36 @@ class Bot {
             ${botMessages.length > 0 ? '⚠️ HAY MENSAJES DEL BOT EN EL LOG!' : '✅ No hay mensajes del bot en el log'}`);
           
           const debugResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> Log: ${history.length} total, ${userMessages.length} usuarios, ${botMessages.length} bot ${botMessages.length > 0 ? '⚠️' : '✅'}`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(debugResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(debugResponse);
           return;
         }
         
         if (message.toLowerCase().includes("config")) {
           const maxTokens = parseInt(process.env.MAX_LENGTH_RESPONSE || "500");
           const debugResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> Configuración: MAX_TOKENS=${maxTokens}, MEMORY=${Boolean(process.env.USE_MEMORY)} 🔧`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(debugResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(debugResponse);
           return;
         }
         
         if (message.toLowerCase().includes("music")) {
           const queueStatus = this.musicService.getQueueStatus();
           const debugResponse = {
-            key: this.ukey,
             message: `${textColor}<@${name}> Música: Procesando=${queueStatus.isProcessing}, Cola=${queueStatus.queueLength} 🎵`,
-            pic: this.pic,
-            username: this.uname,
             boxTag: this.boxTag,
             boxId: this.boxId,
             iframeUrl: this.iframeUrl,
           };
-          await sendMessage(debugResponse);
-          this.lastSentTime = Date.now();
+          await this.sendMessageWithSessionCheck(debugResponse);
           return;
         }
       }
@@ -486,18 +508,15 @@ class Bot {
       // Enviar respuesta normal
       if (messagesToSend.length === 1) {
         // Mensaje único, enviar directamente
-        await sendMessage(messagesToSend[0]);
-        this.lastSentTime = Date.now();
+        await this.sendMessageWithSessionCheck(messagesToSend[0]);
       } else {
         // Mensajes múltiples, enviar con delay
-        await sendMessage(messagesToSend[0]);
-        this.lastSentTime = Date.now();
+        await this.sendMessageWithSessionCheck(messagesToSend[0]);
         
         // Enviar las partes restantes con delay
         for (let i = 1; i < messagesToSend.length; i++) {
           await sleep(Number(process.env.RESPONSE_DELAY || 1000));
-          await sendMessage(messagesToSend[i]);
-          this.lastSentTime = Date.now(); // Actualizar timestamp después de cada envío
+          await this.sendMessageWithSessionCheck(messagesToSend[i]);
         }
       }
     });
