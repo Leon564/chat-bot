@@ -137,12 +137,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async handleMessage(data: WebSocket.Data): Promise<void> {
     const { date, id, lvl, message, name } = this.messagesService.toDomain(data);
 
+    // Debug: mostrar nombre limpio vs nombre del bot
+    console.log(`🔍 Comparando nombres: "${name}" vs "${this.session.uname}"`);
+
     // Solo guardar mensajes que NO sean del bot para evitar ciclos recursivos en resúmenes
     if (name && message && name !== this.session.uname) {
       await this.loggingService.saveLog(name, message);
     } else if (name === this.session.uname && message) {
       // Log cuando se excluye un mensaje del bot (solo para debugging)
       console.log(`🚫 Mensaje del bot excluido del log: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
+      // CRÍTICO: No procesar mensajes del propio bot
+      return;
     }
 
     // Función auxiliar para verificar si el mensaje contiene el nombre exacto del bot
@@ -322,12 +327,29 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     };
 
     // Crear las partes del mensaje con el formato correcto
-    const messagesToSend = messageParts.map((part, index) => ({
-      ...baseMessageData,
-      message: index === 0 
-        ? `${colorPrefix}<@${name}> ${part}` // Primera parte con mención
-        : `${colorPrefix}${part}`, // Partes siguientes sin mención
-    }));
+    const messagesToSend = messageParts.map((part, index) => {
+      let formattedMessage;
+      if (index === 0) {
+        // Primera parte con mención
+        formattedMessage = `${colorPrefix}<@${name}> ${part}`;
+      } else {
+        // Partes siguientes sin mención
+        formattedMessage = `${colorPrefix}${part}`;
+      }
+      
+      return {
+        ...baseMessageData,
+        message: formattedMessage,
+      };
+    }).filter(msgData => {
+      // Filtrar mensajes problemáticos antes de enviar
+      const msg = msgData.message.trim();
+      if (!msg || msg === colorPrefix || msg.match(/^[^#]*<@[^>]*>\s*$/)) {
+        console.log('🚫 Mensaje problemático filtrado:', msg);
+        return false;
+      }
+      return true;
+    });
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 20500;
     
@@ -535,6 +557,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   // Método auxiliar para enviar mensaje con renovación de sesión automática
   private async sendMessageWithSessionCheck(messageData: any): Promise<boolean> {
+    // Validar el mensaje antes de enviar
+    if (!this.isValidMessage(messageData.message)) {
+      console.log('🚫 Mensaje inválido no enviado:', messageData.message);
+      return false;
+    }
+
     // Verificar y renovar sesión si es necesario
     const sessionValid = await this.renewSessionIfNeeded();
     if (!sessionValid) {
@@ -558,5 +586,31 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       console.error('❌ Error al enviar mensaje:', error);
       return false;
     }
+  }
+
+  // Método para validar que un mensaje es válido antes de enviarlo
+  private isValidMessage(message: string): boolean {
+    if (!message || message.trim().length === 0) {
+      return false;
+    }
+
+    const cleanMessage = message.trim();
+    
+    // Filtrar mensajes que solo contengan menciones incompletas
+    if (cleanMessage === '<@' || cleanMessage.match(/^<@\s*>?$/)) {
+      return false;
+    }
+
+    // Filtrar mensajes que solo contengan menciones vacías (con o sin color)
+    if (cleanMessage.match(/^(\^#[a-fA-F0-9]+\s*)?<@[^>]*>\s*$/)) {
+      return false;
+    }
+
+    // Filtrar mensajes que solo contengan prefijo de color sin contenido
+    if (cleanMessage.match(/^\^#[a-fA-F0-9]+\s*$/)) {
+      return false;
+    }
+
+    return true;
   }
 }

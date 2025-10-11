@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SendMessageOptions, MessageData } from '../../common/interfaces';
 import { UtilsService } from '../../common/utils/utils.service';
@@ -22,6 +22,26 @@ export class MessagesService {
     boxTag,
     iframeUrl,
   }: SendMessageOptions): Promise<void> {
+    // Validar que el mensaje no esté vacío y no sea solo una mención incompleta
+    if (!message || message.trim().length === 0) {
+      console.log('🚫 Mensaje vacío no enviado');
+      return;
+    }
+
+    // Filtrar mensajes que solo contengan menciones incompletas o vacías
+    const cleanMessage = message.trim();
+    if (cleanMessage === '<@' || cleanMessage.match(/^<@\s*>?$/)) {
+      console.log('🚫 Mensaje con mención incompleta no enviado:', cleanMessage);
+      return;
+    }
+
+    // Filtrar mensajes que solo contengan menciones sin contenido útil
+    const mentionOnlyPattern = /^<@[^>]*>\s*$/;
+    if (mentionOnlyPattern.test(cleanMessage)) {
+      console.log('🚫 Mensaje con solo mención vacía no enviado:', cleanMessage);
+      return;
+    }
+    console.log('Enviando mensaje:', cleanMessage);
     const baseUrl = iframeUrl?.split('?')[0];
     
     try {
@@ -70,7 +90,7 @@ export class MessagesService {
     return {
       id,
       date,
-      name,
+      name: this.cleanMessage(name), // Limpiar HTML del nombre también
       lvl,
       message: this.cleanMessage(message),
     };
