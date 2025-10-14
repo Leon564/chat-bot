@@ -269,7 +269,8 @@ export class MusicService {
         fs.mkdirSync(tempDir, { recursive: true });
       }
 
-      const filename = `music_${Date.now()}_${username}.mp3`;
+      const sanitizedUsername = username.replace(/[^\w\-_.]/g, '').substring(0, 20) || 'user';
+      const filename = `music_${Date.now()}_${sanitizedUsername}.mp3`;
       const outputPath = path.join(tempDir, filename);
 
       await this.convertToMp3(audioStream, outputPath);
