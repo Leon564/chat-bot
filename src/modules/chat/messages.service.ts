@@ -63,10 +63,7 @@ export class MessagesService {
             Referer: 'https://www4.cbox.ws/',
             'Referrer-Policy': 'origin',
           },
-          body: `aj=1063&lp=2529196&pst=${message?.substring(
-            0,
-            300
-          )}&key=${key}&fp=0&lid=55837&nme=${username}&pic=${pic}`,
+          body: `aj=1063&lp=2529196&pst=${encodeURIComponent(message)}&key=${key}&fp=0&lid=55837&nme=${encodeURIComponent(username)}&pic=${pic}`,
           method: 'POST',
         }
       );
