@@ -265,10 +265,18 @@ export class MusicService {
           };
 
           // Configuración anti-detección más robusta
-          if (this.youtubeCookies) {
-            ytdlOptions.agent = this.createCustomAgent();
-            ytdlOptions.jar = this.youtubeCookies;
-            console.log(`🍪 [YTDL] Usando cookies y agente personalizado en intento ${attempt}`);
+          if (this.youtubeCookies && Array.isArray(this.youtubeCookies)) {
+            try {
+              ytdlOptions.agent = this.createCustomAgent();
+              ytdlOptions.cookies = this.youtubeCookies;
+              console.log(`🍪 [YTDL] Usando ${this.youtubeCookies.length} cookies y agente personalizado en intento ${attempt}`);
+            } catch (cookieError) {
+              console.error(`🍪 [ERROR] Error configurando cookies en intento ${attempt}:`, cookieError);
+              // Continuar sin cookies si hay error
+              delete ytdlOptions.cookies;
+            }
+          } else {
+            console.log(`🍪 [YTDL] Sin cookies válidas - usando acceso público en intento ${attempt}`);
           }
 
           // Headers más realistas para evitar detección de bot
@@ -311,17 +319,25 @@ export class MusicService {
             }
           }
 
-          // Para el último intento, usar configuración más básica pero con delay
+            // Para el último intento, usar configuración más básica pero con delay
           if (attempt === 3) {
-            console.log(`🔄 [DOWNLOAD] Intento final con delay anti-detección`);
+            console.log(`🔄 [DOWNLOAD] Intento final con delay anti-detección y sin cookies`);
             delete ytdlOptions.filter;
+            delete ytdlOptions.cookies; // Remover cookies para el último intento
+            delete ytdlOptions.agent;
             ytdlOptions.quality = 'lowest';
             
             // Delay adicional para parecer más humano
             await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-
-          // Obtener el stream
+          }          // Obtener el stream
+          console.log(`🔗 [YTDL] Configuración final para intento ${attempt}:`, {
+            quality: ytdlOptions.quality,
+            filter: ytdlOptions.filter,
+            hasCookies: !!ytdlOptions.cookies,
+            hasAgent: !!ytdlOptions.agent,
+            cookieCount: ytdlOptions.cookies ? ytdlOptions.cookies.length : 0
+          });
+          
           const audioStream = ytdl(video.url, ytdlOptions);
           
           // Convertir stream a buffer con timeout específico para este intento
@@ -862,9 +878,10 @@ export class MusicService {
         value: cookie.value,
         domain: cookie.domain || '.youtube.com',
         path: cookie.path || '/',
-        secure: cookie.secure !== false, // Default a true
+        secure: cookie.secure !== false,
         httpOnly: cookie.httpOnly || false,
-        sameSite: cookie.sameSite || 'Lax'
+        sameSite: cookie.sameSite === 'no_restriction' ? 'None' : (cookie.sameSite || 'Lax'),
+        expires: cookie.expirationDate ? new Date(cookie.expirationDate * 1000) : undefined
       }));
 
       console.log(
@@ -897,28 +914,20 @@ export class MusicService {
     const https = require('https');
     const http = require('http');
     
-    // Crear agente HTTPS personalizado para parecer más humano
+    // Crear agente HTTPS personalizado más simple pero efectivo
     const httpsAgent = new https.Agent({
       keepAlive: true,
       keepAliveMsecs: 10000,
-      maxSockets: 5,
-      maxFreeSockets: 2,
+      maxSockets: 10,
+      maxFreeSockets: 5,
       timeout: 30000,
-      // Configuraciones SSL para mayor realismo
-      secureProtocol: 'TLSv1_2_method',
-      ciphers: [
-        'ECDHE-RSA-AES128-GCM-SHA256',
-        'ECDHE-RSA-AES256-GCM-SHA384',
-        'ECDHE-RSA-AES128-SHA256',
-        'ECDHE-RSA-AES256-SHA384'
-      ].join(':'),
     });
 
     const httpAgent = new http.Agent({
       keepAlive: true,
       keepAliveMsecs: 10000,
-      maxSockets: 5,
-      maxFreeSockets: 2,
+      maxSockets: 10,
+      maxFreeSockets: 5,
       timeout: 30000,
     });
 
