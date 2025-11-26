@@ -10,6 +10,7 @@ import * as path from "path";
 import * as FormData from "form-data";
 import fetch from "node-fetch";
 import * as he from "he";
+import YTDlpWrap from "yt-dlp-wrap";
 import {
   MusicRequest,
   YouTubeCookie,
@@ -26,6 +27,7 @@ export class MusicService {
   private uploadService: "catbox" | "litterbox";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
+  private ytdlp: YTDlpWrap;
 
   constructor(private readonly configService: ConfigService) {
     this.isProcessing = false;
@@ -50,6 +52,32 @@ export class MusicService {
       console.log(`🍪 [CONFIG] Cookies de YouTube cargadas exitosamente`);
     } else {
       console.log(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
+    }
+
+    // Inicializar yt-dlp
+    this.ytdlp = new YTDlpWrap();
+    console.log(`🔧 [YT-DLP] Inicializado como fallback`);
+    
+    // Asegurar que yt-dlp esté disponible
+    this.ensureYtDlpAvailable().catch(error => {
+      console.warn(`⚠️ [YT-DLP] No se pudo inicializar yt-dlp:`, error);
+    });
+  }
+
+  private async ensureYtDlpAvailable(): Promise<void> {
+    try {
+      // Verificar si yt-dlp está disponible
+      await this.ytdlp.exec(['--version']);
+      console.log(`✅ [YT-DLP] yt-dlp está disponible`);
+    } catch (error) {
+      console.log(`📥 [YT-DLP] Descargando yt-dlp...`);
+      try {
+        await YTDlpWrap.downloadFromGithub();
+        console.log(`✅ [YT-DLP] yt-dlp descargado exitosamente`);
+      } catch (downloadError) {
+        console.error(`❌ [YT-DLP] Error descargando yt-dlp:`, downloadError);
+        throw downloadError;
+      }
     }
   }
 
@@ -229,11 +257,6 @@ export class MusicService {
     console.log(`🔍 [SEARCH] Buscando en YouTube: "${query}"`);
 
     try {
-      // Simular delay humano antes de búsqueda
-      const searchDelay = 1000 + Math.random() * 2000; // 1-3 segundos aleatorio
-      console.log(`⏱️ [HUMAN-SIM] Simulando delay humano: ${Math.round(searchDelay)}ms`);
-      await new Promise(resolve => setTimeout(resolve, searchDelay));
-
       // Buscar en YouTube
       const searchResults = await ytsr(query, { limit: 5 });
       const videos = searchResults.items.filter(
@@ -254,6 +277,9 @@ export class MusicService {
       let audioBuffer = null;
       let lastError = null;
 
+      // Primero intentar con ytdl-core
+      console.log(`⬇️ [YTDL-CORE] Intentando descarga con @distube/ytdl-core...`);
+      
       for (let attempt = 1; attempt <= maxDownloadRetries; attempt++) {
         try {
           console.log(`⬇️ [DOWNLOAD] Intento ${attempt}/${maxDownloadRetries} - Descargando: ${video.url}`);
@@ -264,80 +290,33 @@ export class MusicService {
             filter: attempt <= 2 ? "audioonly" : undefined,
           };
 
-          // Configuración anti-detección más robusta
-          if (this.youtubeCookies && Array.isArray(this.youtubeCookies)) {
-            try {
-              ytdlOptions.agent = this.createCustomAgent();
-              ytdlOptions.cookies = this.youtubeCookies;
-              console.log(`🍪 [YTDL] Usando ${this.youtubeCookies.length} cookies y agente personalizado en intento ${attempt}`);
-            } catch (cookieError) {
-              console.error(`🍪 [ERROR] Error configurando cookies en intento ${attempt}:`, cookieError);
-              // Continuar sin cookies si hay error
-              delete ytdlOptions.cookies;
-            }
-          } else {
-            console.log(`🍪 [YTDL] Sin cookies válidas - usando acceso público en intento ${attempt}`);
+          // Configuración de headers más robusta
+          if (this.youtubeCookies) {
+            ytdlOptions.cookies = this.youtubeCookies;
+            console.log(`🍪 [YTDL] Usando cookies en intento ${attempt}`);
           }
 
-          // Headers más realistas para evitar detección de bot
-          const customHeaders = {
-            'User-Agent': this.getRandomUserAgent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'Cache-Control': 'max-age=0',
-          };
-
-          // Aplicar configuraciones progresivamente más agresivas
+          // Opciones adicionales para evitar bloqueos
           if (attempt >= 2) {
+            ytdlOptions.lang = 'en';
             ytdlOptions.requestOptions = {
-              headers: customHeaders,
-              // Simular comportamiento más humano
-              timeout: 30000,
-              retries: 2,
-              retryDelay: 1000,
+              headers: {
+                'User-Agent': this.getRandomUserAgent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+              }
             };
-
-            // Configuraciones adicionales para intentos avanzados
-            if (attempt === 3) {
-              ytdlOptions.lang = 'en';
-              ytdlOptions.requestOptions.headers['X-YouTube-Client-Name'] = '1';
-              ytdlOptions.requestOptions.headers['X-YouTube-Client-Version'] = '2.20231130.02.00';
-              
-              // Simular referrer de búsqueda de YouTube
-              ytdlOptions.requestOptions.headers['Referer'] = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-            }
           }
 
-            // Para el último intento, usar configuración más básica pero con delay
           if (attempt === 3) {
-            console.log(`🔄 [DOWNLOAD] Intento final con delay anti-detección y sin cookies`);
+            // Último intento con configuración más básica
+            console.log(`🔄 [DOWNLOAD] Intento final con configuración básica`);
             delete ytdlOptions.filter;
-            delete ytdlOptions.cookies; // Remover cookies para el último intento
-            delete ytdlOptions.agent;
             ytdlOptions.quality = 'lowest';
-            
-            // Delay adicional para parecer más humano
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }          // Obtener el stream
-          console.log(`🔗 [YTDL] Configuración final para intento ${attempt}:`, {
-            quality: ytdlOptions.quality,
-            filter: ytdlOptions.filter,
-            hasCookies: !!ytdlOptions.cookies,
-            hasAgent: !!ytdlOptions.agent,
-            cookieCount: ytdlOptions.cookies ? ytdlOptions.cookies.length : 0
-          });
-          
+          }
+
+          // Obtener el stream
           const audioStream = ytdl(video.url, ytdlOptions);
           
           // Convertir stream a buffer con timeout específico para este intento
@@ -348,49 +327,26 @@ export class MusicService {
 
         } catch (error) {
           lastError = error;
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, errorMessage);
+          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, error instanceof Error ? error.message : error);
           
-          // Detectar específicamente el error de bot
-          if (errorMessage.includes('Sign in to confirm') || errorMessage.includes('not a bot')) {
-            console.log(`🤖 [ANTI-BOT] YouTube detectó comportamiento de bot en intento ${attempt}`);
-            
-            // Para errores de bot, esperar más tiempo entre intentos
-            if (attempt < maxDownloadRetries) {
-              const delay = (attempt * 5000) + Math.random() * 3000; // 5-8s, 10-13s
-              console.log(`⏱️ [ANTI-BOT] Esperando ${Math.round(delay)}ms antes del siguiente intento...`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
-          } else {
-            // Para otros errores, delay normal
-            if (attempt < maxDownloadRetries) {
-              const delay = attempt * 3000; // 3s, 6s
-              console.log(`⏱️ [DOWNLOAD] Esperando ${delay}ms antes del siguiente intento...`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
+          if (attempt < maxDownloadRetries) {
+            const delay = attempt * 3000; // 3s, 6s, 9s
+            console.log(`⏱️ [DOWNLOAD] Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
       }
 
-      // Si no se pudo obtener el buffer después de todos los intentos
+      // Si ytdl-core falló, intentar con yt-dlp como fallback
       if (!audioBuffer) {
-        const errorMsg = lastError instanceof Error ? lastError.message : String(lastError);
-        
-        // Si el error es específicamente de detección de bot, dar información más útil
-        if (errorMsg.includes('Sign in to confirm') || errorMsg.includes('not a bot')) {
-          console.error(`🤖 [ANTI-BOT] YouTube requiere verificación humana. Considera actualizar las cookies.`);
-          
-          // Sugerir regeneración de cookies
-          const cookiesPath = this.configService.get<string>("music.youtubeCookiesPath");
-          if (cookiesPath) {
-            console.log(`🍪 [COOKIES] Archivo de cookies: ${cookiesPath}`);
-            console.log(`🍪 [COOKIES] Considera exportar nuevas cookies desde un navegador después de completar verificación humana.`);
-          }
-          
-          throw new Error(`❌ YouTube requiere verificación humana. Actualiza las cookies después de completar la verificación en un navegador.`);
+        console.log(`🔄 [YT-DLP] ytdl-core falló, intentando con yt-dlp como fallback...`);
+        try {
+          audioBuffer = await this.downloadWithYtDlp(video.url);
+          console.log(`✅ [YT-DLP] Descarga exitosa con yt-dlp: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+        } catch (ytdlpError) {
+          console.error(`❌ [YT-DLP] Error con yt-dlp:`, ytdlpError instanceof Error ? ytdlpError.message : ytdlpError);
+          throw new Error(`No se pudo descargar el audio con ningún método. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`);
         }
-        
-        throw new Error(`No se pudo descargar el audio después de ${maxDownloadRetries} intentos. Último error: ${errorMsg}`);
       }
 
       // Convertir a MP3
@@ -848,44 +804,19 @@ export class MusicService {
         );
       }
 
-      // Verificar si las cookies están cerca de expirar
-      const now = Date.now() / 1000;
-      const expiringCookies = validCookies.filter(cookie => 
-        cookie.expirationDate && cookie.expirationDate < now + (7 * 24 * 60 * 60) // Expiran en menos de 7 días
-      );
-
-      if (expiringCookies.length > 0) {
-        console.log(`🍪 [WARNING] ${expiringCookies.length} cookies expiran pronto. Considera actualizar.`);
-      }
-
-      // Filtrar cookies expiradas
-      const activeCookies = validCookies.filter(cookie => 
-        !cookie.expirationDate || cookie.expirationDate > now
-      );
-
-      if (activeCookies.length !== validCookies.length) {
-        console.log(`🍪 [WARNING] Se ignoraron ${validCookies.length - activeCookies.length} cookies expiradas`);
-      }
-
-      if (activeCookies.length === 0) {
-        console.log(`🍪 [ERROR] Todas las cookies han expirado. Necesitas exportar cookies nuevas.`);
-        return null;
-      }
-
       // Convertir cookies al formato requerido por @distube/ytdl-core
-      const cookieJar = activeCookies.map((cookie) => ({
+      const cookieJar = validCookies.map((cookie) => ({
         name: cookie.name,
         value: cookie.value,
         domain: cookie.domain || '.youtube.com',
         path: cookie.path || '/',
-        secure: cookie.secure !== false,
+        secure: cookie.secure !== false, // Default a true
         httpOnly: cookie.httpOnly || false,
-        sameSite: cookie.sameSite === 'no_restriction' ? 'None' : (cookie.sameSite || 'Lax'),
-        expires: cookie.expirationDate ? new Date(cookie.expirationDate * 1000) : undefined
+        sameSite: cookie.sameSite || 'Lax'
       }));
 
       console.log(
-        `🍪 [DEBUG] ${activeCookies.length} cookies válidas y activas cargadas`
+        `🍪 [DEBUG] ${validCookies.length} cookies válidas cargadas en nuevo formato`
       );
       
       return cookieJar;
@@ -902,38 +833,99 @@ export class MusicService {
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0'
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ];
     
     return userAgents[Math.floor(Math.random() * userAgents.length)];
   }
 
-  private createCustomAgent(): any {
-    const https = require('https');
-    const http = require('http');
+  private async downloadWithYtDlp(videoUrl: string): Promise<Buffer> {
+    const tempDir = path.join(process.cwd(), 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const timestamp = Date.now();
+    const tempFilePath = path.join(tempDir, `ytdlp_${timestamp}.%(ext)s`);
+    const args = [
+      videoUrl,
+      '--extract-audio',
+      '--audio-format', 'mp3',
+      '--audio-quality', '128K',
+      '--output', tempFilePath,
+      '--no-playlist',
+      '--ignore-errors',
+      '--user-agent', this.getRandomUserAgent()
+    ];
+
+    // Agregar cookies si están disponibles
+    let cookiesFile = null;
+    if (this.youtubeCookies) {
+      cookiesFile = path.join(tempDir, `cookies_${timestamp}.txt`);
+      try {
+        // Convertir cookies JSON a formato Netscape para yt-dlp
+        const netscapeCookies = this.convertCookiesToNetscape(this.youtubeCookies);
+        fs.writeFileSync(cookiesFile, netscapeCookies);
+        args.push('--cookies', cookiesFile);
+        console.log(`🍪 [YT-DLP] Usando archivo de cookies: ${cookiesFile}`);
+      } catch (cookieError) {
+        console.warn(`⚠️ [YT-DLP] Error preparando cookies, continuando sin ellas:`, cookieError);
+        cookiesFile = null;
+      }
+    }
+
+    try {
+      console.log(`🚀 [YT-DLP] Ejecutando comando: yt-dlp ${args.join(' ')}`);
+      
+      await this.ytdlp.exec(args);
+      
+      // Buscar el archivo descargado (puede tener diferentes extensiones)
+      const files = fs.readdirSync(tempDir).filter(file => 
+        file.startsWith(`ytdlp_${timestamp}`) && 
+        (file.endsWith('.mp3') || file.endsWith('.m4a') || file.endsWith('.webm') || file.endsWith('.ogg'))
+      );
+      
+      if (files.length === 0) {
+        throw new Error('No se encontró el archivo descargado por yt-dlp');
+      }
+
+      const downloadedFile = path.join(tempDir, files[0]);
+      console.log(`📁 [YT-DLP] Archivo descargado: ${downloadedFile}`);
+      
+      // Leer el archivo y convertirlo a buffer
+      const buffer = fs.readFileSync(downloadedFile);
+      
+      // Limpiar archivos temporales
+      fs.unlinkSync(downloadedFile);
+      
+      return buffer;
+    } catch (error) {
+      console.error(`❌ [YT-DLP] Error en descarga:`, error);
+      throw new Error(`yt-dlp falló: ${error instanceof Error ? error.message : error}`);
+    } finally {
+      // Limpiar archivo de cookies si se creó
+      if (cookiesFile && fs.existsSync(cookiesFile)) {
+        try {
+          fs.unlinkSync(cookiesFile);
+        } catch (e) {
+          // Ignorar errores de limpieza
+        }
+      }
+    }
+  }
+
+  private convertCookiesToNetscape(cookies: any[]): string {
+    const header = '# Netscape HTTP Cookie File\n# This is a generated file! Do not edit.\n\n';
+    const lines = cookies.map(cookie => {
+      const domain = cookie.domain || '.youtube.com';
+      const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+      const path = cookie.path || '/';
+      const secure = cookie.secure ? 'TRUE' : 'FALSE';
+      const expiry = cookie.expirationDate || '0';
+      
+      return `${domain}\t${flag}\t${path}\t${secure}\t${expiry}\t${cookie.name}\t${cookie.value}`;
+    });
     
-    // Crear agente HTTPS personalizado más simple pero efectivo
-    const httpsAgent = new https.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 10000,
-      maxSockets: 10,
-      maxFreeSockets: 5,
-      timeout: 30000,
-    });
-
-    const httpAgent = new http.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 10000,
-      maxSockets: 10,
-      maxFreeSockets: 5,
-      timeout: 30000,
-    });
-
-    return {
-      https: httpsAgent,
-      http: httpAgent
-    };
+    return header + lines.join('\n') + '\n';
   }
 }

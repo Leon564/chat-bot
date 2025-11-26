@@ -21,15 +21,15 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
-    "@nestjs/common": "^10.0.0",
-    "@nestjs/core": "^10.0.0",
-    "@nestjs/platform-express": "^10.0.0",
-    "@nestjs/config": "^3.0.0",
-    "@nestjs/schedule": "^4.0.0",
-    "@nestjs/websockets": "^10.0.0",
-    "@nestjs/platform-ws": "^10.0.0",
     "@distube/ytdl-core": "github:ToddyTheNoobDud/ytdl-core-stuff",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/platform-ws": "^10.0.0",
+    "@nestjs/schedule": "^4.0.0",
+    "@nestjs/websockets": "^10.0.0",
     "@types/fluent-ffmpeg": "^2.1.27",
     "cheerio": "1.0.0-rc.12",
     "dotenv": "^16.3.1",
@@ -41,6 +41,7 @@
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",
     "ws": "^8.16.0",
+    "yt-dlp-wrap": "^2.3.12",
     "ytsr": "^3.8.4"
   },
   "devDependencies": {

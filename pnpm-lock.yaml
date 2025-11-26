@@ -68,6 +68,9 @@ importers:
       ws:
         specifier: ^8.16.0
         version: 8.18.2
+      yt-dlp-wrap:
+        specifier: ^2.3.12
+        version: 2.3.12
       ytsr:
         specifier: ^3.8.4
         version: 3.8.4
@@ -3145,6 +3148,9 @@ packages:
   yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
+
+  yt-dlp-wrap@2.3.12:
+    resolution: {integrity: sha512-P8fJ+6M1YjukyJENCTviNLiZ8mokxprR54ho3DsSKPWDcac489OjRiStGEARJr6un6ETS6goTn4CWl/b/rM3aA==}
 
   ytsr@3.8.4:
     resolution: {integrity: sha512-rrJo59vDDf98mz/Cuw7Y2YiuTwSm3cs4XsXrP6yjYDXYup/aE0lRxY6XMKR3mGOHKwgLouZqFq8QRllVVVN88w==}
@@ -6614,6 +6620,8 @@ snapshots:
   yn@3.1.1: {}
 
   yocto-queue@0.1.0: {}
+
+  yt-dlp-wrap@2.3.12: {}
 
   ytsr@3.8.4:
     dependencies:
