@@ -325,14 +325,28 @@ export class MusicService {
       console.log(`✅ [CONVERT] Audio convertido a MP3: ${outputPath}`);
 
       // Subir archivo
-      const uploadUrl = await this.uploadFile(outputPath);
-      console.log(`☁️ [UPLOAD] Archivo subido exitosamente: ${uploadUrl}`);
+      try {
+        const uploadUrl = await this.uploadFile(outputPath);
+        console.log(`☁️ [UPLOAD] Archivo subido exitosamente: ${uploadUrl}`);
 
-      // Limpiar archivo temporal
-      fs.unlinkSync(outputPath);
-      console.log(`🗑️ [CLEANUP] Archivo temporal eliminado: ${outputPath}`);
+        // Limpiar archivo temporal
+        fs.unlinkSync(outputPath);
+        console.log(`🗑️ [CLEANUP] Archivo temporal eliminado: ${outputPath}`);
 
-      return `🎵 <@${username}> Aquí tienes "${video.title}": [audio]${uploadUrl}[/audio]`;
+        return `🎵 <@${username}> Aquí tienes "${video.title}": [audio]${uploadUrl}[/audio]`;
+      } catch (uploadError) {
+        const uploadErrorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
+        
+        // Si es un problema de conectividad, mantener el archivo y dar instrucciones
+        if (uploadErrorMsg.includes('temporalmente no disponibles')) {
+          console.log(`💾 [BACKUP] Manteniendo archivo local debido a problemas de conectividad: ${outputPath}`);
+          return `🎵 <@${username}> Audio "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. El archivo se ha guardado localmente. Por favor, intenta nuevamente en unos minutos.`;
+        }
+        
+        // Para otros errores, limpiar archivo y relanzar error
+        fs.unlinkSync(outputPath);
+        throw uploadError;
+      }
     } catch (error) {
       console.error(`❌ [ERROR] Error en procesamiento de música:`, error);
       throw new Error(
@@ -441,10 +455,98 @@ export class MusicService {
   }
 
   private async uploadFile(filePath: string): Promise<string> {
-    if (this.uploadService === "litterbox") {
-      return this.uploadToLitterbox(filePath);
-    } else {
-      return this.uploadToCatbox(filePath);
+    // Verificar conectividad básica antes de intentar uploads
+    console.log(`🌐 [CONNECTIVITY] Verificando conectividad de red...`);
+    
+    try {
+      // Test básico de conectividad DNS
+      await this.testConnectivity();
+      console.log(`✅ [CONNECTIVITY] Conectividad verificada`);
+    } catch (connectivityError) {
+      console.error(`❌ [CONNECTIVITY] Sin conectividad de red:`, connectivityError instanceof Error ? connectivityError.message : connectivityError);
+      throw new Error(`❌ Sin conectividad a internet. Verifica tu conexión de red.`);
+    }
+
+    // Siempre intentar Catbox primero
+    const maxRetries = 3;
+    const retryDelay = 2000;
+
+    console.log(`📤 [UPLOAD] Intentando subir a Catbox primero...`);
+    
+    // Intentar Catbox con reintentos
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`📤 [CATBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+        return await this.uploadToCatboxWithRetry(filePath);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`❌ [CATBOX] Error en intento ${attempt}:`, errorMsg);
+        
+        // Verificar si es un error de conectividad DNS
+        if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
+          console.log(`🌐 [DNS] Problema de conectividad detectado con Catbox`);
+        }
+        
+        if (attempt === maxRetries) {
+          console.log(`🔄 [FALLBACK] Catbox falló después de ${maxRetries} intentos, intentando con Litterbox (72h)...`);
+          break; // Salir para intentar el fallback
+        }
+        
+        // Esperar antes del siguiente intento (más tiempo si es problema DNS)
+        if (attempt < maxRetries) {
+          const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
+          console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // Fallback a Litterbox con 72h (fijo, no depende del .env)
+    try {
+      const result = await this.uploadToLitterboxFallback(filePath);
+      console.log(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
+      return result;
+    } catch (fallbackError) {
+      const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      
+      // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
+      if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
+        console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
+        throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
+      }
+      
+      throw new Error(`Error en Catbox y Litterbox fallback: ${fallbackErrorMsg}`);
+    }
+  }
+
+  private async testConnectivity(): Promise<void> {
+    try {
+      // Test simple con Google DNS (más confiable)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch('https://dns.google/resolve?name=catbox.moe&type=A', {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`DNS test failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (!result.Answer || result.Answer.length === 0) {
+        throw new Error('DNS resolution failed');
+      }
+
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('DNS test timeout');
+      }
+      throw error;
     }
   }
 
@@ -455,6 +557,20 @@ export class MusicService {
 
     const response = await fetch("https://catbox.moe/user/api.php", {
       method: "POST",
+      headers: {
+        "accept": "application/json",
+        "accept-language": "es-419,es;q=0.9,es-ES;q=0.8,en;q=0.7,en-GB;q=0.6,en-US;q=0.5,es-US;q=0.4",
+        "cache-control": "no-cache",
+        "priority": "u=1, i",
+        "sec-ch-ua": "\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not_A Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-requested-with": "XMLHttpRequest",
+        "Referer": "https://catbox.moe/"
+      },
       body: form,
     });
 
@@ -496,6 +612,100 @@ export class MusicService {
     }
 
     return result;
+  }
+
+  private async uploadToCatboxWithRetry(filePath: string): Promise<string> {
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("fileToUpload", fs.createReadStream(filePath));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos timeout
+
+    try {
+      const response = await fetch("https://catbox.moe/user/api.php", {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "accept-language": "es-419,es;q=0.9,es-ES;q=0.8,en;q=0.7,en-GB;q=0.6,en-US;q=0.5,es-US;q=0.4",
+          "cache-control": "no-cache",
+          "priority": "u=1, i",
+          "sec-ch-ua": "\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not_A Brand\";v=\"99\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
+          "x-requested-with": "XMLHttpRequest",
+          "Referer": "https://catbox.moe/"
+        },
+        body: form,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Error subiendo a Catbox: ${response.statusText}`);
+      }
+
+      const result = await response.text();
+
+      if (!result.startsWith("https://")) {
+        throw new Error(`Respuesta inválida de Catbox: ${result}`);
+      }
+
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Timeout al subir archivo a Catbox (30s)');
+      }
+      throw error;
+    }
+  }
+
+  private async uploadToLitterboxFallback(filePath: string): Promise<string> {
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("time", "72h"); // Fijo en 72h para fallback
+    form.append("fileToUpload", fs.createReadStream(filePath));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 segundos timeout (más tiempo que Catbox)
+
+    try {
+      console.log(`📤 [LITTERBOX-FALLBACK] Subiendo con expiración de 72h...`);
+      
+      const response = await fetch(
+        "https://litterbox.catbox.moe/resources/internals/api.php",
+        {
+          method: "POST",
+          body: form,
+          signal: controller.signal,
+        }
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Error subiendo a Litterbox fallback: ${response.statusText}`);
+      }
+
+      const result = await response.text();
+
+      if (!result.startsWith("https://")) {
+        throw new Error(`Respuesta inválida de Litterbox fallback: ${result}`);
+      }
+
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Timeout al subir archivo a Litterbox fallback (45s)');
+      }
+      throw error;
+    }
   }
 
   private loadYouTubeCookies(): any | null {
