@@ -25,7 +25,7 @@ export class MusicService {
   private queue: MusicRequest[];
   private uploadService: "catbox" | "litterbox";
   private litterboxExpiry: string;
-  private youtubeCookies: string | null;
+  private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
 
   constructor(private readonly configService: ConfigService) {
     this.isProcessing = false;
@@ -244,24 +244,72 @@ export class MusicService {
         `🎯 [FOUND] Video encontrado: "${video.title}" - ${video.url}`
       );
 
-      // Configurar opciones de ytdl con cookies si están disponibles
-      const ytdlOptions: any = {
-        quality: "highestaudio",
-        filter: "audioonly",
-      };
+      // Intentar descarga con diferentes configuraciones
+      const maxDownloadRetries = 3;
+      let audioBuffer = null;
+      let lastError = null;
 
-      if (this.youtubeCookies) {
-        ytdlOptions.requestOptions = {
-          headers: {
-            Cookie: this.youtubeCookies,
-          },
-        };
-        console.log(`🍪 [YTDL] Usando cookies para descargar: ${video.url}`);
+      for (let attempt = 1; attempt <= maxDownloadRetries; attempt++) {
+        try {
+          console.log(`⬇️ [DOWNLOAD] Intento ${attempt}/${maxDownloadRetries} - Descargando: ${video.url}`);
+          
+          // Configurar opciones de ytdl progresivamente más agresivas
+          const ytdlOptions: any = {
+            quality: attempt === 1 ? "highestaudio" : (attempt === 2 ? "highest" : "lowest"),
+            filter: attempt <= 2 ? "audioonly" : undefined,
+          };
+
+          // Configuración de headers más robusta
+          if (this.youtubeCookies) {
+            ytdlOptions.cookies = this.youtubeCookies;
+            console.log(`🍪 [YTDL] Usando cookies en intento ${attempt}`);
+          }
+
+          // Opciones adicionales para evitar bloqueos
+          if (attempt >= 2) {
+            ytdlOptions.lang = 'en';
+            ytdlOptions.requestOptions = {
+              headers: {
+                'User-Agent': this.getRandomUserAgent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+              }
+            };
+          }
+
+          if (attempt === 3) {
+            // Último intento con configuración más básica
+            console.log(`🔄 [DOWNLOAD] Intento final con configuración básica`);
+            delete ytdlOptions.filter;
+            ytdlOptions.quality = 'lowest';
+          }
+
+          // Obtener el stream
+          const audioStream = ytdl(video.url, ytdlOptions);
+          
+          // Convertir stream a buffer con timeout específico para este intento
+          console.log(`📦 [BUFFER] Convirtiendo stream a buffer (intento ${attempt})...`);
+          audioBuffer = await this.streamToBuffer(audioStream, attempt * 30000); // 30s, 60s, 90s
+          console.log(`✅ [BUFFER] Buffer creado exitosamente en intento ${attempt}: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+          break; // Salir del loop si fue exitoso
+
+        } catch (error) {
+          lastError = error;
+          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, error instanceof Error ? error.message : error);
+          
+          if (attempt < maxDownloadRetries) {
+            const delay = attempt * 3000; // 3s, 6s, 9s
+            console.log(`⏱️ [DOWNLOAD] Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
       }
 
-      // Descargar audio de YouTube
-      console.log(`⬇️ [DOWNLOAD] Descargando audio de: ${video.url}`);
-      const audioStream = ytdl(video.url, ytdlOptions);
+      // Si no se pudo obtener el buffer después de todos los intentos
+      if (!audioBuffer) {
+        throw new Error(`No se pudo descargar el audio después de ${maxDownloadRetries} intentos. Último error: ${lastError instanceof Error ? lastError.message : lastError}`);
+      }
 
       // Convertir a MP3
       const tempDir = path.join(process.cwd(), 'temp');
@@ -273,7 +321,7 @@ export class MusicService {
       const filename = `music_${Date.now()}_${sanitizedUsername}.mp3`;
       const outputPath = path.join(tempDir, filename);
 
-      await this.convertToMp3(audioStream, outputPath);
+      await this.convertBufferToMp3(audioBuffer, outputPath);
       console.log(`✅ [CONVERT] Audio convertido a MP3: ${outputPath}`);
 
       // Subir archivo
@@ -310,6 +358,82 @@ export class MusicService {
         })
         .on("error", (error) => {
           console.error(`❌ [FFMPEG] Error en conversión:`, error);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
+  private async streamToBuffer(stream: Readable, timeoutMs: number = 5 * 60 * 1000): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let totalSize = 0;
+
+      stream.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        totalSize += chunk.length;
+        
+        // Log progreso cada 5MB
+        if (totalSize % (5 * 1024 * 1024) < chunk.length) {
+          console.log(`📦 [BUFFER] Descargado: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
+        }
+      });
+
+      stream.on('end', () => {
+        const buffer = Buffer.concat(chunks, totalSize);
+        console.log(`✅ [BUFFER] Stream completo: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
+        clearTimeout(timeout);
+        resolve(buffer);
+      });
+
+      stream.on('error', (error) => {
+        console.error(`❌ [BUFFER] Error en stream:`, error);
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      // Timeout configurable para el stream
+      const timeout = setTimeout(() => {
+        stream.destroy();
+        reject(new Error(`Timeout: El stream tardó más de ${timeoutMs / 1000} segundos`));
+      }, timeoutMs);
+    });
+  }
+
+  private async convertBufferToMp3(buffer: Buffer, outputPath: string): Promise<void> {
+    const { Readable } = require('stream');
+    
+    return new Promise((resolve, reject) => {
+      // Crear un stream readable desde el buffer
+      const bufferStream = new Readable({
+        read() {
+          this.push(buffer);
+          this.push(null); // Finalizar el stream
+        }
+      });
+
+      console.log(`🔄 [FFMPEG] Iniciando conversión desde buffer (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`);
+
+      ffmpeg(bufferStream)
+        .toFormat("mp3")
+        .audioBitrate(128)
+        .audioChannels(2)
+        .audioFrequency(44100)
+        .output(outputPath)
+        .on("start", (commandLine) => {
+          console.log(`🔄 [FFMPEG] Comando: ${commandLine}`);
+        })
+        .on("progress", (progress) => {
+          if (progress.percent) {
+            console.log(`🔄 [FFMPEG] Progreso: ${Math.round(progress.percent)}%`);
+          }
+        })
+        .on("end", () => {
+          console.log(`✅ [FFMPEG] Conversión completada desde buffer: ${outputPath}`);
+          resolve();
+        })
+        .on("error", (error) => {
+          console.error(`❌ [FFMPEG] Error en conversión desde buffer:`, error);
           reject(error);
         })
         .run();
@@ -374,7 +498,7 @@ export class MusicService {
     return result;
   }
 
-  private loadYouTubeCookies(): string | null {
+  private loadYouTubeCookies(): any | null {
     try {
       const cookiesPath = this.configService.get<string>(
         "music.youtubeCookiesPath"
@@ -432,18 +556,38 @@ export class MusicService {
         );
       }
 
-      // Convertir cookies a formato de string para HTTP headers
-      const cookieString = validCookies
-        .map((cookie) => `${cookie.name}=${cookie.value}`)
-        .join("; ");
+      // Convertir cookies al formato requerido por @distube/ytdl-core
+      const cookieJar = validCookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain || '.youtube.com',
+        path: cookie.path || '/',
+        secure: cookie.secure !== false, // Default a true
+        httpOnly: cookie.httpOnly || false,
+        sameSite: cookie.sameSite || 'Lax'
+      }));
 
       console.log(
-        `🍪 [DEBUG] ${validCookies.length} cookies válidas cargadas exitosamente`
+        `🍪 [DEBUG] ${validCookies.length} cookies válidas cargadas en nuevo formato`
       );
-      return cookieString;
+      
+      return cookieJar;
     } catch (error) {
       console.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
       return null;
     }
+  }
+
+  private getRandomUserAgent(): string {
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ];
+    
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
   }
 }

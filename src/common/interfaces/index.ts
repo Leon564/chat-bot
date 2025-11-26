@@ -60,6 +60,12 @@ export interface YouTubeCookie {
   path: string;
   secure: boolean;
   httpOnly: boolean;
+  sameSite?: string;
+  expirationDate?: number;
+  hostOnly?: boolean;
+  session?: boolean;
+  storeId?: string;
+  id?: number;
 }
 
 export interface BotSession {

@@ -17,7 +17,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private lastSentTime: number;
   private session!: BotSession;
   private socket!: WebSocket;
-  private readonly SESSION_DURATION = 15 * 60 * 1000; // 15 minutos en milisegundos
+  private readonly SESSION_DURATION = 60 * 60 * 1000; // 1 hora en milisegundos
 
   constructor(
     private readonly configService: ConfigService,
