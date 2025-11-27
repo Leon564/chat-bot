@@ -58,9 +58,11 @@ export class MusicService {
     this.ytdlp = new YTDlpWrap();
     console.log(`🔧 [YT-DLP] Inicializado como fallback`);
     
-    // Asegurar que yt-dlp esté disponible
-    this.ensureYtDlpAvailable().catch(error => {
-      console.warn(`⚠️ [YT-DLP] No se pudo inicializar yt-dlp:`, error);
+    // Asegurar que yt-dlp esté disponible de forma asíncrona (no bloquear la inicialización)
+    this.ensureYtDlpAvailable().then(() => {
+      console.log(`✅ [YT-DLP] yt-dlp está listo para usar`);
+    }).catch(error => {
+      console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, solo se usará ytdl-core:`, error instanceof Error ? error.message : error);
     });
   }
 
@@ -70,14 +72,28 @@ export class MusicService {
       await this.ytdlp.exec(['--version']);
       console.log(`✅ [YT-DLP] yt-dlp está disponible`);
     } catch (error) {
-      console.log(`📥 [YT-DLP] Descargando yt-dlp...`);
+      console.log(`📥 [YT-DLP] yt-dlp no encontrado, intentando descarga automática...`);
       try {
+        // Descargar yt-dlp automáticamente
         await YTDlpWrap.downloadFromGithub();
         console.log(`✅ [YT-DLP] yt-dlp descargado exitosamente`);
+        
+        // Verificar que funcione después de la descarga
+        await this.ytdlp.exec(['--version']);
+        console.log(`✅ [YT-DLP] yt-dlp verificado después de descarga`);
       } catch (downloadError) {
-        console.error(`❌ [YT-DLP] Error descargando yt-dlp:`, downloadError);
-        throw downloadError;
+        console.error(`❌ [YT-DLP] Error descargando o verificando yt-dlp:`, downloadError);
+        throw new Error(`No se pudo configurar yt-dlp: ${downloadError instanceof Error ? downloadError.message : downloadError}`);
       }
+    }
+  }
+
+  private async isYtDlpAvailable(): Promise<boolean> {
+    try {
+      await this.ytdlp.exec(['--version']);
+      return true;
+    } catch (error) {
+      return false;
     }
   }
 
@@ -339,13 +355,23 @@ export class MusicService {
 
       // Si ytdl-core falló, intentar con yt-dlp como fallback
       if (!audioBuffer) {
-        console.log(`🔄 [YT-DLP] ytdl-core falló, intentando con yt-dlp como fallback...`);
-        try {
-          audioBuffer = await this.downloadWithYtDlp(video.url);
-          console.log(`✅ [YT-DLP] Descarga exitosa con yt-dlp: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-        } catch (ytdlpError) {
-          console.error(`❌ [YT-DLP] Error con yt-dlp:`, ytdlpError instanceof Error ? ytdlpError.message : ytdlpError);
-          throw new Error(`No se pudo descargar el audio con ningún método. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`);
+        console.log(`🔄 [YT-DLP] ytdl-core falló, verificando disponibilidad de yt-dlp...`);
+        
+        // Verificar si yt-dlp está disponible antes de intentar usarlo
+        const ytdlpAvailable = await this.isYtDlpAvailable();
+        
+        if (ytdlpAvailable) {
+          try {
+            console.log(`🔄 [YT-DLP] Intentando descarga con yt-dlp como fallback...`);
+            audioBuffer = await this.downloadWithYtDlp(video.url);
+            console.log(`✅ [YT-DLP] Descarga exitosa con yt-dlp: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+          } catch (ytdlpError) {
+            console.error(`❌ [YT-DLP] Error con yt-dlp:`, ytdlpError instanceof Error ? ytdlpError.message : ytdlpError);
+            throw new Error(`No se pudo descargar el audio con ningún método. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`);
+          }
+        } else {
+          console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, no se puede usar como fallback`);
+          throw new Error(`No se pudo descargar el audio. ytdl-core falló: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp no está disponible.`);
         }
       }
 
@@ -840,6 +866,12 @@ export class MusicService {
   }
 
   private async downloadWithYtDlp(videoUrl: string): Promise<Buffer> {
+    // Verificar disponibilidad primero
+    const available = await this.isYtDlpAvailable();
+    if (!available) {
+      throw new Error('yt-dlp no está disponible en el sistema');
+    }
+
     const tempDir = path.join(process.cwd(), 'temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
@@ -855,6 +887,7 @@ export class MusicService {
       '--output', tempFilePath,
       '--no-playlist',
       '--ignore-errors',
+      '--no-warnings',
       '--user-agent', this.getRandomUserAgent()
     ];
 
@@ -875,9 +908,10 @@ export class MusicService {
     }
 
     try {
-      console.log(`🚀 [YT-DLP] Ejecutando comando: yt-dlp ${args.join(' ')}`);
+      console.log(`🚀 [YT-DLP] Ejecutando descarga...`);
       
-      await this.ytdlp.exec(args);
+      const result = await this.ytdlp.exec(args);
+      console.log(`📋 [YT-DLP] Resultado:`, result);
       
       // Buscar el archivo descargado (puede tener diferentes extensiones)
       const files = fs.readdirSync(tempDir).filter(file => 
@@ -886,14 +920,24 @@ export class MusicService {
       );
       
       if (files.length === 0) {
+        // Listar todos los archivos para debug
+        const allFiles = fs.readdirSync(tempDir);
+        console.log(`🔍 [YT-DLP] Archivos en directorio temporal:`, allFiles);
         throw new Error('No se encontró el archivo descargado por yt-dlp');
       }
 
       const downloadedFile = path.join(tempDir, files[0]);
       console.log(`📁 [YT-DLP] Archivo descargado: ${downloadedFile}`);
       
+      // Verificar que el archivo existe y tiene contenido
+      const stats = fs.statSync(downloadedFile);
+      if (stats.size === 0) {
+        throw new Error('El archivo descargado está vacío');
+      }
+      
       // Leer el archivo y convertirlo a buffer
       const buffer = fs.readFileSync(downloadedFile);
+      console.log(`✅ [YT-DLP] Buffer creado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
       
       // Limpiar archivos temporales
       fs.unlinkSync(downloadedFile);
@@ -901,7 +945,15 @@ export class MusicService {
       return buffer;
     } catch (error) {
       console.error(`❌ [YT-DLP] Error en descarga:`, error);
-      throw new Error(`yt-dlp falló: ${error instanceof Error ? error.message : error}`);
+      
+      // Mejorar el mensaje de error
+      if (error instanceof Error) {
+        if (error.message.includes('spawn yt-dlp ENOENT')) {
+          throw new Error('yt-dlp no está instalado o no es ejecutable');
+        }
+        throw new Error(`yt-dlp falló: ${error.message}`);
+      }
+      throw new Error(`yt-dlp falló: ${String(error)}`);
     } finally {
       // Limpiar archivo de cookies si se creó
       if (cookiesFile && fs.existsSync(cookiesFile)) {
