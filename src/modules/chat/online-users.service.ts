@@ -221,15 +221,14 @@ export class OnlineUsersService {
           const levelName = this.mapLevelToRoleName(levelNum);
           const plural = levelNum === 1 ? 'No registrados' : `${levelName}s`;
           
-          summary += `**${plural} (${levelUsers.length}):**\n`;
+          summary += `**${plural} (${levelUsers.length}):**[br]`;
           
           levelUsers.forEach(user => {
             const statusIcon = user.presence === 'active' ? '🟢' : '🟡';
-            // Mostrar ID para usuarios registrados (nivel >= 2)
-            const userInfo = user.level >= 2 ? `${user.name} (ID: ${user.id})` : user.name;
-            summary += `${statusIcon} ${userInfo}\n`;
+            // Mostrar solo el nombre, sin ID para mejor legibilidad
+            summary += `${statusIcon} ${user.name}[br]`;
           });
-          summary += '\n';
+          summary += '[br]';
         }
       });
     }
