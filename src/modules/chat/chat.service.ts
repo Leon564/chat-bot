@@ -38,8 +38,29 @@ NO uses SAVE_MEMORY para información genérica o repetitiva.
 La función debe estar en una línea separada al final de tu respuesta.`
       : '';
 
+    // Generar contexto de fecha y hora actual
+    const currentDate = new Date();
+    const specialDay = this.getSpecialDay(currentDate);
+    const specialDayText = specialDay ? `\n- Evento especial: ${specialDay}` : '';
+    
+    const dateTimeContext = `
+CONTEXTO TEMPORAL ACTUAL:
+- Fecha: ${currentDate.toLocaleDateString('es-ES', { 
+  weekday: 'long', 
+  year: 'numeric', 
+  month: 'long', 
+  day: 'numeric' 
+})}
+- Hora: ${currentDate.toLocaleTimeString('es-ES', { 
+  hour: '2-digit', 
+  minute: '2-digit',
+  timeZone: 'America/Mexico_City'
+})} (hora de México)
+- Es ${this.getTimeOfDay(currentDate)} del ${this.getDayType(currentDate)}${specialDayText}`;
+
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
     const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa que responde a ${username}.
+${dateTimeContext}
 
 REGLAS PRINCIPALES:
 1. Máximo ${maxResponseLength} caracteres por respuesta
@@ -433,5 +454,65 @@ SAVE_MEMORY("Información general") ❌`;
     
     console.log(`🤔 Memoria descartada por falta de especificidad: "${memory}"`);
     return false;
+  }
+
+  /**
+   * Obtiene el periodo del día basado en la hora
+   */
+  private getTimeOfDay(date: Date): string {
+    const hour = date.getHours();
+    
+    if (hour >= 6 && hour < 12) {
+      return 'mañana';
+    } else if (hour >= 12 && hour < 18) {
+      return 'tarde';
+    } else if (hour >= 18 && hour < 24) {
+      return 'noche';
+    } else {
+      return 'madrugada';
+    }
+  }
+
+  /**
+   * Obtiene el tipo de día (laboral/fin de semana)
+   */
+  private getDayType(date: Date): string {
+    const dayOfWeek = date.getDay();
+    
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return 'fin de semana';
+    } else if (dayOfWeek === 5) {
+      return 'viernes';
+    } else if (dayOfWeek === 1) {
+      return 'lunes';
+    } else {
+      return 'día de semana';
+    }
+  }
+
+  /**
+   * Detecta días especiales o eventos
+   */
+  private getSpecialDay(date: Date): string | null {
+    const month = date.getMonth() + 1; // getMonth() returns 0-11
+    const day = date.getDate();
+    
+    // Días festivos y eventos especiales
+    const specialDays: { [key: string]: string } = {
+      '1/1': 'Año Nuevo',
+      '2/14': 'Día de San Valentín',
+      '5/10': 'Día de las Madres (México)',
+      '9/16': 'Día de la Independencia de México',
+      '10/31': 'Halloween',
+      '11/1': 'Día de Todos los Santos',
+      '11/2': 'Día de Muertos',
+      '12/12': 'Día de la Virgen de Guadalupe',
+      '12/24': 'Nochebuena',
+      '12/25': 'Navidad',
+      '12/31': 'Año Viejo'
+    };
+
+    const key = `${month}/${day}`;
+    return specialDays[key] || null;
   }
 }
