@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import fetch from 'node-fetch';
+import * as cheerio from 'cheerio';
 import { OnlineUser, OnlineUsersResponse } from '../../common/interfaces';
 
 @Injectable()
@@ -50,7 +51,7 @@ export class OnlineUsersService {
   }
 
   /**
-   * Parsea el HTML de usuarios en línea y extrae la información
+   * Parsea el HTML de usuarios en línea y extrae la información usando Cheerio
    */
   private parseOnlineUsersHtml(html: string): OnlineUsersResponse {
     const users: OnlineUser[] = [];
@@ -58,91 +59,85 @@ export class OnlineUsersService {
 
     console.log(`🔍 [DEBUG] HTML recibido (primeros 500 chars):`, html.substring(0, 500));
 
-    // Expresión regular más robusta para extraer usuarios registrados
-    // Busca divs con clase "usr" que contengan los atributos data-id, data-lvl, etc.
-    const userRegex = /<div\s+class="usr[^"]*"\s+data-id="([^"]*)"\s+data-lvl="([^"]*)"\s+data-pres="([^"]*)"\s+data-pres-time="([^"]*)"[^>]*>([\s\S]*?)<\/div>/g;
+    try {
+      const $ = cheerio.load(html);
 
-    let match;
-    while ((match = userRegex.exec(html)) !== null) {
-      const [fullMatch, id, level, presence, presenceTime, innerHtml] = match;
-      
-      console.log(`🔍 [DEBUG] Match encontrado:`, { id, level, presence, presenceTime });
-      
-      // Extraer imagen
-      const picMatch = innerHtml.match(/<img\s+class="pic"\s+src="([^"]*)"/);
-      const picture = picMatch ? picMatch[1] : '';
-      
-      // Extraer nombre del div nme (puede contener HTML anidado)
-      const nameMatch = innerHtml.match(/<div\s+class="nme"[^>]*>([\s\S]*?)<\/div>/);
-      let name = '';
-      if (nameMatch) {
-        let nameContent = nameMatch[1].trim();
+      // Buscar todos los divs con clase "usr"
+      $('.usr').each((index, element) => {
+        const $user = $(element);
         
-        console.log(`🔍 [DEBUG] Contenido original del div nme:`, nameContent);
+        // Extraer atributos del usuario
+        const id = $user.attr('data-id') || '';
+        const level = parseInt($user.attr('data-lvl') || '1', 10);
+        const presence = $user.attr('data-pres') || 'active';
+        const presenceTime = parseInt($user.attr('data-pres-time') || '0', 10);
         
-        // Si hay elementos anidados como <span>, extraer solo el texto
-        // Remover etiquetas HTML pero conservar el texto
-        nameContent = nameContent.replace(/<[^>]*>/g, '');
+        // Extraer imagen
+        const picture = $user.find('.pic').attr('src') || '';
         
-        // Limpiar entidades HTML y espacios extra
-        name = nameContent
-          .replace(/&nbsp;/g, ' ')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/\s+/g, ' ')
-          .trim();
+        // Extraer nombre del div con clase "nme"
+        const $nameDiv = $user.find('.nme');
+        const name = $nameDiv.text().trim();
+        
+        // Extraer URL del perfil (si existe)
+        const profileUrl = $user.find('.nmeurl').attr('href');
+        
+        console.log(`🔍 [DEBUG] Usuario encontrado:`, {
+          id,
+          level,
+          presence,
+          presenceTime,
+          name,
+          picture: picture.substring(0, 50) + '...',
+          profileUrl
+        });
+        
+        // Mapear nivel numérico a nombre de rol
+        const levelName = this.mapLevelToRoleName(level);
+        
+        // Verificar si es usuario registrado
+        const isRegistered = this.isUserRegistered(level);
+        
+        if (name) { // Solo agregar usuarios con nombre válido
+          users.push({
+            id: id.trim(),
+            name: name,
+            level,
+            levelName,
+            presence: presence as 'active' | 'idle',
+            presenceTime,
+            picture: picture.trim(),
+            profileUrl: profileUrl?.trim()
+          });
           
-        console.log(`✅ [DEBUG] Nombre extraído:`, name);
-      } else {
-        console.log(`❌ [DEBUG] No se encontró div nme en:`, innerHtml.substring(0, 200));
-      }
-      
-      // Extraer URL del perfil (opcional)
-      const profileUrlMatch = innerHtml.match(/<a\s+href="([^"]*)"[^>]*class="nmeurl"/);
-      const profileUrl = profileUrlMatch ? profileUrlMatch[1] : undefined;
-      
-      const numericLevel = parseInt(level, 10);
-      
-      // Mapear nivel numérico a nombre de rol
-      const levelName = this.mapLevelToRoleName(numericLevel);
-      
-      // Verificar si es usuario registrado
-      const isRegistered = this.isUserRegistered(numericLevel);
-      
-      const cleanName = this.cleanUserName(name);
-      
-      users.push({
-        id: id.trim(),
-        name: cleanName,
-        level: numericLevel,
-        levelName,
-        presence: presence as 'active' | 'idle',
-        presenceTime: parseInt(presenceTime, 10),
-        picture: picture.trim(),
-        profileUrl: profileUrl?.trim()
+          // Log para debug
+          console.log(`👤 [DEBUG] Usuario procesado: ${name} | ID: ${id} | Level: ${level} (${levelName}) | Registrado: ${isRegistered}`);
+        }
       });
-      
-      // Log para debug
-      console.log(`👤 [DEBUG] Usuario procesado: ${cleanName} | ID: ${id} | Level: ${numericLevel} (${levelName}) | Registrado: ${isRegistered}`);
+
+      // Extraer número de invitados usando Cheerio
+      const guestCountText = $('#usrAnonCount').text();
+      if (guestCountText) {
+        guestCount = parseInt(guestCountText, 10) || 0;
+      }
+
+      const totalCount = users.length + guestCount;
+
+      console.log(`👥 [ONLINE] Encontrados ${users.length} usuarios registrados y ${guestCount} invitados (total: ${totalCount})`);
+
+      return {
+        users,
+        guestCount,
+        totalCount
+      };
+    } catch (error) {
+      console.error('❌ [CHEERIO] Error parseando HTML:', error);
+      return {
+        users: [],
+        guestCount: 0,
+        totalCount: 0
+      };
     }
-
-    // Extraer número de invitados
-    const guestMatch = html.match(/<span id="usrAnonCount">(\d+)<\/span>/);
-    if (guestMatch) {
-      guestCount = parseInt(guestMatch[1], 10);
-    }
-
-    const totalCount = users.length + guestCount;
-
-    console.log(`👥 [ONLINE] Encontrados ${users.length} usuarios registrados y ${guestCount} invitados (total: ${totalCount})`);
-
-    return {
-      users,
-      guestCount,
-      totalCount
-    };
   }
 
   /**
