@@ -72,14 +72,31 @@ export class OnlineUsersService {
       const picMatch = innerHtml.match(/<img\s+class="pic"\s+src="([^"]*)"/);
       const picture = picMatch ? picMatch[1] : '';
       
-      // Extraer nombre (puede estar dentro de span o directamente)
+      // Extraer nombre del div nme (puede contener HTML anidado)
       const nameMatch = innerHtml.match(/<div\s+class="nme"[^>]*>([\s\S]*?)<\/div>/);
       let name = '';
       if (nameMatch) {
-        const nameContent = nameMatch[1];
-        // Si hay un span, extraer el contenido del span
-        const spanMatch = nameContent.match(/<span[^>]*>([^<]+)<\/span>/);
-        name = spanMatch ? spanMatch[1] : nameContent.trim();
+        let nameContent = nameMatch[1].trim();
+        
+        console.log(`🔍 [DEBUG] Contenido original del div nme:`, nameContent);
+        
+        // Si hay elementos anidados como <span>, extraer solo el texto
+        // Remover etiquetas HTML pero conservar el texto
+        nameContent = nameContent.replace(/<[^>]*>/g, '');
+        
+        // Limpiar entidades HTML y espacios extra
+        name = nameContent
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/\s+/g, ' ')
+          .trim();
+          
+        console.log(`✅ [DEBUG] Nombre extraído:`, name);
+      } else {
+        console.log(`❌ [DEBUG] No se encontró div nme en:`, innerHtml.substring(0, 200));
       }
       
       // Extraer URL del perfil (opcional)
