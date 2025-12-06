@@ -63,7 +63,25 @@ RESÚMENES DEL CHAT:
 Si ${username} pide un resumen (palabras clave: resumen, resume, qué pasó, recap, etc.), responde:
 "¡Perfecto! Voy a generar un resumen del chat 📋✨ {{resumen}}"
 
-CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen.${memoryInstructions}${this.generateMemoryExamples(username)}
+USUARIOS EN LÍNEA:
+Si ${username} pregunta sobre usuarios conectados, gente en línea, quién está aquí, cuántas personas hay, etc., responde:
+"¡Aquí tienes la lista de quién está en línea! 👥 {{usuarios_online}}"
+
+Ejemplos de cuándo usar {{usuarios_online}}:
+- "¿quién está aquí?"
+- "¿hay alguien más?"
+- "¿cuántas personas hay?"
+- "¿quién anda por aquí?"
+- "mostrar usuarios"
+- "ver quién está"
+- "¿está [nombre] conectado?"
+- "¿quién está disponible?"
+- "listar gente"
+- "¿quién más está en el chat?"
+- "usuarios activos"
+- "gente conectada"
+
+CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen y {{usuarios_online}} cuando pregunten sobre usuarios conectados.${memoryInstructions}${this.generateMemoryExamples(username)}
 
 Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${username}.`;
 

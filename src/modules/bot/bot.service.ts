@@ -5,6 +5,7 @@ import * as WebSocket from 'ws';
 import { AuthService } from '../auth/auth.service';
 import { ChatService } from '../chat/chat.service';
 import { MessagesService } from '../chat/messages.service';
+import { OnlineUsersService } from '../chat/online-users.service';
 import { MusicService } from '../music/music.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
@@ -24,6 +25,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly authService: AuthService,
     private readonly chatService: ChatService,
     private readonly messagesService: MessagesService,
+    private readonly onlineUsersService: OnlineUsersService,
     private readonly musicService: MusicService,
     private readonly utilsService: UtilsService,
     private readonly loggingService: LoggingService,
@@ -171,10 +173,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Verificar primero si es solicitud de música
     const isMusicRequest = message ? MusicService.isMusicRequest(message) : false;
     
+    // Verificar si es solicitud de usuarios en línea
+    const isOnlineUsersRequest = message ? this.isOnlineUsersRequest(message) : false;
+    
     if (
       !message ||
       name === this.session.uname ||
-      (!containsBotWord(message) && !containsExactBotName(message, this.session.uname) && !isMusicRequest)
+      (!containsBotWord(message) && !containsExactBotName(message, this.session.uname) && !isMusicRequest && !isOnlineUsersRequest)
     )
       return;
 
@@ -189,6 +194,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     
     if (isMusicRequest) {
       await this.handleMusicRequest(message, name, colorPrefix);
+      return;
+    }
+
+    // Verificar si es una solicitud de usuarios en línea
+    console.log(`🔍 Verificando si "${message}" es solicitud de usuarios en línea...`);
+    console.log(`🔍 Resultado detección usuarios en línea: ${isOnlineUsersRequest}`);
+    
+    if (isOnlineUsersRequest) {
+      await this.handleOnlineUsersRequest(message, name, colorPrefix);
       return;
     }
 
@@ -308,6 +322,27 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       };
       await this.sendMessageWithSessionCheck(debugResponse);
     }
+    
+    if (message.toLowerCase().includes('online') || message.toLowerCase().includes('usuarios')) {
+      try {
+        const onlineData = await this.onlineUsersService.getOnlineUsers(
+          this.session.boxId,
+          this.session.boxTag
+        );
+        const debugResponse = {
+          message: `${colorPrefix}<@${name}> Debug Online: ${onlineData.users.length} registrados, ${onlineData.guestCount} invitados, total: ${onlineData.totalCount} 👥`,
+          username: this.session.uname,
+          key: this.session.ukey,
+          pic: this.session.pic,
+          boxTag: this.session.boxTag,
+          boxId: this.session.boxId,
+          iframeUrl: this.session.iframeUrl,
+        };
+        await this.sendMessageWithSessionCheck(debugResponse);
+      } catch (error) {
+        console.error('Error en debug online:', error);
+      }
+    }
     // Agregar más comandos de debug según sea necesario
   }
 
@@ -364,6 +399,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Verificar si se solicitó resumen
     if (response.includes('{{resumen}}')) {
       await this.handleSummaryRequest(response, name, colorPrefix, maxLength);
+      return;
+    }
+
+    // Verificar si se solicitó usuarios en línea
+    if (response.includes('{{usuarios_online}}')) {
+      await this.handleOnlineUsersFromGPT(response, name, colorPrefix);
       return;
     }
 
@@ -612,5 +653,151 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     return true;
+  }
+
+  /**
+   * Detecta si un mensaje es una solicitud de usuarios en línea
+   */
+  private isOnlineUsersRequest(message: string): boolean {
+    if (!message || typeof message !== "string") {
+      return false;
+    }
+
+    const lowerMessage = message.toLowerCase();
+
+    const onlineKeywords = [
+      'quién está en línea',
+      'quien esta en linea',
+      'quienes están en línea',
+      'quienes estan en linea',
+      'usuarios en línea',
+      'usuarios en linea',
+      'lista de usuarios',
+      'who is online',
+      'online users',
+      'users online',
+      'gente en línea',
+      'gente en linea',
+      'cuántos están en línea',
+      'cuantos estan en linea',
+      'cuántos online',
+      'cuantos online',
+      'lista online',
+      'ver usuarios',
+      'usuarios conectados',
+      'conectados',
+      'en línea',
+      'en linea',
+      'online'
+    ];
+
+    return onlineKeywords.some(keyword => lowerMessage.includes(keyword));
+  }
+
+  /**
+   * Maneja las solicitudes de usuarios en línea
+   */
+  private async handleOnlineUsersRequest(message: string, name: string, colorPrefix: string): Promise<void> {
+    console.log(`👥 Solicitud de usuarios en línea detectada de ${name}: "${message}"`);
+    
+    try {
+      // Obtener usuarios en línea
+      const onlineData = await this.onlineUsersService.getOnlineUsers(
+        this.session.boxId,
+        this.session.boxTag
+      );
+
+      // Generar resumen
+      const summary = this.onlineUsersService.generateOnlineUsersSummary(onlineData);
+      
+      // Enviar respuesta
+      const response = {
+        message: `${colorPrefix}<@${name}> ${summary}`,
+        username: this.session.uname,
+        key: this.session.ukey,
+        pic: this.session.pic,
+        boxTag: this.session.boxTag,
+        boxId: this.session.boxId,
+        iframeUrl: this.session.iframeUrl,
+      };
+
+      await this.sendMessageWithSessionCheck(response);
+      
+      console.log(`✅ Lista de usuarios en línea enviada a ${name}`);
+    } catch (error) {
+      console.error(`❌ Error obteniendo usuarios en línea:`, error);
+      const errorResponse = {
+        message: `${colorPrefix}<@${name}> ❌ Error obteniendo la lista de usuarios en línea. Intenta más tarde.`,
+        username: this.session.uname,
+        key: this.session.ukey,
+        pic: this.session.pic,
+        boxTag: this.session.boxTag,
+        boxId: this.session.boxId,
+        iframeUrl: this.session.iframeUrl,
+      };
+      await this.sendMessageWithSessionCheck(errorResponse);
+    }
+  }
+
+  /**
+   * Maneja las solicitudes de usuarios en línea cuando vienen de ChatGPT
+   */
+  private async handleOnlineUsersFromGPT(response: string, name: string, colorPrefix: string): Promise<void> {
+    try {
+      // Enviar mensaje de confirmación primero (sin {{usuarios_online}})
+      const confirmationMessage = response.replace('{{usuarios_online}}', '').trim();
+      if (confirmationMessage) {
+        const confirmationData = {
+          message: `${colorPrefix}<@${name}> ${confirmationMessage}`,
+          username: this.session.uname,
+          key: this.session.ukey,
+          pic: this.session.pic,
+          boxTag: this.session.boxTag,
+          boxId: this.session.boxId,
+          iframeUrl: this.session.iframeUrl,
+        };
+        await this.sendMessageWithSessionCheck(confirmationData);
+        
+        // Esperar un momento antes de mostrar la lista
+        const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+        await this.utilsService.sleep(responseDelay);
+      }
+
+      // Obtener y enviar usuarios en línea
+      console.log(`👥 [GPT] Solicitud de usuarios en línea interpretada por ChatGPT de ${name}`);
+      
+      const onlineData = await this.onlineUsersService.getOnlineUsers(
+        this.session.boxId,
+        this.session.boxTag
+      );
+
+      const summary = this.onlineUsersService.generateOnlineUsersSummary(onlineData);
+      
+      const onlineResponse = {
+        message: `${colorPrefix}${summary}`,
+        username: this.session.uname,
+        key: this.session.ukey,
+        pic: this.session.pic,
+        boxTag: this.session.boxTag,
+        boxId: this.session.boxId,
+        iframeUrl: this.session.iframeUrl,
+      };
+
+      await this.sendMessageWithSessionCheck(onlineResponse);
+      console.log(`✅ [GPT] Lista de usuarios en línea enviada a ${name} (interpretado por ChatGPT)`);
+      
+    } catch (error) {
+      console.error(`❌ [GPT] Error obteniendo usuarios en línea:`, error);
+      const errorResponse = {
+        message: `${colorPrefix}❌ Error obteniendo la lista de usuarios en línea. Intenta más tarde.`,
+        username: this.session.uname,
+        key: this.session.ukey,
+        pic: this.session.pic,
+        boxTag: this.session.boxTag,
+        boxId: this.session.boxId,
+        iframeUrl: this.session.iframeUrl,
+      };
+      await this.sendMessageWithSessionCheck(errorResponse);
+    }
   }
 }
