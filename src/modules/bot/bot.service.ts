@@ -329,16 +329,32 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           this.session.boxId,
           this.session.boxTag
         );
-        const debugResponse = {
-          message: `${colorPrefix}<@${name}> Debug Online: ${onlineData.users.length} registrados, ${onlineData.guestCount} invitados, total: ${onlineData.totalCount} 👥`,
-          username: this.session.uname,
-          key: this.session.ukey,
-          pic: this.session.pic,
-          boxTag: this.session.boxTag,
-          boxId: this.session.boxId,
-          iframeUrl: this.session.iframeUrl,
-        };
-        await this.sendMessageWithSessionCheck(debugResponse);
+        
+        // Si incluye "stats" mostrar estadísticas detalladas
+        if (message.toLowerCase().includes('stats')) {
+          const stats = this.onlineUsersService.getOnlineUserStats(onlineData);
+          const debugResponse = {
+            message: `${colorPrefix}<@${name}> ${stats}`,
+            username: this.session.uname,
+            key: this.session.ukey,
+            pic: this.session.pic,
+            boxTag: this.session.boxTag,
+            boxId: this.session.boxId,
+            iframeUrl: this.session.iframeUrl,
+          };
+          await this.sendMessageWithSessionCheck(debugResponse);
+        } else {
+          const debugResponse = {
+            message: `${colorPrefix}<@${name}> Debug Online: ${onlineData.users.length} registrados, ${onlineData.guestCount} invitados, total: ${onlineData.totalCount} 👥`,
+            username: this.session.uname,
+            key: this.session.ukey,
+            pic: this.session.pic,
+            boxTag: this.session.boxTag,
+            boxId: this.session.boxId,
+            iframeUrl: this.session.iframeUrl,
+          };
+          await this.sendMessageWithSessionCheck(debugResponse);
+        }
       } catch (error) {
         console.error('Error en debug online:', error);
       }
