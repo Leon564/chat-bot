@@ -27,7 +27,8 @@ export class MusicService {
   private uploadService: "catbox" | "litterbox";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
-  private ytdlp: YTDlpWrap;
+  private ytdlp: YTDlpWrap | null = null;
+  private ytdlpAvailable: boolean = false;
 
   constructor(private readonly configService: ConfigService) {
     this.isProcessing = false;
@@ -54,22 +55,38 @@ export class MusicService {
       console.log(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
     }
 
-    // Inicializar yt-dlp
-    this.ytdlp = new YTDlpWrap();
-    console.log(`🔧 [YT-DLP] Inicializado como fallback`);
-    
-    // Asegurar que yt-dlp esté disponible de forma asíncrona (no bloquear la inicialización)
-    this.ensureYtDlpAvailable().then(() => {
-      console.log(`✅ [YT-DLP] yt-dlp está listo para usar`);
-    }).catch(error => {
-      console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, solo se usará ytdl-core:`, error instanceof Error ? error.message : error);
-    });
+    // Inicializar yt-dlp de forma segura
+    this.initializeYtDlp();
+  }
+
+  private async initializeYtDlp(): Promise<void> {
+    try {
+      this.ytdlp = new YTDlpWrap();
+      console.log(`🔧 [YT-DLP] Inicializado como fallback`);
+      
+      // Verificar disponibilidad de forma asíncrona sin bloquear
+      this.ensureYtDlpAvailable().then(() => {
+        this.ytdlpAvailable = true;
+        console.log(`✅ [YT-DLP] yt-dlp está listo para usar`);
+      }).catch(error => {
+        this.ytdlpAvailable = false;
+        console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, solo se usará ytdl-core:`, error instanceof Error ? error.message : error);
+      });
+    } catch (error) {
+      console.warn(`⚠️ [YT-DLP] Error inicializando yt-dlp:`, error instanceof Error ? error.message : error);
+      this.ytdlp = null;
+      this.ytdlpAvailable = false;
+    }
   }
 
   private async ensureYtDlpAvailable(): Promise<void> {
+    if (!this.ytdlp) {
+      throw new Error('yt-dlp no está inicializado');
+    }
+
     try {
-      // Verificar si yt-dlp está disponible
-      await this.ytdlp.exec(['--version']);
+      // Verificar si yt-dlp está disponible con timeout
+      await this.safeYtDlpExec(['--version'], 10000);
       console.log(`✅ [YT-DLP] yt-dlp está disponible`);
     } catch (error) {
       console.log(`📥 [YT-DLP] yt-dlp no encontrado, intentando descarga automática...`);
@@ -79,7 +96,7 @@ export class MusicService {
         console.log(`✅ [YT-DLP] yt-dlp descargado exitosamente`);
         
         // Verificar que funcione después de la descarga
-        await this.ytdlp.exec(['--version']);
+        await this.safeYtDlpExec(['--version'], 10000);
         console.log(`✅ [YT-DLP] yt-dlp verificado después de descarga`);
       } catch (downloadError) {
         console.error(`❌ [YT-DLP] Error descargando o verificando yt-dlp:`, downloadError);
@@ -88,11 +105,61 @@ export class MusicService {
     }
   }
 
+  /**
+   * Ejecuta comando yt-dlp de forma segura con timeout
+   */
+  private async safeYtDlpExec(args: string[], timeoutMs: number = 30000): Promise<void> {
+    if (!this.ytdlp) {
+      throw new Error('yt-dlp no está inicializado');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`yt-dlp timeout después de ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      try {
+        const ytdlpProcess = this.ytdlp!.exec(args);
+        
+        ytdlpProcess.on('close', (code) => {
+          clearTimeout(timeout);
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`yt-dlp salió con código ${code}`));
+          }
+        });
+
+        ytdlpProcess.on('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      } catch (error) {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    });
+  }
+
   private async isYtDlpAvailable(): Promise<boolean> {
+    // Si ya sabemos el estado, devolverlo directamente
+    if (this.ytdlpAvailable !== undefined) {
+      return this.ytdlpAvailable;
+    }
+
+    // Si yt-dlp no está inicializado, no está disponible
+    if (!this.ytdlp) {
+      this.ytdlpAvailable = false;
+      return false;
+    }
+
     try {
-      await this.ytdlp.exec(['--version']);
+      await this.safeYtDlpExec(['--version'], 5000);
+      this.ytdlpAvailable = true;
       return true;
     } catch (error) {
+      this.ytdlpAvailable = false;
+      console.warn(`⚠️ [YT-DLP] yt-dlp no responde:`, error instanceof Error ? error.message : error);
       return false;
     }
   }
@@ -867,6 +934,10 @@ export class MusicService {
 
   private async downloadWithYtDlp(videoUrl: string): Promise<Buffer> {
     // Verificar disponibilidad primero
+    if (!this.ytdlp) {
+      throw new Error('yt-dlp no está inicializado');
+    }
+
     const available = await this.isYtDlpAvailable();
     if (!available) {
       throw new Error('yt-dlp no está disponible en el sistema');
@@ -910,8 +981,32 @@ export class MusicService {
     try {
       console.log(`🚀 [YT-DLP] Ejecutando descarga...`);
       
-      const result = await this.ytdlp.exec(args);
-      console.log(`📋 [YT-DLP] Resultado:`, result);
+      // Usar Promise para manejar el EventEmitter de yt-dlp
+      await new Promise<void>((resolve, reject) => {
+        try {
+          const ytdlpProcess = this.ytdlp!.exec(args);
+          
+          ytdlpProcess.on('close', (code) => {
+            if (code === 0) {
+              console.log(`✅ [YT-DLP] Descarga completada exitosamente`);
+              resolve();
+            } else {
+              reject(new Error(`yt-dlp salió con código ${code}`));
+            }
+          });
+
+          ytdlpProcess.on('error', (error) => {
+            reject(error);
+          });
+
+          // Timeout para evitar que se cuelgue
+          setTimeout(() => {
+            reject(new Error('Timeout en descarga de yt-dlp (60s)'));
+          }, 60000);
+        } catch (error) {
+          reject(error);
+        }
+      });
       
       // Buscar el archivo descargado (puede tener diferentes extensiones)
       const files = fs.readdirSync(tempDir).filter(file => 

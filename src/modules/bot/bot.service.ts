@@ -558,8 +558,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async renewSessionIfNeeded(): Promise<boolean> {
     const currentTime = Date.now();
     const timeSinceLastLogin = currentTime - this.session.lastLoginTime;
-    
-    // Si ha pasado más de 1 hora desde el último login, renovar la sesión
+
+    // Si ha pasado más de 15 minutos desde el último login, renovar la sesión
     if (timeSinceLastLogin > this.SESSION_DURATION) {
       console.log(`🔄 Renovando sesión... (${Math.round(timeSinceLastLogin / (60 * 1000))} minutos desde último login)`);
       
