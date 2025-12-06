@@ -212,7 +212,7 @@ export class OnlineUsersService {
       return '👤 No hay nadie en línea en este momento.';
     }
 
-    let summary = `👥 **${totalCount} personas en línea:**\n\n`;
+    let summary = `👥 **${totalCount} personas en línea:**[br][br]`;
 
     if (users.length > 0) {
       // Agrupar usuarios por nivel numérico para mejor orden
