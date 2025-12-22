@@ -17,6 +17,8 @@ Este bot puede descargar y compartir música de YouTube automáticamente usando 
 - ✅ **Mejor calidad**: Descarga audio de la máxima calidad disponible
 - ✅ **Conversión automática**: Convierte cualquier formato a MP3
 - ✅ **Búsqueda inteligente**: Encuentra videos usando términos de búsqueda
+- ✅ **Límite de duración**: Solo permite canciones hasta 8 minutos por defecto
+- ✅ **Configurable**: Duración máxima personalizable vía variables de entorno
 
 ## 📖 Cómo Usar
 
@@ -74,6 +76,23 @@ Formato:
   }
 ]
 ```
+
+#### Configuración de Duración
+El bot limita automáticamente la duración de las canciones:
+
+```env
+MAX_SONG_DURATION = 8  # Duración máxima en minutos (por defecto: 8)
+```
+
+**Comportamiento**:
+- Videos más largos que el límite serán **rechazados** antes de la descarga
+- Se muestra un mensaje de error indicando la duración límite
+- Ayuda a evitar descargas largas que consumen recursos
+
+**Ejemplos**:
+- ✅ Canción de 3:45 minutos → Se procesa normalmente
+- ✅ Canción de 7:30 minutos → Se procesa normalmente  
+- ❌ Video de 12:00 minutos → Error: "El video es demasiado largo (12 min). El límite es de 8 minutos."
 
 ### Comandos de Debug (Solo para Leon564)
 

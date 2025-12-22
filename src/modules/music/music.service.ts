@@ -355,6 +355,17 @@ export class MusicService {
         `🎯 [FOUND] Video encontrado: "${video.title}" - ${video.url}`
       );
 
+      // Validar duración del video
+      const maxDurationMinutes = this.configService.get<number>('music.maxDurationMinutes') || 8;
+      if (video.duration && typeof video.duration === 'string') {
+        const durationMinutes = this.parseDurationToMinutes(video.duration);
+        console.log(`⏱️ [DURATION] Duración del video: ${video.duration} (${durationMinutes} min) - Límite: ${maxDurationMinutes} min`);
+        
+        if (durationMinutes > maxDurationMinutes) {
+          throw new Error(`El video es demasiado largo (${durationMinutes} min). El límite es de ${maxDurationMinutes} minutos.`);
+        }
+      }
+
       // Intentar descarga con diferentes configuraciones
       const maxDownloadRetries = 3;
       let audioBuffer = null;
@@ -1058,6 +1069,35 @@ export class MusicService {
           // Ignorar errores de limpieza
         }
       }
+    }
+  }
+
+  /**
+   * Convierte una duración en formato de YouTube (ej: "3:45", "1:23:45") a minutos
+   */
+  private parseDurationToMinutes(duration: string): number {
+    try {
+      // Eliminar espacios y convertir a minúsculas
+      const cleanDuration = duration.trim();
+      
+      // Separar por ':'
+      const parts = cleanDuration.split(':').map(part => parseInt(part, 10));
+      
+      if (parts.length === 2) {
+        // Formato MM:SS
+        const [minutes, seconds] = parts;
+        return minutes + (seconds / 60);
+      } else if (parts.length === 3) {
+        // Formato HH:MM:SS
+        const [hours, minutes, seconds] = parts;
+        return (hours * 60) + minutes + (seconds / 60);
+      } else {
+        console.warn(`⚠️ [DURATION] Formato de duración no reconocido: ${duration}`);
+        return 0; // Permitir si no podemos parsear
+      }
+    } catch (error) {
+      console.error(`❌ [DURATION] Error parseando duración "${duration}":`, error);
+      return 0; // Permitir si hay error en parsing
     }
   }
 

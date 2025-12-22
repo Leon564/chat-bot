@@ -27,5 +27,6 @@ export default () => ({
     uploadService: process.env.UPLOAD_SERVICE || 'catbox',
     litterboxExpiry: process.env.LITTERBOX_EXPIRY || '1h',
     youtubeCookiesPath: process.env.YOUTUBE_COOKIES_PATH,
+    maxDurationMinutes: parseInt(process.env.MAX_SONG_DURATION || '8', 10),
   },
 });
