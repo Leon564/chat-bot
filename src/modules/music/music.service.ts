@@ -609,55 +609,104 @@ export class MusicService {
       throw new Error(`❌ Sin conectividad a internet. Verifica tu conexión de red.`);
     }
 
-    // Siempre intentar Catbox primero
+    // Intentar según prioridad configurada
     const maxRetries = 3;
     const retryDelay = 2000;
 
-    console.log(`📤 [UPLOAD] Intentando subir a Catbox primero...`);
-    
-    // Intentar Catbox con reintentos
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        console.log(`📤 [CATBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
-        return await this.uploadToCatboxWithRetry(filePath);
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`❌ [CATBOX] Error en intento ${attempt}:`, errorMsg);
-        
-        // Verificar si es un error de conectividad DNS
-        if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
-          console.log(`🌐 [DNS] Problema de conectividad detectado con Catbox`);
-        }
-        
-        if (attempt === maxRetries) {
-          console.log(`🔄 [FALLBACK] Catbox falló después de ${maxRetries} intentos, intentando con Litterbox (72h)...`);
-          break; // Salir para intentar el fallback
-        }
-        
-        // Esperar antes del siguiente intento (más tiempo si es problema DNS)
-        if (attempt < maxRetries) {
-          const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
-          console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
+    if (this.uploadService === "catbox") {
+      console.log(`📤 [UPLOAD] Intentando subir a Catbox primero (configurado)...`);
+      
+      // Intentar Catbox con reintentos
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`📤 [CATBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          return await this.uploadToCatboxWithRetry(filePath);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [CATBOX] Error en intento ${attempt}:`, errorMsg);
+          
+          // Verificar si es un error de conectividad DNS
+          if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
+            console.log(`🌐 [DNS] Problema de conectividad detectado con Catbox`);
+          }
+          
+          if (attempt === maxRetries) {
+            console.log(`🔄 [FALLBACK] Catbox falló después de ${maxRetries} intentos, intentando con Litterbox como fallback...`);
+            break; // Salir para intentar el fallback
+          }
+          
+          // Esperar antes del siguiente intento (más tiempo si es problema DNS)
+          if (attempt < maxRetries) {
+            const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
+            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
         }
       }
-    }
 
-    // Fallback a Litterbox con 72h (fijo, no depende del .env)
-    try {
-      const result = await this.uploadToLitterboxFallback(filePath);
-      console.log(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
-      return result;
-    } catch (fallbackError) {
-      const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-      
-      // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
-      if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
-        console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
-        throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
+      // Fallback a Litterbox
+      try {
+        const result = await this.uploadToLitterboxFallback(filePath);
+        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
+        return result;
+      } catch (fallbackError) {
+        const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        
+        // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
+        if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
+          console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
+          throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
+        }
+        
+        throw new Error(`Error en Catbox y Litterbox fallback: ${fallbackErrorMsg}`);
       }
+    } else {
+      console.log(`📤 [UPLOAD] Intentando subir a Litterbox primero (configurado)...`);
       
-      throw new Error(`Error en Catbox y Litterbox fallback: ${fallbackErrorMsg}`);
+      // Intentar Litterbox con reintentos
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`📤 [LITTERBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          return await this.uploadToLitterbox(filePath);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [LITTERBOX] Error en intento ${attempt}:`, errorMsg);
+          
+          // Verificar si es un error de conectividad DNS
+          if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
+            console.log(`🌐 [DNS] Problema de conectividad detectado con Litterbox`);
+          }
+          
+          if (attempt === maxRetries) {
+            console.log(`🔄 [FALLBACK] Litterbox falló después de ${maxRetries} intentos, intentando con Catbox como fallback...`);
+            break; // Salir para intentar el fallback
+          }
+          
+          // Esperar antes del siguiente intento (más tiempo si es problema DNS)
+          if (attempt < maxRetries) {
+            const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
+            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+      }
+
+      // Fallback a Catbox
+      try {
+        const result = await this.uploadToCatboxWithRetry(filePath);
+        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox como fallback`);
+        return result;
+      } catch (fallbackError) {
+        const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        
+        // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
+        if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
+          console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
+          throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
+        }
+        
+        throw new Error(`Error en Litterbox y Catbox fallback: ${fallbackErrorMsg}`);
+      }
     }
   }
 
