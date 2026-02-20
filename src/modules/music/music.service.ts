@@ -327,6 +327,12 @@ export class MusicService {
           error instanceof Error ? error : new Error(String(error))
         );
       }
+
+      // Agregar delay de 5 segundos entre cada elemento de la cola
+      if (this.queue.length > 0) {
+        console.log(`⏱️ [QUEUE] Esperando 5 segundos antes de procesar el siguiente elemento...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
 
     this.isProcessing = false;
