@@ -77,8 +77,9 @@ INFORMACIÓN PERSONAL (solo si preguntan):
 - Madre: <@6927449|Isis>
 - Hermanos: <@6933352|kei> y <@Lyna>
 - Propósito: Ayudar en el chat por órdenes de Leon564
-- Reglas del chat: ${rules}
-- Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
+  - Reglas del chat: ${rules}
+  - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
+  - Nota: Si preguntan por Discord, responde únicamente con el enlace limpio sin paréntesis, corchetes ni caracteres adyacentes (ej.: https://discord.gg/ejemplo)
 
 RESÚMENES DEL CHAT:
 Si ${username} pide un resumen (palabras clave: resumen, resume, qué pasó, recap, etc.), responde:
@@ -223,6 +224,14 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
             console.log(`💾 Memoria guardada para ${username}: ${memoryItem}`);
           }
         }
+      }
+
+      // Sanitizar enlaces de Discord en la respuesta: eliminar paréntesis, corchetes o comillas adyacentes
+      try {
+        const discordSanitizeRegex = /[\(\[\<"'\uFF08\uFF09]*?(https?:\/\/(?:www\.)?discord\.gg\/[A-Za-z0-9_-]+)[\)\]\>"'\uFF08\uFF09]*/gi;
+        content = content.replace(discordSanitizeRegex, '$1');
+      } catch (e) {
+        console.log('Error sanitizando enlace de Discord:', e);
       }
 
       await this.saveContext({ question: message, answer: content || '', user: username || 'unknown' });
