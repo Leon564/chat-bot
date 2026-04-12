@@ -15,6 +15,7 @@ export class ChatService {
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
+      baseURL: this.configService.get<string>('openai.baseURL') || 'https://api.openai.com/v1',
     });
   }
 
