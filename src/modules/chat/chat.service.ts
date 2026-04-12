@@ -168,7 +168,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
       
       const response = await this.openai.chat.completions.create({
         messages: messages as any,
-        model: 'gpt-4o-mini',
+        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
         temperature: isSimpleGreeting ? 0.3 : 0.7, // Temperatura baja para saludos
         max_tokens: maxTokens,
       });
@@ -294,7 +294,7 @@ FORMATO SUGERIDO:
             content: `Genera un resumen de esta conversación de chat:\n\n${cleanMessages}`
           }
         ],
-        model: 'gpt-4o-mini',
+        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
         temperature: 0.7,
         max_tokens: 500,
       });
