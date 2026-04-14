@@ -20,7 +20,7 @@ export class ChatService {
   }
 
   async chat(message: string, botName?: string, username?: string): Promise<string> {
-    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] ¡Disfruta del chat y del manga!';
+    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 3. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
 
     // Generar instrucciones de memoria dinámicamente usando función especial
     const useMemory = this.configService.get<boolean>('bot.useMemory');
