@@ -66,9 +66,7 @@ export class BotService implements OnModuleInit {
     // Debug commands (owner only)
     if (authorUsername === 'Leon564' && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
-      this.chatSocketService.sendMessage(
-        `@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`,
-      );
+      this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
       return;
     }
 
@@ -83,13 +81,11 @@ export class BotService implements OnModuleInit {
   private async handleMusicRequest(message: string, authorUsername: string): Promise<void> {
     const query = MusicService.extractMusicQuery(message);
     if (!query || query.trim().length < 2) {
-      this.chatSocketService.sendMessage(
-        `@${authorUsername} ❌ No pude entender qué música quieres. Intenta: "!music nombre de la canción"`,
-      );
+      this.sendBotMessage(`@${authorUsername} ❌ No pude entender qué música quieres. Intenta: "!music nombre de la canción"`);
       return;
     }
 
-    this.chatSocketService.sendMessage(`@${authorUsername} 🎵 Buscando "${query}"… un momento.`);
+    this.sendBotMessage(`@${authorUsername} 🎵 Buscando "${query}"… un momento.`);
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
@@ -97,11 +93,11 @@ export class BotService implements OnModuleInit {
       .processMusic(query, authorUsername)
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
-        this.chatSocketService.sendMessage(result);
+        this.sendBotMessage(result);
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
-        this.chatSocketService.sendMessage(`@${authorUsername} ❌ ${error.message}`);
+        this.sendBotMessage(`@${authorUsername} ❌ ${error.message}`);
       });
   }
 
@@ -146,7 +142,7 @@ export class BotService implements OnModuleInit {
       summary += '\n';
     }
 
-    this.chatSocketService.sendMessage(`@${authorUsername} ${summary.trimEnd()}`);
+    this.sendBotMessage(`@${authorUsername} ${summary.trimEnd()}`);
   }
 
   // ─── Chat / GPT response ───────────────────────────────────────────────────
@@ -163,7 +159,7 @@ export class BotService implements OnModuleInit {
     if (response.includes('{{usuarios_online}}')) {
       const confirmText = response.replace('{{usuarios_online}}', '').trim();
       if (confirmText) {
-        this.chatSocketService.sendMessage(`@${authorUsername} ${confirmText}`);
+        this.sendBotMessage(`@${authorUsername} ${confirmText}`);
         await this.utilsService.sleep(responseDelay);
       }
       await this.handleOnlineUsersRequest(authorUsername);
@@ -173,7 +169,7 @@ export class BotService implements OnModuleInit {
     const parts = this.utilsService.splitMessageIntoParts(response, maxLength);
     for (let i = 0; i < parts.length; i++) {
       const text = i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i];
-      this.chatSocketService.sendMessage(text);
+      this.sendBotMessage(text);
       if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
   }
@@ -183,15 +179,13 @@ export class BotService implements OnModuleInit {
   private async handleSummaryRequest(response: string, authorUsername: string): Promise<void> {
     const lastResumenEvent = await this.loggingService.getLastEventType('Resumen');
     if (lastResumenEvent.minutesLeft < 10) {
-      this.chatSocketService.sendMessage(
-        `@${authorUsername} Puedes leer el resumen anterior y esperar 10 minutos para generar uno nuevo. 🙂`,
-      );
+      this.sendBotMessage(`@${authorUsername} Puedes leer el resumen anterior y esperar 10 minutos para generar uno nuevo. 🙂`);
       return;
     }
 
     const confirmationMessage = response.replace('{{resumen}}', '').trim();
     if (confirmationMessage) {
-      this.chatSocketService.sendMessage(`@${authorUsername} ${confirmationMessage}`);
+      this.sendBotMessage(`@${authorUsername} ${confirmationMessage}`);
     }
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
@@ -215,7 +209,7 @@ export class BotService implements OnModuleInit {
           i === resumenParts.length - 1 && resumenParts.length > 1
             ? '\n\n¡Eso es todo por ahora! 🎬'
             : '';
-        this.chatSocketService.sendMessage(`${prefix}${part}${suffix}`);
+        this.sendBotMessage(`${prefix}${part}${suffix}`);
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
@@ -224,11 +218,19 @@ export class BotService implements OnModuleInit {
       console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
     } catch (error) {
       console.error('❌ Error generating summary:', error);
-      this.chatSocketService.sendMessage('❌ Error al generar el resumen. Inténtalo más tarde.');
+      this.sendBotMessage('❌ Error al generar el resumen. Inténtalo más tarde.');
     }
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /** Send a bot message prefixed with the configured color code if provided */
+  private sendBotMessage(text: string): void {
+    const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
+    const prefix = color ? `^#${color} ` : '';
+    this.chatSocketService.sendMessage(`${prefix}${text}`);
+  }
+
 
   private isOnlineUsersRequest(message: string): boolean {
     if (!message || typeof message !== 'string') return false;

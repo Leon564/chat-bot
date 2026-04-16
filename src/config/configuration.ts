@@ -13,6 +13,8 @@ export default () => ({
     responseDelay: parseInt(process.env.RESPONSE_DELAY || '1000', 10),
     maxLengthResponse: parseInt(process.env.MAX_LENGTH_RESPONSE || '200', 10),
     useMemory: process.env.USE_MEMORY === 'true',
+    // Optional hex color (without #) used to prefix bot messages, e.g. TEXT_COLOR=ff00aa
+    textColor: process.env.TEXT_COLOR || '',
   },
 
   // Music Configuration
