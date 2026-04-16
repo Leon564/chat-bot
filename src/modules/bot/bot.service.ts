@@ -115,10 +115,38 @@ export class BotService implements OnModuleInit {
       );
       return;
     }
-    const names = users.map((u) => u.username).join(', ');
-    this.chatSocketService.sendMessage(
-      `@${authorUsername} 👥 Usuarios en línea (${users.length}): ${names}`,
-    );
+
+    const ROLE_ORDER = ['admin', 'mod', 'bot', 'user', 'guest'] as const;
+    const ROLE_LABELS: Record<string, string> = {
+      admin: 'Admins',
+      mod: 'Moderadores',
+      bot: 'Bots',
+      user: 'Usuarios',
+      guest: 'Invitados',
+    };
+
+    const grouped: Record<string, typeof users> = {};
+    for (const u of users) {
+      const key = u.role === 'superAdmin' ? 'admin' : u.role;
+      (grouped[key] ??= []).push(u);
+    }
+
+    const total = users.length;
+    let summary = `👥 **${total} persona${total !== 1 ? 's' : ''} en línea:**\n\n`;
+
+    for (const role of ROLE_ORDER) {
+      const group = grouped[role];
+      if (!group?.length) continue;
+      const label = ROLE_LABELS[role] ?? role;
+      summary += `**${label} (${group.length}):**\n`;
+      for (const u of group) {
+        const icon = u.isActive ? '🟢' : '🟡';
+        summary += `${icon} ${u.username}\n`;
+      }
+      summary += '\n';
+    }
+
+    this.chatSocketService.sendMessage(`@${authorUsername} ${summary.trimEnd()}`);
   }
 
   // ─── Chat / GPT response ───────────────────────────────────────────────────
