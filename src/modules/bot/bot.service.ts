@@ -168,7 +168,7 @@ export class BotService implements OnModuleInit {
 
     const parts = this.utilsService.splitMessageIntoParts(response, maxLength);
     for (let i = 0; i < parts.length; i++) {
-      const text = i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i];
+      const text = i === 0 ? `<@${authorUsername}> ${parts[i]}` : parts[i];
       this.sendBotMessage(text);
       if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
