@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { io, Socket } from 'socket.io-client';
+import { randomUUID } from 'crypto';
 
 export interface ChatMessage {
   _id: string;
@@ -21,6 +22,7 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   private botUsername: string | null = null;
   private messageHandler: ((msg: ChatMessage) => void) | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private pendingAcks = new Map<string, { resolve: (id: string | null) => void; timer: NodeJS.Timeout }>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -97,8 +99,16 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`joinError: ${data.message}`);
     });
 
-    this.socket.on('newMessage', (msg: ChatMessage) => {
-      // Ignore own messages to prevent echo loops
+    this.socket.on('newMessage', (msg: ChatMessage & { clientId?: string }) => {
+      // Resolve any pending ack waiting on this clientId, then early-return for own messages
+      if (msg.clientId) {
+        const pending = this.pendingAcks.get(msg.clientId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingAcks.delete(msg.clientId);
+          pending.resolve(msg._id);
+        }
+      }
       if (msg.authorUsername?.toLowerCase() === this.botUsername?.toLowerCase()) return;
       this.messageHandler?.(msg);
     });
@@ -132,6 +142,34 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     this.socket.emit('sendMessage', { content, type: 'text' });
+  }
+
+  /**
+   * Send a message and wait for the server to echo it back so we know its _id.
+   * Returns null if the gateway never echoes (e.g. dropped by chatPaused / anti-spam)
+   * within the timeout. The gateway echoes our clientId on the broadcast newMessage.
+   */
+  sendMessageAndAwaitId(content: string, timeoutMs = 5000): Promise<string | null> {
+    if (!this.socket?.connected) {
+      this.logger.warn('Cannot send message — not connected');
+      return Promise.resolve(null);
+    }
+    const clientId = randomUUID();
+
+    return new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingAcks.delete(clientId);
+        resolve(null);
+      }, timeoutMs);
+      this.pendingAcks.set(clientId, { resolve, timer });
+      this.socket!.emit('sendMessage', { content, type: 'text', clientId });
+    });
+  }
+
+  /** Delete a message by id (the bot has 'bot' role and may delete its own messages) */
+  deleteMessage(messageId: string): void {
+    if (!this.socket?.connected || !messageId) return;
+    this.socket.emit('deleteMessage', { messageId });
   }
 
   /** Fetch connected users from the REST API */

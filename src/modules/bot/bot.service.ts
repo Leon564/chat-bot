@@ -81,11 +81,13 @@ export class BotService implements OnModuleInit {
   private async handleMusicRequest(message: string, authorUsername: string): Promise<void> {
     const query = MusicService.extractMusicQuery(message);
     if (!query || query.trim().length < 2) {
-      this.sendBotMessage(`@${authorUsername} ❌ No pude entender qué música quieres. Intenta: "!music nombre de la canción"`);
+      this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué canción quieres. Probá con: "!music nombre de la canción"`);
       return;
     }
 
-    this.sendBotMessage(`@${authorUsername} 🎵 Buscando "${query}"… un momento.`);
+    const searchingId = await this.sendBotMessageAndAwaitId(
+      `@${authorUsername} 🎵 Buscando "${query}"… un momento.`,
+    );
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
@@ -93,12 +95,41 @@ export class BotService implements OnModuleInit {
       .processMusic(query, authorUsername)
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
+        if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(result);
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
-        this.sendBotMessage(`@${authorUsername} ❌ ${error.message}`);
+        if (searchingId) this.chatSocketService.deleteMessage(searchingId);
+        this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
       });
+  }
+
+  /**
+   * Map technical errors from MusicService to user-friendly messages.
+   * Anything we don't recognize falls back to a generic "no se pudo" message
+   * so the user never sees yt-dlp / ytdl-core stack details.
+   */
+  private friendlyMusicError(error: Error, query: string): string {
+    const raw = (error?.message ?? '').toString();
+    const lower = raw.toLowerCase();
+
+    if (lower.includes('no se encontraron resultados')) {
+      return `🔎 No encontré nada para "${query}". Probá con otro nombre o agregá el artista.`;
+    }
+    if (lower.includes('demasiado largo')) {
+      return `⏱️ Esa canción es demasiado larga para mí. Probá con una versión más corta.`;
+    }
+    if (lower.includes('sin conectividad') || lower.includes('econn') || lower.includes('etimedout')) {
+      return `📡 Estoy teniendo problemas de conexión. Intentalo de nuevo en un minuto.`;
+    }
+    if (lower.includes('temporalmente no disponibles') || lower.includes('servicios de subida')) {
+      return `☁️ Los servicios de subida están caídos ahora mismo. Probá más tarde.`;
+    }
+    if (lower.includes('ytdl') || lower.includes('yt-dlp') || lower.includes('descargar el audio')) {
+      return `🎧 No pude descargar esa canción (YouTube anda raro). Probá con otra o más tarde.`;
+    }
+    return `😕 No pude procesar "${query}" esta vez. Intentalo de nuevo en un rato.`;
   }
 
   // ─── Online users ──────────────────────────────────────────────────────────
@@ -229,6 +260,13 @@ export class BotService implements OnModuleInit {
     const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
     const prefix = color ? `^#${color} ` : '';
     this.chatSocketService.sendMessage(`${prefix}${text}`);
+  }
+
+  /** Same as sendBotMessage but resolves with the server-assigned message _id */
+  private sendBotMessageAndAwaitId(text: string): Promise<string | null> {
+    const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
+    const prefix = color ? `^#${color} ` : '';
+    return this.chatSocketService.sendMessageAndAwaitId(`${prefix}${text}`);
   }
 
 
