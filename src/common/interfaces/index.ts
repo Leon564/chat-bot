@@ -49,6 +49,7 @@ export interface MessageData {
 export interface MusicRequest {
   query: string;
   username: string;
+  kind?: 'audio' | 'video';
   resolve: (result: string) => void;
   reject: (error: Error) => void;
 }

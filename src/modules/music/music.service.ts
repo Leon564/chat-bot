@@ -212,6 +212,23 @@ export class MusicService {
   }
 
   /**
+   * True only for explicit !video commands. We deliberately don't match
+   * natural-language phrases here to avoid misfiring on casual conversation;
+   * users who want a video should opt in by typing the prefix.
+   */
+  static isVideoRequest(message: string): boolean {
+    if (!message || typeof message !== 'string') return false;
+    return /^\s*!video\s+.+/i.test(he.decode(message));
+  }
+
+  /** Strips the !video prefix and returns the remaining query. */
+  static extractVideoQuery(message: string): string {
+    if (!message || typeof message !== 'string') return '';
+    const m = he.decode(message).match(/^\s*!video\s+(.+)/i);
+    return m ? m[1].trim() : '';
+  }
+
+  /**
    * Extrae el query de búsqueda del mensaje
    */
   static extractMusicQuery(message: string): string {
@@ -275,6 +292,7 @@ export class MusicService {
       const request: MusicRequest = {
         query,
         username,
+        kind: 'audio',
         resolve,
         reject,
       };
@@ -287,6 +305,28 @@ export class MusicService {
       if (!this.isProcessing) {
         this.processQueue();
       }
+    });
+  }
+
+  /**
+   * Procesa una solicitud de video (opt-in via VIDEO_ENABLED). Reuses the
+   * shared queue so audio and video stay serialized — no concurrent ffmpeg /
+   * upload pressure, and preserves the existing 5s spacing between items.
+   */
+  async processVideo(query: string, username: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const request: MusicRequest = {
+        query,
+        username,
+        kind: 'video',
+        resolve,
+        reject,
+      };
+      this.queue.push(request);
+      console.log(
+        `🎬 [QUEUE] Solicitud de video añadida. Total en cola: ${this.queue.length}`
+      );
+      if (!this.isProcessing) this.processQueue();
     });
   }
 
@@ -313,13 +353,14 @@ export class MusicService {
     while (this.queue.length > 0) {
       const request = this.queue.shift()!;
       try {
+        const isVideo = request.kind === 'video';
+        const tag = isVideo ? '🎬' : '🎵';
         console.log(
-          `🎵 [PROCESSING] Procesando: "${request.query}" para ${request.username}`
+          `${tag} [PROCESSING] Procesando: "${request.query}" para ${request.username}`
         );
-        const result = await this.processSingleMusicRequest(
-          request.query,
-          request.username
-        );
+        const result = isVideo
+          ? await this.processSingleVideoRequest(request.query, request.username)
+          : await this.processSingleMusicRequest(request.query, request.username);
         request.resolve(result);
       } catch (error) {
         console.error(`🎵 [ERROR] Error procesando "${request.query}":`, error);
@@ -525,6 +566,107 @@ export class MusicService {
         })
         .run();
     });
+  }
+
+  /**
+   * Mirrors processSingleMusicRequest but keeps the video stream: searches
+   * YouTube, validates against MAX_VIDEO_DURATION, downloads a muxed
+   * audio+video format with ytdl-core (and yt-dlp as a fallback that merges
+   * separate streams into mp4), uploads, and returns a [video]url[/video]
+   * BBCode that the chat already knows how to render.
+   */
+  private async processSingleVideoRequest(query: string, username: string): Promise<string> {
+    console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
+
+    const searchResults = await ytsr(query, { limit: 5 });
+    const videos = searchResults.items.filter((item: any) => item.type === 'video');
+    if (videos.length === 0) throw new Error(`No se encontraron resultados para "${query}"`);
+
+    const video = videos[0] as any;
+    console.log(`🎯 [FOUND] Video: "${video.title}" - ${video.url}`);
+
+    const maxDur = this.configService.get<number>('video.maxDurationMinutes') || 5;
+    if (video.duration && typeof video.duration === 'string') {
+      const minutes = this.parseDurationToMinutes(video.duration);
+      if (minutes > maxDur) {
+        throw new Error(`El video es demasiado largo (${minutes} min). El límite es de ${maxDur} minutos.`);
+      }
+    }
+
+    const tempDir = path.join(process.cwd(), 'temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const safeUser = username.replace(/[^\w\-_.]/g, '').substring(0, 20) || 'user';
+    const outputPath = path.join(tempDir, `video_${Date.now()}_${safeUser}.mp4`);
+
+    let lastError: unknown = null;
+    let downloaded = false;
+
+    // ytdl-core: try to grab a single muxed mp4 (audio+video). Some YouTube
+    // videos no longer expose muxed formats, in which case we fall through
+    // to yt-dlp which can merge separate streams.
+    try {
+      const ytdlOptions: any = {
+        quality: 'highest',
+        filter: (format: any) => format.hasVideo && format.hasAudio && (format.container === 'mp4' || !format.container),
+      };
+      if (this.youtubeCookies) ytdlOptions.cookies = this.youtubeCookies;
+
+      const stream = ytdl(video.url, ytdlOptions);
+      const buffer = await this.streamToBuffer(stream, 5 * 60 * 1000);
+      fs.writeFileSync(outputPath, buffer);
+      console.log(`✅ [VIDEO] Descarga ytdl-core OK: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
+      downloaded = true;
+    } catch (error) {
+      lastError = error;
+      console.error(`❌ [VIDEO] ytdl-core falló:`, error instanceof Error ? error.message : error);
+    }
+
+    if (!downloaded) {
+      const ytdlpOk = await this.isYtDlpAvailable();
+      if (!ytdlpOk) {
+        throw new Error(
+          `No se pudo descargar el video. ytdl-core falló: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp no está disponible.`,
+        );
+      }
+      try {
+        console.log(`🔄 [VIDEO] Probando yt-dlp como fallback`);
+        // -f best/bestvideo+bestaudio with mp4 merge — emits to outputPath.
+        await this.safeYtDlpExec(
+          [
+            video.url,
+            '-f', 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+            '--merge-output-format', 'mp4',
+            '-o', outputPath,
+            '--no-playlist',
+            '--quiet',
+            '--no-warnings',
+          ],
+          5 * 60 * 1000,
+        );
+        if (!fs.existsSync(outputPath)) throw new Error('yt-dlp no produjo archivo');
+        console.log(`✅ [VIDEO] Descarga yt-dlp OK`);
+        downloaded = true;
+      } catch (ytdlpError) {
+        throw new Error(
+          `No se pudo descargar el video. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`,
+        );
+      }
+    }
+
+    try {
+      const uploadUrl = await this.uploadFile(outputPath);
+      console.log(`☁️ [VIDEO UPLOAD] OK: ${uploadUrl}`);
+      fs.unlinkSync(outputPath);
+      return `🎬 <@${username}> Aquí tienes "${video.title}": [video]${uploadUrl}[/video]`;
+    } catch (uploadError) {
+      const msg = uploadError instanceof Error ? uploadError.message : String(uploadError);
+      if (msg.includes('temporalmente no disponibles')) {
+        console.log(`💾 [VIDEO BACKUP] Manteniendo archivo local: ${outputPath}`);
+        return `🎬 <@${username}> Video "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. Probá más tarde.`;
+      }
+      try { fs.unlinkSync(outputPath); } catch {}
+      throw uploadError;
+    }
   }
 
   private async streamToBuffer(stream: Readable, timeoutMs: number = 5 * 60 * 1000): Promise<Buffer> {

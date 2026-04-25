@@ -48,10 +48,23 @@ export class BotService implements OnModuleInit {
 
     const isMusicRequest = MusicService.isMusicRequest(content);
     const isOnlineReq = this.isOnlineUsersRequest(content);
+    const videoEnabled = !!this.configService.get<boolean>('video.enabled');
+    const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
-    if (!containsBotWord(content) && !containsExactBotName(content) && !isMusicRequest && !isOnlineReq) return;
+    if (
+      !containsBotWord(content) &&
+      !containsExactBotName(content) &&
+      !isMusicRequest &&
+      !isOnlineReq &&
+      !isVideoReq
+    ) return;
 
     console.log(`📨 Mensaje de ${authorUsername}: "${content}"`);
+
+    if (isVideoReq) {
+      await this.handleVideoRequest(content, authorUsername);
+      return;
+    }
 
     if (isMusicRequest) {
       await this.handleMusicRequest(content, authorUsername);
@@ -103,6 +116,56 @@ export class BotService implements OnModuleInit {
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
       });
+  }
+
+  // ─── Video ─────────────────────────────────────────────────────────────────
+
+  private async handleVideoRequest(message: string, authorUsername: string): Promise<void> {
+    const query = MusicService.extractVideoQuery(message);
+    if (!query || query.trim().length < 2) {
+      this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué video quieres. Probá con: "!video nombre del video"`);
+      return;
+    }
+
+    const searchingId = await this.sendBotMessageAndAwaitId(
+      `@${authorUsername} 🎬 Buscando video "${query}"… un momento.`,
+    );
+
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+
+    this.musicService
+      .processVideo(query, authorUsername)
+      .then(async (result) => {
+        await this.utilsService.sleep(responseDelay);
+        if (searchingId) this.chatSocketService.deleteMessage(searchingId);
+        this.sendBotMessage(result);
+      })
+      .catch(async (error: Error) => {
+        await this.utilsService.sleep(responseDelay);
+        if (searchingId) this.chatSocketService.deleteMessage(searchingId);
+        this.sendBotMessage(`@${authorUsername} ${this.friendlyVideoError(error, query)}`);
+      });
+  }
+
+  /** Same friendly mapping as music but with a video-flavoured default. */
+  private friendlyVideoError(error: Error, query: string): string {
+    const lower = (error?.message ?? '').toString().toLowerCase();
+    if (lower.includes('no se encontraron resultados')) {
+      return `🔎 No encontré ningún video para "${query}". Probá con otro término.`;
+    }
+    if (lower.includes('demasiado largo')) {
+      return `⏱️ Ese video es demasiado largo para mí. Probá con uno más corto.`;
+    }
+    if (lower.includes('sin conectividad') || lower.includes('econn') || lower.includes('etimedout')) {
+      return `📡 Estoy teniendo problemas de conexión. Intentalo de nuevo en un minuto.`;
+    }
+    if (lower.includes('temporalmente no disponibles') || lower.includes('servicios de subida')) {
+      return `☁️ Los servicios de subida están caídos ahora mismo. Probá más tarde.`;
+    }
+    if (lower.includes('ytdl') || lower.includes('yt-dlp') || lower.includes('descargar el video')) {
+      return `🎬 No pude descargar ese video (YouTube anda raro). Probá con otro o más tarde.`;
+    }
+    return `😕 No pude procesar el video "${query}" esta vez. Intentalo de nuevo en un rato.`;
   }
 
   /**

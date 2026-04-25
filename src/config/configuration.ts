@@ -25,6 +25,14 @@ export default () => ({
     maxDurationMinutes: parseInt(process.env.MAX_SONG_DURATION || '8', 10),
   },
 
+  // Video Configuration — !video command, disabled by default because uploads
+  // are heavier than audio. MAX_VIDEO_DURATION caps duration to keep file
+  // size manageable for catbox/litterbox.
+  video: {
+    enabled: process.env.VIDEO_ENABLED === 'true',
+    maxDurationMinutes: parseInt(process.env.MAX_VIDEO_DURATION || '5', 10),
+  },
+
   // Chat app connection
   chat: {
     apiUrl: process.env.CHAT_API_URL || 'http://localhost:3001',
