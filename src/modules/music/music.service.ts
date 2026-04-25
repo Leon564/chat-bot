@@ -481,16 +481,17 @@ export class MusicService {
         fs.unlinkSync(outputPath);
         console.log(`🗑️ [CLEANUP] Archivo temporal eliminado: ${outputPath}`);
 
-        return `🎵 <@${username}> Aquí tienes "${video.title}": [audio]${uploadUrl}[/audio]`;
+        const audioTag = this.buildAudioBBCode(uploadUrl, video);
+        return `🎵 <@${username}> Aquí tienes "${video.title}": ${audioTag}`;
       } catch (uploadError) {
         const uploadErrorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
-        
+
         // Si es un problema de conectividad, mantener el archivo y dar instrucciones
         if (uploadErrorMsg.includes('temporalmente no disponibles')) {
           console.log(`💾 [BACKUP] Manteniendo archivo local debido a problemas de conectividad: ${outputPath}`);
           return `🎵 <@${username}> Audio "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. El archivo se ha guardado localmente. Por favor, intenta nuevamente en unos minutos.`;
         }
-        
+
         // Para otros errores, limpiar archivo y relanzar error
         fs.unlinkSync(outputPath);
         throw uploadError;
@@ -1125,6 +1126,28 @@ export class MusicService {
         }
       }
     }
+  }
+
+  /**
+   * Build the [audio] BBCode tag with optional metadata (thumb/title/artist)
+   * extracted from the ytsr video result. Quotes inside attribute values are
+   * escaped as &quot; so the frontend's regex parser stays simple.
+   */
+  private buildAudioBBCode(audioUrl: string, video: any): string {
+    const escapeAttr = (v: string | undefined): string =>
+      (v ?? '').toString().replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ').trim();
+
+    const title = escapeAttr(video?.title);
+    const artist = escapeAttr(video?.author?.name);
+    const thumb = escapeAttr(video?.bestThumbnail?.url || video?.thumbnails?.[0]?.url);
+
+    const attrs: string[] = [];
+    if (thumb) attrs.push(`thumb="${thumb}"`);
+    if (title) attrs.push(`title="${title}"`);
+    if (artist) attrs.push(`artist="${artist}"`);
+
+    const opening = attrs.length ? `[audio ${attrs.join(' ')}]` : '[audio]';
+    return `${opening}${audioUrl}[/audio]`;
   }
 
   /**
