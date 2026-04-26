@@ -1,9 +1,9 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import ytdl from "@distube/ytdl-core";
+import * as ytdl from "@distube/ytdl-core";
 import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
-import ytsr from "ytsr";
+import * as ytsr from "ytsr";
 import { Stream, Readable } from "stream";
 import * as fs from "fs";
 import * as path from "path";
