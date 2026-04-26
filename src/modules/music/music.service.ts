@@ -416,19 +416,34 @@ export class MusicService {
       // Intentar descarga con diferentes configuraciones
       const maxDownloadRetries = 3;
       let audioBuffer = null;
-      let lastError = null;
+      let lastError: unknown = null;
 
       // Primero intentar con ytdl-core
       console.log(`⬇️ [YTDL-CORE] Intentando descarga con @distube/ytdl-core...`);
-      
+
       for (let attempt = 1; attempt <= maxDownloadRetries; attempt++) {
         try {
           console.log(`⬇️ [DOWNLOAD] Intento ${attempt}/${maxDownloadRetries} - Descargando: ${video.url}`);
-          
+
           // Configurar opciones de ytdl progresivamente más agresivas
           const ytdlOptions: any = {
             quality: attempt === 1 ? "highestaudio" : (attempt === 2 ? "highest" : "lowest"),
             filter: attempt <= 2 ? "audioonly" : undefined,
+            // miniget defaults to 3 redirects which is too low for some YouTube
+            // CDN chains; raising it avoids the intermittent
+            // "Too many redirects" error reported in production.
+            requestOptions: {
+              maxRedirects: 10,
+              maxRetries: 3,
+              maxReconnects: 2,
+              backoff: { inc: 500, max: 5000 },
+              headers: {
+                'User-Agent': this.getRandomUserAgent(),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+              },
+            },
           };
 
           // Configuración de headers más robusta
@@ -437,17 +452,8 @@ export class MusicService {
             console.log(`🍪 [YTDL] Usando cookies en intento ${attempt}`);
           }
 
-          // Opciones adicionales para evitar bloqueos
           if (attempt >= 2) {
             ytdlOptions.lang = 'en';
-            ytdlOptions.requestOptions = {
-              headers: {
-                'User-Agent': this.getRandomUserAgent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-              }
-            };
           }
 
           if (attempt === 3) {
@@ -459,7 +465,7 @@ export class MusicService {
 
           // Obtener el stream
           const audioStream = ytdl(video.url, ytdlOptions);
-          
+
           // Convertir stream a buffer con timeout específico para este intento
           console.log(`📦 [BUFFER] Convirtiendo stream a buffer (intento ${attempt})...`);
           audioBuffer = await this.streamToBuffer(audioStream, attempt * 30000); // 30s, 60s, 90s
@@ -468,8 +474,16 @@ export class MusicService {
 
         } catch (error) {
           lastError = error;
-          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, error instanceof Error ? error.message : error);
-          
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, msg);
+
+          // Some errors are not flaky — retrying with the same library will
+          // hit the same wall. Bail to the yt-dlp fallback right away.
+          if (/too many redirects|status code: 403|sign in to confirm/i.test(msg)) {
+            console.log(`⚡ [DOWNLOAD] Error no recuperable detectado, saltando a yt-dlp.`);
+            break;
+          }
+
           if (attempt < maxDownloadRetries) {
             const delay = attempt * 3000; // 3s, 6s, 9s
             console.log(`⏱️ [DOWNLOAD] Esperando ${delay}ms antes del siguiente intento...`);
