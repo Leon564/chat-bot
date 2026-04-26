@@ -13,21 +13,64 @@ export class UtilsService {
       if (!message || typeof message !== 'string') {
         return '';
       }
-      
+
       // Primero decodificar entidades HTML (&amp; -> &, &lt; -> <, etc.)
       let cleanMessage = he.decode(message);
-      
+
       // Luego remover todas las etiquetas HTML
       cleanMessage = cleanMessage.replace(/<[^>]*>/g, '');
-      
+
       // Limpiar espacios extra y caracteres de control
       cleanMessage = cleanMessage.trim().replace(/\s+/g, ' ');
-      
+
       return cleanMessage;
     } catch (e) {
       console.log('Error cleaning HTML from message:', e);
       return message || '';
     }
+  }
+
+  /**
+   * Stronger cleanup for anything that gets persisted into memory.json.
+   * The LLM occasionally echoes user input verbatim, so before we trust the
+   * extracted SAVE_MEMORY content we strip everything that could either
+   * (a) re-trigger a bot feature when the memory is read back into the prompt
+   * or (b) be rendered verbatim by the chat client and abuse other users:
+   *   - HTML tags + entities (delegated to cleanHtmlFromMessage)
+   *   - Bot intent tokens like {{resumen}} / {{usuarios_online}}
+   *   - SAVE_MEMORY()/LOAD_MEMORY() calls (defence against nested injection)
+   *   - BBCode media tags [img|image|audio|video]url[/...]
+   *   - The leading ^#hex color prefix used by sendBotMessage
+   *   - <@user> mentions (kept as @user so the recall reads naturally
+   *     without firing notifications when echoed back to chat)
+   *   - Control chars (\x00-\x1f, \x7f)
+   * Finally truncates to `maxLen` chars at a word boundary and discards
+   * anything shorter than `minLen` after cleanup.
+   */
+  sanitizeMemoryContent(raw: string, opts: { maxLen?: number; minLen?: number } = {}): string {
+    if (!raw || typeof raw !== 'string') return '';
+    const { maxLen = 280, minLen = 5 } = opts;
+
+    // Convert <@user> to @user *before* the HTML strip so cleanHtmlFromMessage
+    // doesn't treat the angle brackets as a generic tag and erase the username.
+    let s = raw.replace(/<@([^>\n\r]+)>/g, '@$1');
+    s = this.cleanHtmlFromMessage(s);
+    if (!s) return '';
+
+    s = s.replace(/\{\{[^}]*\}\}/g, '');
+    s = s.replace(/\b(SAVE|LOAD)_MEMORY\s*\([^)]*\)/gi, '');
+    s = s.replace(/\[(img|image|audio|video)(?:\s+[a-z]+="[^"]*")*\][^[\]]*\[\/\1\]/gi, '');
+    s = s.replace(/^\s*\^#[0-9a-fA-F]{3,8}\s+/, '');
+    s = s.replace(/[\x00-\x1f\x7f]+/g, ' ');
+    s = s.trim().replace(/\s+/g, ' ');
+
+    if (s.length > maxLen) {
+      const cut = s.slice(0, maxLen);
+      const lastSpace = cut.lastIndexOf(' ');
+      s = (lastSpace > maxLen * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd() + '…';
+    }
+
+    return s.length >= minLen ? s : '';
   }
 
   /**

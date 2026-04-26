@@ -33,8 +33,16 @@ export class MemoryService {
     if (!memoryData.global) memoryData.global = [];
     if (!memoryData.users) memoryData.users = {};
     
-    // Limpiar HTML del contenido de memoria y del username
-    const cleanMemory = this.utilsService.cleanHtmlFromMessage(memory.trim());
+    // Sanitize memory content aggressively — strips HTML, bot intent tokens,
+    // BBCode media tags, color prefixes, control chars and truncates length
+    // before we persist anything an attacker could later replay through the
+    // LLM prompt or the chat renderer. Username gets the lighter HTML cleanup
+    // because it's an identifier, not free-form content.
+    const cleanMemory = this.utilsService.sanitizeMemoryContent(memory);
+    if (!cleanMemory) {
+      console.log('🧹 Memoria descartada tras sanitización (vacía o demasiado corta).');
+      return;
+    }
     const cleanUsername = username ? this.utilsService.cleanHtmlFromMessage(username) : undefined;
     const timestamp = new Date().toISOString();
     
@@ -127,8 +135,11 @@ export class MemoryService {
     // Ordenar por timestamp (más recientes primero)
     relevantMemories.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
     
-    // Categorizar y filtrar las memorias
-    const memoryContents = relevantMemories.map(m => m.content);
+    // Categorizar y filtrar las memorias. Pasamos cada entry por el sanitize
+    // para defendernos de filas escritas con la lógica vieja (defense in depth).
+    const memoryContents = relevantMemories
+      .map((m) => this.utilsService.sanitizeMemoryContent(m.content ?? ''))
+      .filter((c) => c.length > 0);
     const categorizedMemories = this.categorizeMemoriesByUser(memoryContents, cleanUsername);
     
     // Seleccionar las más importantes (máximo 5 elementos)
