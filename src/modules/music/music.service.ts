@@ -1,9 +1,9 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import * as ytdl from "@distube/ytdl-core";
+import ytdl from "@distube/ytdl-core";
 import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
-import * as ytsr from "ytsr";
+import ytsr from "ytsr";
 import { Stream, Readable } from "stream";
 import * as fs from "fs";
 import * as path from "path";
@@ -387,8 +387,20 @@ export class MusicService {
     console.log(`🔍 [SEARCH] Buscando en YouTube: "${query}"`);
 
     try {
-      // Buscar en YouTube
-      const searchResults = await ytsr(query, { limit: 5 });
+      // Buscar en YouTube. miniget (used by ytsr) defaults to 3 redirects,
+      // which YouTube's CDN chains have started to exceed — raise it here
+      // to match the download-side options and avoid bare "Too many
+      // redirects" failures escaping the search step.
+      const searchResults = await ytsr(query, {
+        limit: 5,
+        requestOptions: {
+          maxRedirects: 10,
+          maxRetries: 3,
+          maxReconnects: 2,
+          backoff: { inc: 500, max: 5000 },
+          headers: { 'User-Agent': this.getRandomUserAgent() },
+        },
+      } as any);
       const videos = searchResults.items.filter(
         (item: any) => item.type === "video"
       );
@@ -464,7 +476,7 @@ export class MusicService {
           }
 
           // Obtener el stream
-          const audioStream = ytdl(video.url, ytdlOptions);
+          const audioStream =  ytdl(video.url, ytdlOptions);
 
           // Convertir stream a buffer con timeout específico para este intento
           console.log(`📦 [BUFFER] Convirtiendo stream a buffer (intento ${attempt})...`);
@@ -592,7 +604,16 @@ export class MusicService {
   private async processSingleVideoRequest(query: string, username: string): Promise<string> {
     console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
 
-    const searchResults = await ytsr(query, { limit: 5 });
+    const searchResults = await ytsr(query, {
+      limit: 5,
+      requestOptions: {
+        maxRedirects: 10,
+        maxRetries: 3,
+        maxReconnects: 2,
+        backoff: { inc: 500, max: 5000 },
+        headers: { 'User-Agent': this.getRandomUserAgent() },
+      },
+    } as any);
     const videos = searchResults.items.filter((item: any) => item.type === 'video');
     if (videos.length === 0) throw new Error(`No se encontraron resultados para "${query}"`);
 
