@@ -9,3 +9,6 @@ context.json
 
 # YouTube cookies (contiene información sensible)
 /auth_info/youtube-cookies.json
+
+# Backups creados por la migración one-shot a Mongo
+/data/*.bak

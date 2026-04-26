@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { MongooseModule } from '@nestjs/mongoose';
 import { BotModule } from './modules/bot/bot.module';
 import configuration from './config/configuration';
 
@@ -9,6 +10,16 @@ import configuration from './config/configuration';
       isGlobal: true,
       load: [configuration],
       envFilePath: '.env',
+    }),
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const uri = config.get<string>('database.uri');
+        if (!uri) {
+          throw new Error('MONGODB_URI no configurado en .env');
+        }
+        return { uri };
+      },
     }),
     BotModule,
   ],

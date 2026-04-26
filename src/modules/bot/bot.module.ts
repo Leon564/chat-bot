@@ -3,18 +3,12 @@ import { BotService } from './bot.service';
 import { ChatModule } from '../chat/chat.module';
 import { MusicModule } from '../music/music.module';
 import { ChatSocketModule } from '../chat-socket/chat-socket.module';
-import { UtilsService } from '../../common/utils/utils.service';
-import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 
 @Module({
+  // ChatModule re-exports UtilsService, MemoryService, LoggingService and the
+  // Mongoose models, so we no longer need duplicate providers here.
   imports: [ChatModule, MusicModule, ChatSocketModule],
-  providers: [
-    BotService,
-    UtilsService,
-    LoggingService,
-    MemoryService,
-  ],
+  providers: [BotService],
   exports: [BotService],
 })
 export class BotModule {}

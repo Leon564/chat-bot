@@ -38,4 +38,10 @@ export default () => ({
     apiUrl: process.env.CHAT_API_URL || 'http://localhost:3001',
     apiKey: process.env.CHAT_API_KEY || '',
   },
+
+  // MongoDB connection — shared with the backend, but the bot uses bot_*
+  // collection names to keep its data separate.
+  database: {
+    uri: process.env.MONGODB_URI || '',
+  },
 });

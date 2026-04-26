@@ -1,8 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import OpenAI from 'openai';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
+import { Context, ContextDocument } from '../../common/schemas/context.schema';
+
+const CONTEXT_CAP = 10;
 
 @Injectable()
 export class ChatService {
@@ -12,6 +17,7 @@ export class ChatService {
     private readonly configService: ConfigService,
     private readonly memoryService: MemoryService,
     private readonly loggingService: LoggingService,
+    @InjectModel(Context.name) private readonly contextModel: Model<ContextDocument>,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -315,53 +321,35 @@ FORMATO SUGERIDO:
     }
   }
 
-  private async getContext(): Promise<any[]> {
-    const contextPath = require('path').join(process.cwd(), 'data', 'context.json');
-    const fs = require('fs');
-    
+  private async getContext(): Promise<{ question: string; answer: string; user: string }[]> {
     try {
-      // Crear directorio si no existe
-      const dirPath = require('path').dirname(contextPath);
-      if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-      }
-      
-      if (fs.existsSync(contextPath)) {
-        const contextData = fs.readFileSync(contextPath, 'utf-8');
-        return JSON.parse(contextData);
-      }
+      const rows = await this.contextModel
+        .find()
+        .sort({ createdAt: 1 })
+        .limit(CONTEXT_CAP)
+        .lean()
+        .exec();
+      return rows.map((r) => ({ question: r.question, answer: r.answer, user: r.user ?? '' }));
     } catch (error) {
       console.error('Error loading context:', error);
+      return [];
     }
-    
-    return [];
   }
 
   private async saveContext(contextItem: { question: string; answer: string; user: string }): Promise<void> {
-    const contextPath = require('path').join(process.cwd(), 'data', 'context.json');
-    const fs = require('fs');
-    
     try {
-      // Crear directorio si no existe
-      const dirPath = require('path').dirname(contextPath);
-      if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
+      await this.contextModel.create(contextItem);
+      // Trim to keep only the latest CONTEXT_CAP rows.
+      const overflow = await this.contextModel
+        .find()
+        .sort({ createdAt: -1 })
+        .skip(CONTEXT_CAP)
+        .select({ _id: 1 })
+        .lean()
+        .exec();
+      if (overflow.length > 0) {
+        await this.contextModel.deleteMany({ _id: { $in: overflow.map((d) => d._id) } });
       }
-      
-      let context = [];
-      if (fs.existsSync(contextPath)) {
-        const contextData = fs.readFileSync(contextPath, 'utf-8');
-        context = JSON.parse(contextData);
-      }
-      
-      context.push(contextItem);
-      
-      // Mantener solo los últimos 10 intercambios
-      if (context.length > 10) {
-        context = context.slice(-10);
-      }
-      
-      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
     } catch (error) {
       console.error('Error saving context:', error);
     }
