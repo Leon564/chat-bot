@@ -250,6 +250,24 @@ export class BotService implements OnModuleInit {
       return;
     }
 
+    // Music intent token: the LLM decides when a message is a music request and
+    // emits {{music:<query>}} alongside its confirmation. We extract it, send
+    // the confirmation text first, then trigger the same processMusic pipeline
+    // as the !music fast-path.
+    const musicMatch = response.match(/\{\{music:\s*([^}]+?)\s*\}\}/i);
+    if (musicMatch) {
+      const query = musicMatch[1].trim();
+      const confirmText = response.replace(musicMatch[0], '').trim();
+      if (confirmText) {
+        this.sendBotMessage(`@${authorUsername} ${confirmText}`);
+        await this.utilsService.sleep(responseDelay);
+      }
+      if (query.length >= 2) {
+        await this.handleMusicRequest(`!music ${query}`, authorUsername);
+      }
+      return;
+    }
+
     if (response.includes('{{usuarios_online}}')) {
       const confirmText = response.replace('{{usuarios_online}}', '').trim();
       if (confirmText) {
@@ -333,21 +351,45 @@ export class BotService implements OnModuleInit {
   }
 
 
+  /**
+   * Detect requests for the *full list* of online users. Earlier this matched
+   * single bare keywords like "online" or "conectados", which falsely fired
+   * on questions like "está el admin online?" — those are about ONE user, not
+   * the list. The current matcher requires multi-word phrases that clearly
+   * imply listing or counting, and a guard rejects singular questions
+   * targeted at a specific user.
+   */
   private isOnlineUsersRequest(message: string): boolean {
     if (!message || typeof message !== 'string') return false;
-    const lower = message.toLowerCase();
-    const keywords = [
-      'quién está en línea', 'quien esta en linea',
-      'quienes están en línea', 'quienes estan en linea',
-      'usuarios en línea', 'usuarios en linea',
-      'lista de usuarios', 'who is online', 'online users', 'users online',
-      'gente en línea', 'gente en linea',
-      'cuántos están en línea', 'cuantos estan en linea',
-      'cuántos online', 'cuantos online',
-      'lista online', 'ver usuarios', 'usuarios conectados',
-      'conectados', 'en línea', 'en linea', 'online',
+    const lower = message
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, ''); // strip accents so linea/línea both match
+
+    // Reject questions about a specific user, e.g. "está el admin online?",
+    // "esta neru conectado?", "donde anda kei?". Singular "está/esta" + person
+    // reference is a clear signal it isn't a roster request.
+    const singularUserQuestion =
+      /\b(esta|donde\s+(esta|anda)|sabes\s+si)\s+(el|la|los|las)?\s*\w+\s+(online|en\s+linea|conectad[ao]s?|disponible)/.test(lower) ||
+      /\b(esta|donde\s+anda)\s+@?\w+\s*\??$/.test(lower);
+    if (singularUserQuestion) return false;
+
+    const patterns: RegExp[] = [
+      // "quién/quiénes está/están (en línea|online|conectado)"
+      /\bquien(es)?\s+(esta|estan|anda|andan|hay)\s+(en\s+(la\s+)?(linea|chat|sala)|online|conectad)/,
+      // "(usuarios|gente|personas) (online|en línea|conectados|activos)"
+      /\b(usuarios?|gente|personas?|miembros|raza)\s+(en\s+(la\s+)?(linea|sala|chat)|online|conectad|activ)/,
+      // "(cuántos|cuántas) (están|hay|usuarios|personas)"
+      /\bcuant[oa]s\s+(estan|hay|usuarios?|personas?|gente|online|conectad)/,
+      // "(lista|listar|ver|mostrar|muéstrame) (de) (usuarios|gente|conectados|online)"
+      /\b(lista|listar|listame|mostrar|muestrame|ver|enseñame)\s+(la\s+)?(de\s+)?(usuarios?|gente|conectad|online|quien|personas?)/,
+      // English variants
+      /\b(who('?s|\s+is)\s+online|online\s+users|users\s+online|list\s+(of\s+)?users)/,
+      // "quién más está aquí" / "quién anda por aquí"
+      /\bquien(es)?\s+(mas\s+)?(esta|estan|anda|andan)\s+(aqui|por\s+aqui|en\s+(la\s+)?(sala|chat))/,
     ];
-    return keywords.some((kw) => lower.includes(kw));
+
+    return patterns.some((re) => re.test(lower));
   }
 }
 
