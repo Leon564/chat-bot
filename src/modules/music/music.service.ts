@@ -24,7 +24,7 @@ ffmpeg.setFfmpegPath(ffmpegPath.path);
 export class MusicService {
   private isProcessing: boolean;
   private queue: MusicRequest[];
-  private uploadService: "catbox" | "litterbox";
+  private uploadService: "catbox" | "litterbox" | "nullpointer";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
   private ytdlp: YTDlpWrap | null = null;
@@ -38,7 +38,8 @@ export class MusicService {
     this.uploadService =
       (this.configService.get<string>("music.uploadService") as
         | "catbox"
-        | "litterbox") || "catbox";
+        | "litterbox"
+        | "nullpointer") || "catbox";
     this.litterboxExpiry =
       this.configService.get<string>("music.litterboxExpiry") || "1h";
 
@@ -797,6 +798,56 @@ export class MusicService {
     const maxRetries = 3;
     const retryDelay = 2000;
 
+    if (this.uploadService === "nullpointer") {
+      console.log(`📤 [UPLOAD] Intentando subir a 0x0.st primero (configurado)...`);
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`📤 [0x0.ST] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          return await this.uploadToNullpointerWithRetry(filePath);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [0x0.ST] Error en intento ${attempt}:`, errorMsg);
+
+          if (errorMsg.includes("getaddrinfo ENOTFOUND") || errorMsg.includes("ENOTFOUND")) {
+            console.log(`🌐 [DNS] Problema de conectividad detectado con 0x0.st`);
+          }
+
+          if (attempt === maxRetries) {
+            console.log(`🔄 [FALLBACK] 0x0.st falló tras ${maxRetries} intentos, probando Catbox...`);
+            break;
+          }
+
+          if (attempt < maxRetries) {
+            const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
+            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+      }
+
+      // Cadena de fallback: Catbox → Litterbox
+      try {
+        const result = await this.uploadToCatboxWithRetry(filePath);
+        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+        return result;
+      } catch (catboxError) {
+        const catboxMsg = catboxError instanceof Error ? catboxError.message : String(catboxError);
+        console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+        try {
+          const result = await this.uploadToLitterboxFallback(filePath);
+          console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+          return result;
+        } catch (litterError) {
+          const litterMsg = litterError instanceof Error ? litterError.message : String(litterError);
+          if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
+            throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
+          }
+          throw new Error(`Todos los servicios fallaron — 0x0.st, Catbox y Litterbox. Último: ${litterMsg}`);
+        }
+      }
+    }
+
     if (this.uploadService === "catbox") {
       console.log(`📤 [UPLOAD] Intentando subir a Catbox primero (configurado)...`);
       
@@ -1035,6 +1086,71 @@ export class MusicService {
       clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error('Timeout al subir archivo a Catbox (30s)');
+      }
+      throw error;
+    }
+  }
+
+  private async uploadToNullpointer(filePath: string): Promise<string> {
+    const form = new FormData();
+    form.append("file", fs.createReadStream(filePath));
+
+    const response = await fetch("https://0x0.st", {
+      method: "POST",
+      headers: {
+        // 0x0.st rejects requests with no UA or generic library UAs.
+        "User-Agent": "chat-bot/1.0 (catbox-fallback)",
+      },
+      body: form,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Error subiendo a 0x0.st: ${response.statusText}`);
+    }
+
+    const result = (await response.text()).trim();
+
+    if (!result.startsWith("https://")) {
+      throw new Error(`Respuesta inválida de 0x0.st: ${result}`);
+    }
+
+    return result;
+  }
+
+  private async uploadToNullpointerWithRetry(filePath: string): Promise<string> {
+    const form = new FormData();
+    form.append("file", fs.createReadStream(filePath));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    try {
+      const response = await fetch("https://0x0.st", {
+        method: "POST",
+        headers: {
+          "User-Agent": "chat-bot/1.0 (catbox-fallback)",
+        },
+        body: form,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Error subiendo a 0x0.st: ${response.statusText}`);
+      }
+
+      const result = (await response.text()).trim();
+
+      if (!result.startsWith("https://")) {
+        throw new Error(`Respuesta inválida de 0x0.st: ${result}`);
+      }
+
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("Timeout al subir archivo a 0x0.st (30s)");
       }
       throw error;
     }
