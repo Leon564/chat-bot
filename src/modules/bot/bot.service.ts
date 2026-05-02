@@ -34,8 +34,13 @@ export class BotService implements OnModuleInit {
   // ─── Message dispatcher ────────────────────────────────────────────────────
 
   private async handleNewChatMessage(msg: ChatMessage): Promise<void> {
-    const { content, authorUsername } = msg;
+    const { content, authorUsername, authorRole } = msg;
     if (!content || !authorUsername) return;
+
+    // Los bots no interactúan entre ellos. Cualquier mensaje cuyo autor tenga
+    // role 'bot' se ignora por completo — sin log, sin LLM, sin música — para
+    // evitar bucles o ruido cruzado entre bots.
+    if (authorRole === 'bot') return;
 
     const botUsername = this.chatSocketService.username ?? 'bot';
 
