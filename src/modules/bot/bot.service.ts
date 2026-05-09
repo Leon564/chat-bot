@@ -46,6 +46,11 @@ export class BotService implements OnModuleInit {
 
     await this.loggingService.saveLog(authorUsername, content);
 
+    // Admin runtime command: switch the bot's personality without restarting.
+    // Handled before the trigger gating so admins don't need to mention the
+    // bot for the command to work.
+    if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
+
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
 
@@ -359,6 +364,59 @@ export class BotService implements OnModuleInit {
     return this.chatSocketService.sendMessageAndAwaitId(`${prefix}${text}`);
   }
 
+
+  // ─── Personality command (admins) ────────────────────────────────────────
+
+  /**
+   * Recognize and execute the `!personality` admin command. Returns true when
+   * the message was a personality command (handled or rejected) so the caller
+   * can short-circuit the rest of the dispatcher. Regex-based to avoid
+   * spending an LLM call on what is unambiguous text.
+   */
+  private async handlePersonalityCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!(?:personality|persona|personalidad)(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar la personalidad.`);
+      return true;
+    }
+
+    if (sub === 'default' || sub === 'unfiltered') {
+      this.chatService.setPersonalityOverride(sub);
+      this.sendBotMessage(`@${authorUsername} ✅ Personalidad cambiada a "${sub}".`);
+      console.log(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.chatService.setPersonalityOverride(null);
+      const info = this.chatService.getPersonalityInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Personalidad reseteada al valor del .env: "${info.current}".`,
+      );
+      console.log(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.chatService.getPersonalityInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(`@${authorUsername} 🎭 Personalidad actual: "${info.current}"${note}.`);
+      return true;
+    }
+
+    this.sendBotMessage(
+      `@${authorUsername} Uso: !personality default | unfiltered | reset | status`,
+    );
+    return true;
+  }
 
   /**
    * Detect requests for the *full list* of online users. Earlier this matched

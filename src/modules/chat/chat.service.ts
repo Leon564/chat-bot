@@ -9,9 +9,18 @@ import { Context, ContextDocument } from '../../common/schemas/context.schema';
 
 const CONTEXT_CAP = 10;
 
+export type BotPersonality = 'default' | 'unfiltered';
+
 @Injectable()
 export class ChatService {
   private openai: OpenAI;
+
+  /**
+   * Runtime override for the bot personality. Lives in memory only — on
+   * process restart it resets and the value from BOT_PERSONALITY (.env) takes
+   * over again. Set via the !personality admin command in chat.
+   */
+  private personalityOverride: BotPersonality | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -66,7 +75,7 @@ CONTEXTO TEMPORAL ACTUAL:
 - Es ${this.getTimeOfDay(currentDate)} del ${this.getDayType(currentDate)}${specialDayText}`;
 
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
-    const personality = this.configService.get<'default' | 'unfiltered'>('bot.personality') ?? 'default';
+    const personality = this.getPersonality();
     const personaIntro = personality === 'unfiltered'
       ? this.buildUnfilteredPersona(botName, username, maxResponseLength)
       : this.buildDefaultPersona(botName, username, maxResponseLength);
@@ -455,6 +464,27 @@ SAVE_MEMORY("Información general") ❌`;
     
     console.log(`🤔 Memoria descartada por falta de especificidad: "${memory}"`);
     return false;
+  }
+
+  /**
+   * Active personality, preferring a runtime override over the env default.
+   * The override is set by admins via !personality and is wiped on restart.
+   */
+  getPersonality(): BotPersonality {
+    if (this.personalityOverride) return this.personalityOverride;
+    return this.configService.get<BotPersonality>('bot.personality') ?? 'default';
+  }
+
+  /** Current value plus where it came from — useful for the status reply. */
+  getPersonalityInfo(): { current: BotPersonality; source: 'override' | 'env' } {
+    if (this.personalityOverride) return { current: this.personalityOverride, source: 'override' };
+    const envValue = this.configService.get<BotPersonality>('bot.personality') ?? 'default';
+    return { current: envValue, source: 'env' };
+  }
+
+  /** Set or clear the runtime personality override. Pass null to revert to .env. */
+  setPersonalityOverride(value: BotPersonality | null): void {
+    this.personalityOverride = value;
   }
 
   /**
