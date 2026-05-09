@@ -82,7 +82,7 @@ export class BotService implements OnModuleInit {
     }
 
     // Debug commands (owner only)
-    if (authorUsername === 'Leon564' && content.toLowerCase().includes('debug')) {
+    if (authorUsername === 'Sleepy Ash' && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
       this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
       return;
@@ -255,19 +255,23 @@ export class BotService implements OnModuleInit {
       return;
     }
 
-    // Music intent token: the LLM decides when a message is a music request and
-    // emits {{music:<query>}} alongside its confirmation. We extract it, send
-    // the confirmation text first, then trigger the same processMusic pipeline
-    // as the !music fast-path.
-    const musicMatch = response.match(/\{\{music:\s*([^}]+?)\s*\}\}/i);
-    if (musicMatch) {
-      const query = musicMatch[1].trim();
-      const confirmText = response.replace(musicMatch[0], '').trim();
+    // Music intent tokens: the LLM decides when a message is a music request
+    // and emits {{music:<query>}} alongside its confirmation. The user can ask
+    // for several songs at once, so we collect ALL tokens, send the
+    // confirmation stripped of every token, then dispatch each query through
+    // the same pipeline as the !music fast-path.
+    const musicRe = /\{\{music:\s*([^}]+?)\s*\}\}/gi;
+    const musicTokens = [...response.matchAll(musicRe)];
+    if (musicTokens.length > 0) {
+      const queries = musicTokens
+        .map((m) => m[1].trim())
+        .filter((q) => q.length >= 2);
+      const confirmText = response.replace(musicRe, '').replace(/\s{2,}/g, ' ').trim();
       if (confirmText) {
         this.sendBotMessage(`@${authorUsername} ${confirmText}`);
         await this.utilsService.sleep(responseDelay);
       }
-      if (query.length >= 2) {
+      for (const query of queries) {
         await this.handleMusicRequest(`!music ${query}`, authorUsername);
       }
       return;
