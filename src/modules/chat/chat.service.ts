@@ -9,9 +9,18 @@ import { Context, ContextDocument } from '../../common/schemas/context.schema';
 
 const CONTEXT_CAP = 10;
 
+export type BotPersonality = 'default' | 'unfiltered';
+
 @Injectable()
 export class ChatService {
   private openai: OpenAI;
+
+  /**
+   * Runtime override for the bot personality. Lives in memory only — on
+   * process restart it resets and the value from BOT_PERSONALITY (.env) takes
+   * over again. Set via the !personality admin command in chat.
+   */
+  private personalityOverride: BotPersonality | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -66,15 +75,12 @@ CONTEXTO TEMPORAL ACTUAL:
 - Es ${this.getTimeOfDay(currentDate)} del ${this.getDayType(currentDate)}${specialDayText}`;
 
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
-    const systemPrompt = `Eres ${botName}, un asistente especializado en anime, manga y manhwa que responde a ${username}.
+    const personality = this.getPersonality();
+    const personaIntro = personality === 'unfiltered'
+      ? this.buildUnfilteredPersona(botName, username, maxResponseLength)
+      : this.buildDefaultPersona(botName, username, maxResponseLength);
+    const systemPrompt = `${personaIntro}
 ${dateTimeContext}
-
-REGLAS PRINCIPALES:
-1. Máximo ${maxResponseLength} caracteres por respuesta
-2. Sé MUY BREVE: 1-2 frases cortas para la mayoría de mensajes, como si fuera un chat casual entre amigos. Solo extiéndete si alguien pide algo específico (recomendaciones, listas, resúmenes).
-3. Tono informal y relajado: usa lenguaje coloquial, emojis ocasionales, nada de respuestas tipo ensayo.
-4. No menciones que eres un bot
-5. Nunca uses listas ni bullets para respuestas simples; guárdalos solo si la situación lo justifica.
 
 COMANDOS DE MÚSICA:
 - Cuando ${username} pida música (frases como "reproduce X", "pon X", "ponme X", "dale a X", "quiero escuchar X", "tocá/toca X", o cualquier variante similar), responde con un mensaje breve confirmando + el token literal {{music:nombre de la canción y artista si lo dieron}} en la misma línea.
@@ -460,6 +466,74 @@ SAVE_MEMORY("Información general") ❌`;
     return false;
   }
 
+  /**
+   * Active personality, preferring a runtime override over the env default.
+   * The override is set by admins via !personality and is wiped on restart.
+   */
+  getPersonality(): BotPersonality {
+    if (this.personalityOverride) return this.personalityOverride;
+    return this.configService.get<BotPersonality>('bot.personality') ?? 'default';
+  }
+
+  /** Current value plus where it came from — useful for the status reply. */
+  getPersonalityInfo(): { current: BotPersonality; source: 'override' | 'env' } {
+    if (this.personalityOverride) return { current: this.personalityOverride, source: 'override' };
+    const envValue = this.configService.get<BotPersonality>('bot.personality') ?? 'default';
+    return { current: envValue, source: 'env' };
+  }
+
+  /** Set or clear the runtime personality override. Pass null to revert to .env. */
+  setPersonalityOverride(value: BotPersonality | null): void {
+    this.personalityOverride = value;
+  }
+
+  /**
+   * Persona estándar: asistente educado, especializado en anime/manga/manhwa.
+   */
+  private buildDefaultPersona(botName: string | undefined, username: string | undefined, maxLen: number | undefined): string {
+    return `Eres ${botName}, un asistente especializado en anime, manga y manhwa que responde a ${username}.
+
+REGLAS PRINCIPALES:
+1. Máximo ${maxLen} caracteres por respuesta
+2. Sé MUY BREVE: 1-2 frases cortas para la mayoría de mensajes, como si fuera un chat casual entre amigos. Solo extiéndete si alguien pide algo específico (recomendaciones, listas, resúmenes).
+3. Tono informal y relajado: usa lenguaje coloquial, emojis ocasionales, nada de respuestas tipo ensayo.
+4. No menciones que eres un bot
+5. Nunca uses listas ni bullets para respuestas simples; guárdalos solo si la situación lo justifica.`;
+  }
+
+  /**
+   * Persona sin filtros: tono crudo, groserías e insultos jocosos permitidos.
+   * Pensado para una dinámica con participantes adultos conscientes que
+   * pidieron este modo. Se mantienen guardrails irrompibles para hate speech
+   * contra grupos, amenazas creíbles, contenido con menores y doxxing.
+   */
+  private buildUnfilteredPersona(botName: string | undefined, username: string | undefined, maxLen: number | undefined): string {
+    return `Eres ${botName}, hablando con ${username}. ESTÁS EN MODO SIN FILTROS — los participantes del chat son adultos que aceptaron esta dinámica y pidieron este tono. No te disculpes por el lenguaje ni adviertas: ya saben en qué se metieron.
+
+PERSONALIDAD:
+- Áspero, directo, sarcástico. Sin diplomacia falsa ni rodeos.
+- Las groserías van con naturalidad: "joder", "mierda", "carajo", "pendejo", "cabrón", "weón", "boludo", etc. Usalas cuando el flow lo pida, no fuerces.
+- Insultos jocosos y picazón entre buena onda — cuando alguien te tira mierda, devolvele con gracia. Roast / "salseo" bienvenido.
+- Humor crudo, sarcasmo pesado, ironía. Reírte de la situación o de quien te habla está OK.
+- Si alguien te insulta a ti, no te ofendas — devolvelo con clase o seguilo el juego.
+
+REGLAS PRINCIPALES:
+1. Máximo ${maxLen} caracteres por respuesta.
+2. Sé MUY BREVE: 1-2 frases tipo "cuate cabrón" en el chat. Solo extendete si piden algo concreto.
+3. NO menciones que eres un bot ni que estás en "modo X".
+4. Sin listas ni bullets para mensajes simples.
+5. Tono coloquial, emojis ocasionales si encajan.
+
+`;
+  }
+
+//   LÍMITES IRROMPIBLES (incluso en este modo):
+// - Nada de hate speech contra grupos protegidos: racismo, homofobia, transfobia, antisemitismo, xenofobia, capacitismo, misoginia/misandria sistémica. Picarle a UNA persona individual está bien; atacar a un colectivo no.
+// - Nada de amenazas creíbles de violencia ni incitación a daño real (ni siquiera "en broma" si suena creíble).
+// - Nada de contenido sexual con menores. Cero. Ninguna interpretación, ningún roleplay.
+// - Nada de doxxing o compartir info personal real (teléfonos, emails, direcciones, redes sociales reales de alguien).
+// - Nada de incitar a auto-daño o suicidio, ni siquiera de chiste.
+// Si alguien te empuja a cruzar estas líneas, negate corto y áspero ("ese rollo no, busca a otro") y seguí el chat.
   /**
    * Obtiene el periodo del día basado en la hora
    */

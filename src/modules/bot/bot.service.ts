@@ -46,6 +46,11 @@ export class BotService implements OnModuleInit {
 
     await this.loggingService.saveLog(authorUsername, content);
 
+    // Admin runtime command: switch the bot's personality without restarting.
+    // Handled before the trigger gating so admins don't need to mention the
+    // bot for the command to work.
+    if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
+
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
 
@@ -82,7 +87,7 @@ export class BotService implements OnModuleInit {
     }
 
     // Debug commands (owner only)
-    if (authorUsername === 'Leon564' && content.toLowerCase().includes('debug')) {
+    if (authorUsername === 'Sleepy Ash' && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
       this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
       return;
@@ -255,19 +260,23 @@ export class BotService implements OnModuleInit {
       return;
     }
 
-    // Music intent token: the LLM decides when a message is a music request and
-    // emits {{music:<query>}} alongside its confirmation. We extract it, send
-    // the confirmation text first, then trigger the same processMusic pipeline
-    // as the !music fast-path.
-    const musicMatch = response.match(/\{\{music:\s*([^}]+?)\s*\}\}/i);
-    if (musicMatch) {
-      const query = musicMatch[1].trim();
-      const confirmText = response.replace(musicMatch[0], '').trim();
+    // Music intent tokens: the LLM decides when a message is a music request
+    // and emits {{music:<query>}} alongside its confirmation. The user can ask
+    // for several songs at once, so we collect ALL tokens, send the
+    // confirmation stripped of every token, then dispatch each query through
+    // the same pipeline as the !music fast-path.
+    const musicRe = /\{\{music:\s*([^}]+?)\s*\}\}/gi;
+    const musicTokens = [...response.matchAll(musicRe)];
+    if (musicTokens.length > 0) {
+      const queries = musicTokens
+        .map((m) => m[1].trim())
+        .filter((q) => q.length >= 2);
+      const confirmText = response.replace(musicRe, '').replace(/\s{2,}/g, ' ').trim();
       if (confirmText) {
         this.sendBotMessage(`@${authorUsername} ${confirmText}`);
         await this.utilsService.sleep(responseDelay);
       }
-      if (query.length >= 2) {
+      for (const query of queries) {
         await this.handleMusicRequest(`!music ${query}`, authorUsername);
       }
       return;
@@ -355,6 +364,59 @@ export class BotService implements OnModuleInit {
     return this.chatSocketService.sendMessageAndAwaitId(`${prefix}${text}`);
   }
 
+
+  // ─── Personality command (admins) ────────────────────────────────────────
+
+  /**
+   * Recognize and execute the `!personality` admin command. Returns true when
+   * the message was a personality command (handled or rejected) so the caller
+   * can short-circuit the rest of the dispatcher. Regex-based to avoid
+   * spending an LLM call on what is unambiguous text.
+   */
+  private async handlePersonalityCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!(?:personality|persona|personalidad)(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar la personalidad.`);
+      return true;
+    }
+
+    if (sub === 'default' || sub === 'unfiltered') {
+      this.chatService.setPersonalityOverride(sub);
+      this.sendBotMessage(`@${authorUsername} ✅ Personalidad cambiada a "${sub}".`);
+      console.log(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.chatService.setPersonalityOverride(null);
+      const info = this.chatService.getPersonalityInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Personalidad reseteada al valor del .env: "${info.current}".`,
+      );
+      console.log(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.chatService.getPersonalityInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(`@${authorUsername} 🎭 Personalidad actual: "${info.current}"${note}.`);
+      return true;
+    }
+
+    this.sendBotMessage(
+      `@${authorUsername} Uso: !personality default | unfiltered | reset | status`,
+    );
+    return true;
+  }
 
   /**
    * Detect requests for the *full list* of online users. Earlier this matched
