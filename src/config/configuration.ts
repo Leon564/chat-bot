@@ -23,6 +23,19 @@ export default () => ({
     litterboxExpiry: process.env.LITTERBOX_EXPIRY || '1h',
     youtubeCookiesPath: process.env.YOUTUBE_COOKIES_PATH,
     maxDurationMinutes: parseInt(process.env.MAX_SONG_DURATION || '8', 10),
+    // FileGarden uploader (https://filegarden.com). Optional; when both vars
+    // are set, FileGarden is used as a last-ditch fallback after the regular
+    // catbox/litterbox/nullpointer chain — and can be selected as the primary
+    // via UPLOAD_SERVICE=filegarden. Auth cookie is harvested from the
+    // browser session ("auth=..." cookie on filegarden.com).
+    filegardenUserId: process.env.FILEGARDEN_USER_ID || '',
+    filegardenAuthCookie: process.env.FILEGARDEN_AUTH_COOKIE || '',
+    // Public share ID used in the file.garden CDN URL — distinct from the
+    // user ID that goes into the private API endpoint. Visit any of your
+    // public file URLs (file.garden/<this-id>/file.ext) to find it.
+    // Falls back to FILEGARDEN_USER_ID when not set (some accounts share the
+    // same value for both — see the Reddit ShareX tutorial).
+    filegardenPublicId: process.env.FILEGARDEN_PUBLIC_ID || '',
   },
 
   // Video Configuration — !video command, disabled by default because uploads

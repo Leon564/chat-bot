@@ -24,7 +24,7 @@ ffmpeg.setFfmpegPath(ffmpegPath.path);
 export class MusicService {
   private isProcessing: boolean;
   private queue: MusicRequest[];
-  private uploadService: "catbox" | "litterbox" | "nullpointer";
+  private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
   private ytdlp: YTDlpWrap | null = null;
@@ -39,7 +39,8 @@ export class MusicService {
       (this.configService.get<string>("music.uploadService") as
         | "catbox"
         | "litterbox"
-        | "nullpointer") || "catbox";
+        | "nullpointer"
+        | "filegarden") || "catbox";
     this.litterboxExpiry =
       this.configService.get<string>("music.litterboxExpiry") || "1h";
 
@@ -798,6 +799,69 @@ export class MusicService {
     const maxRetries = 3;
     const retryDelay = 2000;
 
+    if (this.uploadService === "filegarden") {
+      if (!this.hasFileGardenCreds()) {
+        console.warn(
+          `⚠️ [UPLOAD] UPLOAD_SERVICE=filegarden pero faltan credenciales — usando catbox como primario.`,
+        );
+      } else {
+        console.log(`📤 [UPLOAD] Intentando subir a FileGarden primero (configurado)...`);
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            console.log(
+              `📤 [FILEGARDEN] Intento ${attempt}/${maxRetries} - Subiendo archivo...`,
+            );
+            return await this.uploadToFileGarden(filePath);
+          } catch (error) {
+            const errorMsg =
+              error instanceof Error ? error.message : String(error);
+            console.error(`❌ [FILEGARDEN] Error en intento ${attempt}:`, errorMsg);
+
+            if (attempt === maxRetries) {
+              console.log(
+                `🔄 [FALLBACK] FileGarden falló tras ${maxRetries} intentos, probando Catbox...`,
+              );
+              break;
+            }
+            if (attempt < maxRetries) {
+              const delay = errorMsg.includes("ENOTFOUND")
+                ? retryDelay * 2
+                : retryDelay;
+              console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+          }
+        }
+
+        // Cadena de fallback: Catbox → Litterbox (filegarden ya falló como
+        // primario, no tiene sentido reintentar como último recurso).
+        try {
+          const result = await this.uploadToCatboxWithRetry(filePath);
+          console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+          return result;
+        } catch (catboxError) {
+          const catboxMsg =
+            catboxError instanceof Error ? catboxError.message : String(catboxError);
+          console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+          try {
+            const result = await this.uploadToLitterboxFallback(filePath);
+            console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+            return result;
+          } catch (litterError) {
+            const litterMsg =
+              litterError instanceof Error ? litterError.message : String(litterError);
+            if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
+              throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
+            }
+            throw new Error(
+              `Todos los servicios fallaron — FileGarden, Catbox y Litterbox. Último: ${litterMsg}`,
+            );
+          }
+        }
+      }
+    }
+
     if (this.uploadService === "nullpointer") {
       console.log(`📤 [UPLOAD] Intentando subir a 0x0.st primero (configurado)...`);
 
@@ -840,6 +904,8 @@ export class MusicService {
           return result;
         } catch (litterError) {
           const litterMsg = litterError instanceof Error ? litterError.message : String(litterError);
+          const fg = await this.tryFileGardenLastResort(filePath);
+          if (fg) return fg;
           if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
             throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
           }
@@ -886,13 +952,16 @@ export class MusicService {
         return result;
       } catch (fallbackError) {
         const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-        
+
+        const fg = await this.tryFileGardenLastResort(filePath);
+        if (fg) return fg;
+
         // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
         if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
           console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
           throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
         }
-        
+
         throw new Error(`Error en Catbox y Litterbox fallback: ${fallbackErrorMsg}`);
       }
     } else {
@@ -933,13 +1002,16 @@ export class MusicService {
         return result;
       } catch (fallbackError) {
         const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-        
+
+        const fg = await this.tryFileGardenLastResort(filePath);
+        if (fg) return fg;
+
         // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
         if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
           console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
           throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
         }
-        
+
         throw new Error(`Error en Litterbox y Catbox fallback: ${fallbackErrorMsg}`);
       }
     }
@@ -1088,6 +1160,120 @@ export class MusicService {
         throw new Error('Timeout al subir archivo a Catbox (30s)');
       }
       throw error;
+    }
+  }
+
+  /**
+   * Whether FileGarden credentials are present. When true, FileGarden is
+   * enabled both as a primary option (UPLOAD_SERVICE=filegarden) and as the
+   * final fallback after the catbox/litterbox/nullpointer chain.
+   */
+  private hasFileGardenCreds(): boolean {
+    return (
+      !!this.configService.get<string>("music.filegardenUserId") &&
+      !!this.configService.get<string>("music.filegardenAuthCookie")
+    );
+  }
+
+  /**
+   * Upload a single file to FileGarden using its private "pipe" endpoint.
+   * The API expects raw binary in the body, the file name in the X-Data
+   * header (URL-encoded JSON), and auth via the session cookie. Returns the
+   * public URL.
+   */
+  private async uploadToFileGarden(filePath: string): Promise<string> {
+    const userId = this.configService.get<string>("music.filegardenUserId");
+    const authCookie = this.configService.get<string>(
+      "music.filegardenAuthCookie",
+    );
+    if (!userId || !authCookie) {
+      throw new Error(
+        "FileGarden no configurado (FILEGARDEN_USER_ID o FILEGARDEN_AUTH_COOKIE vacíos)",
+      );
+    }
+
+    const filename = path.basename(filePath);
+    // The FileGarden API decodes X-Data with decodeURI(), NOT
+    // decodeURIComponent() — so reserved chars like ':' and ',' must remain
+    // unencoded for the resulting JSON to parse. encodeURI() produces exactly
+    // that shape (e.g. `%7B%22parent%22:null,%22name%22:%22x.mp3%22%7D`).
+    const xData = encodeURI(JSON.stringify({ parent: null, name: filename }));
+    const body = await fs.promises.readFile(filePath);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+    try {
+      const response = await fetch(
+        `https://api.filegarden.com/users/${encodeURIComponent(userId)}/pipe`,
+        {
+          method: "POST",
+          headers: {
+            Cookie: `auth=${authCookie}`,
+            "Content-Type": "application/octet-stream",
+            "X-Data": xData,
+            "User-Agent": "chat-bot/1.0",
+          },
+          body,
+          signal: controller.signal,
+        },
+      );
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(
+          `Error subiendo a FileGarden (${response.status}): ${errText || response.statusText}`,
+        );
+      }
+
+      // Two response shapes seen in the wild:
+      //   1. flat object  → `{ id, name, path, ... }`
+      //   2. wrapped list → `{ items: [{ path, ... }] }`
+      // Single-file uploads return shape (1); the docs/ShareX template
+      // referenced shape (2). Accept both so we don't have to track API drift.
+      const json = (await response.json()) as {
+        path?: string;
+        items?: Array<{ path?: string }>;
+      };
+      const rawPath = json?.path ?? json?.items?.[0]?.path;
+      if (!rawPath) {
+        throw new Error(
+          `Respuesta inválida de FileGarden: ${JSON.stringify(json)}`,
+        );
+      }
+      // Public CDN host is file.garden (the *.com domain is the dashboard /
+      // marketing site; embeds use file.garden which has the right CORS/CDN).
+      // The public URL uses a separate share ID — falls back to userId when
+      // not configured, since some accounts have the same value for both.
+      const publicId =
+        this.configService.get<string>("music.filegardenPublicId") || userId;
+      return `https://file.garden/${publicId}/${rawPath.replace(/^\/+/, "")}`;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("Timeout al subir archivo a FileGarden (60s)");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Last-resort fallback: try FileGarden if creds are configured. Returns
+   * null when not configured so the caller can decide whether to throw. Logs
+   * but never rethrows so it always reports the original chain failure.
+   */
+  private async tryFileGardenLastResort(filePath: string): Promise<string | null> {
+    if (!this.hasFileGardenCreds()) return null;
+    try {
+      console.log(`📤 [FILEGARDEN] Último recurso — subiendo archivo...`);
+      const url = await this.uploadToFileGarden(filePath);
+      console.log(`✅ [FILEGARDEN] Subida exitosa: ${url}`);
+      return url;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`❌ [FILEGARDEN] Falló como último recurso: ${msg}`);
+      return null;
     }
   }
 
