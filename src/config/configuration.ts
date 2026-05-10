@@ -15,6 +15,13 @@ export default () => ({
     useMemory: process.env.USE_MEMORY === 'true',
     // Optional hex color (without #) used to prefix bot messages, e.g. TEXT_COLOR=ff00aa
     textColor: process.env.TEXT_COLOR || '',
+    // Personalidad del bot. 'default' = asistente educado.
+    // 'unfiltered' = tono crudo, permite groserías e insultos jocosos.
+    // Pensado para correr una segunda instancia del bot con su propia API key
+    // en una dinámica con participantes adultos conscientes. Mantiene
+    // guardrails irrompibles (sin hate speech a grupos, amenazas, menores,
+    // doxxing — ver chat.service.ts).
+    personality: (process.env.BOT_PERSONALITY === 'unfiltered' ? 'unfiltered' : 'default') as 'default' | 'unfiltered',
   },
 
   // Music Configuration
