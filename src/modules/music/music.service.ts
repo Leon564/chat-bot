@@ -24,7 +24,7 @@ ffmpeg.setFfmpegPath(ffmpegPath.path);
 export class MusicService {
   private isProcessing: boolean;
   private queue: MusicRequest[];
-  private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden";
+  private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden" | "uguu";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
   private ytdlp: YTDlpWrap | null = null;
@@ -799,6 +799,60 @@ export class MusicService {
     const maxRetries = 3;
     const retryDelay = 2000;
 
+    if (this.uploadService === "uguu") {
+      console.log(`📤 [UPLOAD] Intentando subir a uguu.se primero (configurado)...`);
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`📤 [UGUU] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          return await this.uploadToUguu(filePath);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [UGUU] Error en intento ${attempt}:`, errorMsg);
+
+          if (attempt === maxRetries) {
+            console.log(
+              `🔄 [FALLBACK] uguu.se falló tras ${maxRetries} intentos, probando Catbox...`,
+            );
+            break;
+          }
+          if (attempt < maxRetries) {
+            const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
+            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+      }
+
+      // Cadena de fallback: Catbox → Litterbox → FileGarden (último recurso si
+      // está configurado).
+      try {
+        const result = await this.uploadToCatboxWithRetry(filePath);
+        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+        return result;
+      } catch (catboxError) {
+        const catboxMsg =
+          catboxError instanceof Error ? catboxError.message : String(catboxError);
+        console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+        try {
+          const result = await this.uploadToLitterboxFallback(filePath);
+          console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+          return result;
+        } catch (litterError) {
+          const litterMsg =
+            litterError instanceof Error ? litterError.message : String(litterError);
+          const fg = await this.tryFileGardenLastResort(filePath);
+          if (fg) return fg;
+          if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
+            throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
+          }
+          throw new Error(
+            `Todos los servicios fallaron — uguu.se, Catbox y Litterbox. Último: ${litterMsg}`,
+          );
+        }
+      }
+    }
+
     if (this.uploadService === "filegarden") {
       if (!this.hasFileGardenCreds()) {
         console.warn(
@@ -1274,6 +1328,58 @@ export class MusicService {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`❌ [FILEGARDEN] Falló como último recurso: ${msg}`);
       return null;
+    }
+  }
+
+  /**
+   * Upload a single file to uguu.se. Multipart with field name `files[]`,
+   * JSON response with `files[0].url` carrying the public link. uguu is a
+   * temporary host (~3h retention) — fine for chat playback.
+   */
+  private async uploadToUguu(filePath: string): Promise<string> {
+    const form = new FormData();
+    form.append("files[]", fs.createReadStream(filePath));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 45_000);
+
+    try {
+      const response = await fetch("https://uguu.se/upload", {
+        method: "POST",
+        headers: { "User-Agent": "chat-bot/1.0" },
+        body: form,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(
+          `Error subiendo a uguu.se (${response.status}): ${errText || response.statusText}`,
+        );
+      }
+
+      const json = (await response.json()) as {
+        success?: boolean;
+        files?: Array<{ url?: string }>;
+        description?: string;
+      };
+
+      if (json?.success === false) {
+        throw new Error(`uguu.se rechazó la subida: ${json.description ?? "desconocido"}`);
+      }
+
+      const url = json?.files?.[0]?.url;
+      if (!url || !url.startsWith("http")) {
+        throw new Error(`Respuesta inválida de uguu.se: ${JSON.stringify(json)}`);
+      }
+      return url;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("Timeout al subir archivo a uguu.se (45s)");
+      }
+      throw error;
     }
   }
 
