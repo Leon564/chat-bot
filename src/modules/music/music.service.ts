@@ -29,6 +29,12 @@ export class MusicService {
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
   private ytdlp: YTDlpWrap | null = null;
   private ytdlpAvailable: boolean = false;
+  // testConnectivity() pinged dns.google before every upload, which added a
+  // 5s round-trip per file even when the network was clearly fine (we'd just
+  // succeeded a previous upload seconds earlier). Cache the OK result for
+  // CONNECTIVITY_TTL_MS so back-to-back queue items skip the re-check.
+  private lastConnectivityOk: number = 0;
+  private readonly CONNECTIVITY_TTL_MS = 60_000;
 
   constructor(private readonly configService: ConfigService) {
     this.isProcessing = false;
@@ -354,15 +360,39 @@ export class MusicService {
 
     while (this.queue.length > 0) {
       const request = this.queue.shift()!;
+
+      // Search-ahead: lanzamos la búsqueda ytsr del siguiente item ahora
+      // para que su latencia de red se superponga con la descarga+upload
+      // del item actual. La búsqueda es barata en RAM (sólo metadata), así
+      // que no rompe el principio de serializar el trabajo pesado.
+      // `.catch(() => null)` evita rejecciones no manejadas; el consumidor
+      // hace fallback a búsqueda inline cuando recibe null.
+      if (this.queue.length > 0 && !this.queue[0].prefetch) {
+        const next = this.queue[0];
+        next.prefetch = this.searchYouTube(next.query).catch((err) => {
+          console.warn(
+            `⚠️ [PREFETCH] Fallo precargando "${next.query}":`,
+            err instanceof Error ? err.message : err,
+          );
+          return null;
+        });
+      }
+
       try {
         const isVideo = request.kind === 'video';
         const tag = isVideo ? '🎬' : '🎵';
         console.log(
           `${tag} [PROCESSING] Procesando: "${request.query}" para ${request.username}`
         );
+        const prefetched = request.prefetch
+          ? (await request.prefetch) ?? undefined
+          : undefined;
+        if (prefetched) {
+          console.log(`✨ [PREFETCH] Usando búsqueda pre-cargada para "${request.query}"`);
+        }
         const result = isVideo
-          ? await this.processSingleVideoRequest(request.query, request.username)
-          : await this.processSingleMusicRequest(request.query, request.username);
+          ? await this.processSingleVideoRequest(request.query, request.username, prefetched)
+          : await this.processSingleMusicRequest(request.query, request.username, prefetched);
         request.resolve(result);
       } catch (error) {
         console.error(`🎵 [ERROR] Error procesando "${request.query}":`, error);
@@ -371,10 +401,11 @@ export class MusicService {
         );
       }
 
-      // Agregar delay de 5 segundos entre cada elemento de la cola
+      // Pequeña pausa entre items. Antes eran 5s "para no sobrecargar",
+      // pero como la cola ya es estrictamente serial (un único pipeline a
+      // la vez) la pausa larga sólo agregaba latencia sin proteger RAM.
       if (this.queue.length > 0) {
-        console.log(`⏱️ [QUEUE] Esperando 5 segundos antes de procesar el siguiente elemento...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
@@ -382,30 +413,39 @@ export class MusicService {
     console.log(`🎵 [QUEUE] Cola de procesamiento completada`);
   }
 
+  /**
+   * Busca un query en YouTube y devuelve los items tipo "video". Helper
+   * extraído para reutilizar entre el flujo de audio, el de video, y el
+   * search-ahead que dispara processQueue antes de tocar al siguiente item.
+   */
+  private async searchYouTube(query: string): Promise<any[]> {
+    const searchResults = await ytsr(query, {
+      limit: 5,
+      requestOptions: {
+        maxRedirects: 10,
+        maxRetries: 3,
+        maxReconnects: 2,
+        backoff: { inc: 500, max: 5000 },
+        headers: { 'User-Agent': this.getRandomUserAgent() },
+      },
+    } as any);
+    return searchResults.items.filter((item: any) => item.type === 'video');
+  }
+
   private async processSingleMusicRequest(
     query: string,
-    username: string
+    username: string,
+    prefetched?: any[],
   ): Promise<string> {
-    console.log(`🔍 [SEARCH] Buscando en YouTube: "${query}"`);
-
     try {
-      // Buscar en YouTube. miniget (used by ytsr) defaults to 3 redirects,
-      // which YouTube's CDN chains have started to exceed — raise it here
-      // to match the download-side options and avoid bare "Too many
-      // redirects" failures escaping the search step.
-      const searchResults = await ytsr(query, {
-        limit: 5,
-        requestOptions: {
-          maxRedirects: 10,
-          maxRetries: 3,
-          maxReconnects: 2,
-          backoff: { inc: 500, max: 5000 },
-          headers: { 'User-Agent': this.getRandomUserAgent() },
-        },
-      } as any);
-      const videos = searchResults.items.filter(
-        (item: any) => item.type === "video"
-      );
+      // Si processQueue ya disparó la búsqueda mientras procesaba el item
+      // anterior, la reutilizamos. Si el prefetch falló (null/undefined)
+      // hacemos la búsqueda inline como fallback.
+      let videos = prefetched;
+      if (!videos) {
+        console.log(`🔍 [SEARCH] Buscando en YouTube: "${query}"`);
+        videos = await this.searchYouTube(query);
+      }
 
       if (videos.length === 0) {
         throw new Error(`No se encontraron resultados para "${query}"`);
@@ -480,9 +520,12 @@ export class MusicService {
           // Obtener el stream
           const audioStream =  ytdl(video.url, ytdlOptions);
 
-          // Convertir stream a buffer con timeout específico para este intento
+          // Convertir stream a buffer con timeout específico para este intento.
+          // 10s/20s/30s — un audio de YouTube que no empieza a fluir en
+          // ~15s casi nunca completa con éxito, así que extender los
+          // timeouts sólo retrasaba la caída al fallback yt-dlp.
           console.log(`📦 [BUFFER] Convirtiendo stream a buffer (intento ${attempt})...`);
-          audioBuffer = await this.streamToBuffer(audioStream, attempt * 30000); // 30s, 60s, 90s
+          audioBuffer = await this.streamToBuffer(audioStream, attempt * 10000); // 10s, 20s, 30s
           console.log(`✅ [BUFFER] Buffer creado exitosamente en intento ${attempt}: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
           break; // Salir del loop si fue exitoso
 
@@ -603,20 +646,16 @@ export class MusicService {
    * separate streams into mp4), uploads, and returns a [video]url[/video]
    * BBCode that the chat already knows how to render.
    */
-  private async processSingleVideoRequest(query: string, username: string): Promise<string> {
-    console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
-
-    const searchResults = await ytsr(query, {
-      limit: 5,
-      requestOptions: {
-        maxRedirects: 10,
-        maxRetries: 3,
-        maxReconnects: 2,
-        backoff: { inc: 500, max: 5000 },
-        headers: { 'User-Agent': this.getRandomUserAgent() },
-      },
-    } as any);
-    const videos = searchResults.items.filter((item: any) => item.type === 'video');
+  private async processSingleVideoRequest(
+    query: string,
+    username: string,
+    prefetched?: any[],
+  ): Promise<string> {
+    let videos = prefetched;
+    if (!videos) {
+      console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
+      videos = await this.searchYouTube(query);
+    }
     if (videos.length === 0) throw new Error(`No se encontraron resultados para "${query}"`);
 
     const video = videos[0] as any;
@@ -783,16 +822,20 @@ export class MusicService {
   }
 
   private async uploadFile(filePath: string): Promise<string> {
-    // Verificar conectividad básica antes de intentar uploads
-    console.log(`🌐 [CONNECTIVITY] Verificando conectividad de red...`);
-    
-    try {
-      // Test básico de conectividad DNS
-      await this.testConnectivity();
-      console.log(`✅ [CONNECTIVITY] Conectividad verificada`);
-    } catch (connectivityError) {
-      console.error(`❌ [CONNECTIVITY] Sin conectividad de red:`, connectivityError instanceof Error ? connectivityError.message : connectivityError);
-      throw new Error(`❌ Sin conectividad a internet. Verifica tu conexión de red.`);
+    // Verificar conectividad básica antes de intentar uploads — pero sólo
+    // si no la confirmamos en los últimos CONNECTIVITY_TTL_MS. Antes este
+    // chequeo se hacía por cada archivo subido, gastando ~5s por canción
+    // aunque la red estuviera claramente bien.
+    if (Date.now() - this.lastConnectivityOk > this.CONNECTIVITY_TTL_MS) {
+      console.log(`🌐 [CONNECTIVITY] Verificando conectividad de red...`);
+      try {
+        await this.testConnectivity();
+        this.lastConnectivityOk = Date.now();
+        console.log(`✅ [CONNECTIVITY] Conectividad verificada`);
+      } catch (connectivityError) {
+        console.error(`❌ [CONNECTIVITY] Sin conectividad de red:`, connectivityError instanceof Error ? connectivityError.message : connectivityError);
+        throw new Error(`❌ Sin conectividad a internet. Verifica tu conexión de red.`);
+      }
     }
 
     // Intentar según prioridad configurada

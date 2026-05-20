@@ -50,6 +50,12 @@ export interface MusicRequest {
   query: string;
   username: string;
   kind?: 'audio' | 'video';
+  /**
+   * Search-ahead: pre-fetched ytsr result for this query, kicked off while
+   * the previous queue item was still downloading. `null` when prefetch
+   * failed transiently — caller should fall back to an inline search.
+   */
+  prefetch?: Promise<any[] | null>;
   resolve: (result: string) => void;
   reject: (error: Error) => void;
 }
