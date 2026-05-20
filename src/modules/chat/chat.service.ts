@@ -90,6 +90,18 @@ COMANDOS DE MÚSICA:
 - Si la persona escribe el comando exacto "!music X", NO repitas el token (el sistema ya lo procesa por su cuenta), solo confirma con una frase corta.
 - NO reproduzcas música tú mismo, no inventes URLs ni repitas el query fuera del token.
 
+BÚSQUEDA EN ANILIST (manga / manhwa / manhua / anime):
+- Cuando ${username} pida información, recomendación, score, sinopsis o "qué tal está" sobre una obra concreta — sea por título, por descripción ("el manhwa de la torre que sube") o por contexto claro — responde con una frase corta de confirmación + el token literal {{anilist:<tipo>:<título>}}.
+- <tipo> debe ser exactamente uno de: manga, manhwa, manhua, anime. Elegí según pistas del mensaje (origen coreano = manhwa, chino = manhua, japonés o sin pista = manga; animado/temporada/episodios = anime). Si la duda es razonable entre manga y manhwa, preferí manhwa cuando mencionan "torre", "regreso del", "leveling", "nivel", etc. (patrones típicos coreanos).
+- <título> es el nombre tal como el usuario lo dice. Si solo dio una descripción, escribí tu mejor adivinanza ("Tower of God", "Solo Leveling"). No traduzcas ni inventes subtítulos.
+- Ejemplo: "@bot qué tal está Berserk?" → "¡Es un clásico! 📖 {{anilist:manga:Berserk}}"
+- Ejemplo: "bot recomiendame ese manhwa de la torre" → "¡Va Tower of God! 🗼 {{anilist:manhwa:Tower of God}}"
+- Ejemplo: "bot info de solo leveling" → "¡Buena! ⚔️ {{anilist:manhwa:Solo Leveling}}"
+- Ejemplo: "el anime de demon slayer está bueno?" → "¡Demasiado! 🔥 {{anilist:anime:Demon Slayer}}"
+- Si ${username} pide VARIAS obras en un mismo mensaje, emití un token por cada una en la misma respuesta.
+- NO emitas el token para charla casual ("me gusta el manga", "qué manga lees?", "buenos días") — solo cuando hay un título o descripción concreta a buscar.
+- NO inventes datos (score, capítulos, sinopsis) tú mismo; el sistema los obtiene de AniList y los muestra. Tu mensaje solo confirma con una frase breve.
+
 INFORMACIÓN PERSONAL (solo si preguntan):
 - Creador/Padre: Leon564 (<@Sleepy Ash>)
 - Madre: <@Isis>
@@ -122,7 +134,7 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 - "¿sabes si Leon está disponible?" → idem
 - "¿dónde anda kei?" → idem
 
-CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen, {{usuarios_online}} solo para el roster completo, y {{music:<query>}} cuando pidan música.${memoryInstructions}${this.generateMemoryExamples(username)}
+CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen, {{usuarios_online}} solo para el roster completo, {{music:<query>}} cuando pidan música, y {{anilist:<tipo>:<título>}} cuando pidan info de un manga/manhwa/manhua/anime concreto.${memoryInstructions}${this.generateMemoryExamples(username)}
 
 Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${username}.`;
 
@@ -261,6 +273,38 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
     } catch (error) {
       console.error('Error en chat GPT:', error);
       return 'Lo siento, ocurrió un error al procesar tu mensaje. 😅';
+    }
+  }
+
+  /**
+   * Traduce un texto cualquiera al español. Pensado para la sinopsis de
+   * AniList (siempre en inglés) — el modelo recibe instrucción muy contenida
+   * para evitar que agregue comentarios o cambie la voz del original. Si la
+   * llamada falla, devuelve el texto original para no romper el flujo.
+   */
+  async translateToSpanish(text: string): Promise<string> {
+    const input = (text ?? '').trim();
+    if (!input) return '';
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Eres un traductor. Traduces el texto al español neutro manteniendo el tono y la voz original. NO agregues introducciones, comentarios, notas ni resúmenes. NO uses comillas alrededor. Devuelve únicamente la traducción del texto, nada más.',
+          },
+          { role: 'user', content: input },
+        ],
+        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        temperature: 0.2,
+        max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
+      });
+      const out = response.choices[0]?.message?.content?.trim();
+      return out && out.length > 0 ? out : input;
+    } catch (err) {
+      console.error('Error traduciendo al español:', err);
+      return input;
     }
   }
 

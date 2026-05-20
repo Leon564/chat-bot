@@ -2,6 +2,7 @@
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
+import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
@@ -13,6 +14,7 @@ export class BotService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
     private readonly musicService: MusicService,
+    private readonly aniListService: AniListService,
     private readonly utilsService: UtilsService,
     private readonly loggingService: LoggingService,
     private readonly memoryService: MemoryService,
@@ -126,6 +128,138 @@ export class BotService implements OnModuleInit {
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
       });
+  }
+
+  // ─── AniList ───────────────────────────────────────────────────────────────
+
+  private async handleAniListRequest(
+    rawKind: string,
+    rawTitle: string,
+    authorUsername: string,
+  ): Promise<void> {
+    const kind = AniListService.normalizeKind(rawKind);
+    const title = (rawTitle ?? '').trim();
+    if (!kind || title.length < 1) {
+      this.sendBotMessage(
+        `@${authorUsername} 🤔 No entendí qué buscar en AniList (kind="${rawKind}", title="${rawTitle}").`,
+      );
+      return;
+    }
+
+    try {
+      const result = await this.aniListService.search(kind, title);
+      if (!result) {
+        this.sendBotMessage(
+          `@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`,
+        );
+        return;
+      }
+
+      // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
+      // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
+      // cae al texto original para no romper la tarjeta.
+      const translatedDescription = result.description
+        ? await this.chatService.translateToSpanish(result.description)
+        : null;
+      const localized: AniListResult = { ...result, description: translatedDescription };
+
+      this.sendBotMessage(this.formatAniListCard(localized));
+    } catch (err) {
+      const code = (err as Error)?.message ?? '';
+      if (code === 'RATE_LIMIT') {
+        this.sendBotMessage(`@${authorUsername} ⏱️ AniList me está limitando. Probá en un minuto.`);
+      } else if (code === 'NETWORK') {
+        this.sendBotMessage(`@${authorUsername} 📡 No pude alcanzar AniList. Intentalo de nuevo en un rato.`);
+      } else {
+        this.sendBotMessage(`@${authorUsername} 😕 AniList no respondió bien esta vez.`);
+      }
+    }
+  }
+
+  private formatAniListCard(r: AniListResult): string {
+    const kindLabel: Record<AniListResult['kind'], string> = {
+      manga: 'Manga',
+      manhwa: 'Manhwa',
+      manhua: 'Manhua',
+      anime: 'Anime',
+    };
+    const statusLabel: Record<string, string> = {
+      FINISHED: 'Finalizado',
+      RELEASING: 'En curso',
+      NOT_YET_RELEASED: 'Aún no publicado',
+      CANCELLED: 'Cancelado',
+      HIATUS: 'En pausa',
+    };
+    // AniList sólo expone géneros en inglés. La lista de géneros es fija y
+    // documentada — cubrimos los 18 oficiales con su traducción al español.
+    // Si aparece uno que no esté mapeado, lo dejamos tal cual.
+    const genreLabel: Record<string, string> = {
+      Action: 'Acción',
+      Adventure: 'Aventura',
+      Comedy: 'Comedia',
+      Drama: 'Drama',
+      Ecchi: 'Ecchi',
+      Fantasy: 'Fantasía',
+      Hentai: 'Hentai',
+      Horror: 'Terror',
+      'Mahou Shoujo': 'Mahou Shoujo',
+      Mecha: 'Mecha',
+      Music: 'Música',
+      Mystery: 'Misterio',
+      Psychological: 'Psicológico',
+      Romance: 'Romance',
+      'Sci-Fi': 'Ciencia ficción',
+      'Slice of Life': 'Slice of Life',
+      Sports: 'Deportes',
+      Supernatural: 'Sobrenatural',
+      Thriller: 'Suspenso',
+    };
+
+    const title = r.titleEnglish && r.titleEnglish !== r.titleRomaji
+      ? `${r.titleRomaji} (${r.titleEnglish})`
+      : r.titleRomaji;
+
+    const cover = r.coverImage ? `[img]${r.coverImage}[/img]` : '';
+
+    const facts: string[] = [`**${kindLabel[r.kind]}**`];
+    if (r.status && statusLabel[r.status]) facts.push(statusLabel[r.status]);
+    else if (r.status) facts.push(r.status.toLowerCase());
+    if (r.score) facts.push(`⭐ ${r.score}/100`);
+    if (r.startYear) facts.push(`${r.startYear}`);
+
+    const counts: string[] = [];
+    if (r.kind === 'anime') {
+      if (r.episodes) counts.push(`📺 ${r.episodes} eps`);
+    } else {
+      if (r.chapters) counts.push(`📖 ${r.chapters} caps`);
+      if (r.volumes) counts.push(`📚 ${r.volumes} vols`);
+    }
+
+    const translatedGenres = r.genres.slice(0, 5).map((g) => genreLabel[g] ?? g);
+    const genres = translatedGenres.length > 0 ? `🏷️ ${translatedGenres.join(', ')}` : '';
+
+    const synopsis = this.truncate(r.description ?? '', 320);
+
+    const parts: string[] = [
+      cover,
+      `**${title}**`,
+      facts.join(' · '),
+      counts.join(' · '),
+      genres,
+      synopsis,
+      `🔗 ${r.url}`,
+    ];
+
+    return parts.filter((p) => p && p.length > 0).join('\n');
+  }
+
+  private truncate(text: string, max: number): string {
+    if (!text) return '';
+    const clean = text.replace(/\s+\n/g, '\n').trim();
+    if (clean.length <= max) return clean;
+    const cut = clean.slice(0, max);
+    const lastSpace = cut.lastIndexOf(' ');
+    return (lastSpace > max * 0.7 ? cut.slice(0, lastSpace) : cut).trim() + '…';
   }
 
   // ─── Video ─────────────────────────────────────────────────────────────────
@@ -278,6 +412,26 @@ export class BotService implements OnModuleInit {
       }
       for (const query of queries) {
         await this.handleMusicRequest(`!music ${query}`, authorUsername);
+      }
+      return;
+    }
+
+    // AniList intent tokens: the LLM emits {{anilist:<kind>:<title>}} when the
+    // user asks for info about a specific manga/manhwa/manhua/anime. We collect
+    // every token, send the confirmation text without tokens, then resolve each
+    // one against AniList and post the card. Same multi-query approach as music
+    // so the LLM can answer "buscame X y Y" in a single turn.
+    const anilistRe = /\{\{anilist:\s*([^:}]+?)\s*:\s*([^}]+?)\s*\}\}/gi;
+    const anilistTokens = [...response.matchAll(anilistRe)];
+    if (anilistTokens.length > 0) {
+      const confirmText = response.replace(anilistRe, '').replace(/\s{2,}/g, ' ').trim();
+      if (confirmText) {
+        this.sendBotMessage(`<@${authorUsername}> ${confirmText}`);
+        await this.utilsService.sleep(responseDelay);
+      }
+      for (const token of anilistTokens) {
+        await this.handleAniListRequest(token[1], token[2], authorUsername);
+        await this.utilsService.sleep(responseDelay);
       }
       return;
     }
