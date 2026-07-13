@@ -58,12 +58,21 @@ export class BotService implements OnModuleInit {
 
     const containsBotWord = (text: string): boolean => /\bbot\b/i.test(text);
 
+    // Responder a un mensaje del propio bot cuenta como interpelarlo, aunque el
+    // texto no lo mencione. Con repliesEnabled=true el backend NO reescribe el
+    // contenido con una mención, así que sin esto el bot ignoraría las
+    // respuestas a sus propios mensajes. (Con replies desactivadas el contenido
+    // ya llega con "<@bot>" y lo captura containsExactBotName.)
+    const isReplyToBot =
+      !!msg.replyTo && msg.replyTo.authorUsername?.toLowerCase() === botUsername.toLowerCase();
+
     const isMusicRequest = MusicService.isMusicRequest(content);
     const isOnlineReq = this.isOnlineUsersRequest(content);
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
     if (
+      !isReplyToBot &&
       !containsBotWord(content) &&
       !containsExactBotName(content) &&
       !isMusicRequest &&
