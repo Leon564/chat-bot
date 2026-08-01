@@ -1,13 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import OpenAI from 'openai';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { Context, ContextDocument } from '../../common/schemas/context.schema';
-
-const CONTEXT_CAP = 10;
+import { ContextService } from './context.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -26,7 +22,7 @@ export class ChatService {
     private readonly configService: ConfigService,
     private readonly memoryService: MemoryService,
     private readonly loggingService: LoggingService,
-    @InjectModel(Context.name) private readonly contextModel: Model<ContextDocument>,
+    private readonly contextService: ContextService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -138,7 +134,7 @@ CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen, {{
 
 Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${username}.`;
 
-    const context = await this.getContext();
+    const context = await this.contextService.getForUser(username ?? '');
     const memory = useMemory ? await this.memoryService.getMemory(username) : [];
 
     // Optimized payload structure to reduce token usage
@@ -265,7 +261,11 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         console.log('Error sanitizando enlace de Discord:', e);
       }
 
-      await this.saveContext({ question: message, answer: content || '', user: username || 'unknown' });
+      // Sin usuario no hay hilo al que pertenecer: antes se guardaba como
+      // 'unknown', que en la práctica era un cajón compartido.
+      if (username) {
+        await this.contextService.save({ question: message, answer: content || '', user: username });
+      }
 
       console.log(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
       
@@ -368,40 +368,6 @@ FORMATO SUGERIDO:
     } catch (error) {
       console.error('Error generando resumen:', error);
       return '❌ Error al generar el resumen. Intenta más tarde.';
-    }
-  }
-
-  private async getContext(): Promise<{ question: string; answer: string; user: string }[]> {
-    try {
-      const rows = await this.contextModel
-        .find()
-        .sort({ createdAt: 1 })
-        .limit(CONTEXT_CAP)
-        .lean()
-        .exec();
-      return rows.map((r) => ({ question: r.question, answer: r.answer, user: r.user ?? '' }));
-    } catch (error) {
-      console.error('Error loading context:', error);
-      return [];
-    }
-  }
-
-  private async saveContext(contextItem: { question: string; answer: string; user: string }): Promise<void> {
-    try {
-      await this.contextModel.create(contextItem);
-      // Trim to keep only the latest CONTEXT_CAP rows.
-      const overflow = await this.contextModel
-        .find()
-        .sort({ createdAt: -1 })
-        .skip(CONTEXT_CAP)
-        .select({ _id: 1 })
-        .lean()
-        .exec();
-      if (overflow.length > 0) {
-        await this.contextModel.deleteMany({ _id: { $in: overflow.map((d) => d._id) } });
-      }
-    } catch (error) {
-      console.error('Error saving context:', error);
     }
   }
 

@@ -14,7 +14,13 @@ export class Context {
 
   @Prop({ default: '' })
   user: string;
+
+  /**
+   * Lo aporta `timestamps: true`, no un @Prop. Se declara sólo para que
+   * FilterQuery lo acepte en las consultas por antigüedad.
+   */
+  createdAt?: Date;
 }
 
 export const ContextSchema = SchemaFactory.createForClass(Context);
-ContextSchema.index({ createdAt: -1 });
+ContextSchema.index({ user: 1, createdAt: -1 });

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ChatService } from './chat.service';
+import { ContextService } from './context.service';
 import { MessagesService } from './messages.service';
 import { OnlineUsersService } from './online-users.service';
 import { UtilsService } from '../../common/utils/utils.service';
@@ -21,7 +22,7 @@ import { MigrationService } from '../../common/utils/migration.service';
       { name: Context.name, schema: ContextSchema },
     ]),
   ],
-  providers: [ChatService, MessagesService, OnlineUsersService, UtilsService, MemoryService, LoggingService, MigrationService],
+  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UtilsService, MemoryService, LoggingService, MigrationService],
   exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, MongooseModule],
 })
 export class ChatModule {}
