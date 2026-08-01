@@ -13,3 +13,9 @@ context.json
 
 # Backups creados por la migración one-shot a Mongo
 /data/*.bak
+
+# Variantes de entorno (prod, staging) — contienen secretos
+.env.*
+
+# Espacio de trabajo de subagent-driven-development (scratch)
+/.superpowers/
