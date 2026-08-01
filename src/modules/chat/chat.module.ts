@@ -15,6 +15,7 @@ import { Context, ContextSchema } from '../../common/schemas/context.schema';
 import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema';
 import { MigrationService } from '../../common/utils/migration.service';
 import { PromptBuilderService } from './prompt-builder.service';
+import { IntentRouterService } from './intent-router.service';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { PromptBuilderService } from './prompt-builder.service';
       { name: LlmUsage.name, schema: LlmUsageSchema },
     ]),
   ],
-  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, UtilsService, MemoryService, LoggingService, MigrationService, PromptBuilderService],
+  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, UtilsService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
   exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, MongooseModule],
 })
 export class ChatModule {}
