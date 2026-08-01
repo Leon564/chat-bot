@@ -33,6 +33,22 @@ export class LlmUsage {
   @Prop({ required: true, default: 0 })
   completionTokens: number;
 
+  /**
+   * Porción de promptTokens servida desde el caché del proveedor. La fase 3
+   * busca volver cacheable el prefijo del prompt, y sin este desglose ese
+   * ahorro sería invisible: los tokens cacheados cuentan igual en
+   * promptTokens.
+   */
+  @Prop({ default: 0 })
+  cachedPromptTokens: number;
+
+  /**
+   * Cambiar de modelo cambia el tokenizador. Sin esto, comparar la linea base
+   * contra la fase 3 podria estar comparando dos unidades distintas.
+   */
+  @Prop({ default: '' })
+  model: string;
+
   /** Bloques que el router incluyó. Vacío hasta la fase 3. */
   @Prop({ type: [String], default: [] })
   intents: string[];

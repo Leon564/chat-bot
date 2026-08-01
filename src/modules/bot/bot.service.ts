@@ -188,7 +188,7 @@ export class BotService implements OnModuleInit {
       // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
       // cae al texto original para no romper la tarjeta.
       const translatedDescription = result.description
-        ? await this.chatService.translateToSpanish(result.description)
+        ? await this.chatService.translateToSpanish(result.description, authorUsername)
         : null;
       const localized: AniListResult = { ...result, description: translatedDescription };
 
@@ -509,7 +509,7 @@ export class BotService implements OnModuleInit {
 
     try {
       console.log('📋 Generando resumen del chat...');
-      const resumen = await this.chatService.generateSummary();
+      const resumen = await this.chatService.generateSummary(authorUsername);
       const resumenParts = this.utilsService.splitMessageIntoParts(resumen, maxLength);
       console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { MemoryService } from '../../common/utils/memory.service';
@@ -12,6 +12,7 @@ export type BotPersonality = 'default' | 'unfiltered';
 @Injectable()
 export class ChatService {
   private openai: OpenAI;
+  private readonly logger = new Logger(ChatService.name);
 
   /**
    * Runtime override for the bot personality. Lives in memory only — on
@@ -19,6 +20,13 @@ export class ChatService {
    * over again. Set via the !personality admin command in chat.
    */
   private personalityOverride: BotPersonality | null = null;
+
+  /**
+   * Asegura un único warn por proceso cuando el proveedor detrás de
+   * OPENAI_BASE_URL omite `usage` en la respuesta — sin este flag, cada
+   * llamada al modelo inundaría el log con el mismo aviso.
+   */
+  private usageMissingWarned = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -155,14 +163,16 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
     }
 
     // Add memory context if available (optimized and filtered) and enabled
+    let memoryInjected = false;
     if (useMemory && memory && memory.length > 0) {
       // Solo usar memoria relevante, máximo 3 elementos
       const relevantMemories = memory.slice(-3);
       if (relevantMemories.length > 0) {
         messages.push({
-          role: 'system', 
+          role: 'system',
           content: `Contexto relevante recordado: ${relevantMemories.join(' | ')}`
         });
+        memoryInjected = true;
       }
     }
 
@@ -202,7 +212,17 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         max_tokens: maxTokens,
       });
 
-      this.registrarUso('chat', response, username);
+      // Segmenta la fila por lo que hace variar el prompt: promptTokens de
+      // kind:'chat' es bimodal entre buildDefaultPersona/buildUnfilteredPersona
+      // (toggleable en vivo con !personality), y saludos/memoria también
+      // cambian el largo del prompt. Sin esto, la línea base y la fase 3
+      // podrían caer en mezclas distintas de estas variantes sin forma de
+      // auditarlo después.
+      const intents: string[] = [personality === 'unfiltered' ? 'persona:unfiltered' : 'persona:default'];
+      if (isSimpleGreeting) intents.push('greeting');
+      if (memoryInjected) intents.push('memory');
+
+      this.registrarUso('chat', response, username, intents);
 
       let content = response.choices[0].message.content || '';
       console.log(`Respuesta de OpenAI: ${content}`);
@@ -287,7 +307,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
    * para evitar que agregue comentarios o cambie la voz del original. Si la
    * llamada falla, devuelve el texto original para no romper el flujo.
    */
-  async translateToSpanish(text: string): Promise<string> {
+  async translateToSpanish(text: string, username?: string): Promise<string> {
     const input = (text ?? '').trim();
     if (!input) return '';
 
@@ -306,7 +326,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
 
-      this.registrarUso('translate', response);
+      this.registrarUso('translate', response, username);
 
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
@@ -316,7 +336,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
     }
   }
 
-  async generateSummary(): Promise<string> {
+  async generateSummary(username?: string): Promise<string> {
     const messages = await this.loggingService.getLastMessages();
     
     if (!messages || messages.length === 0) {
@@ -369,7 +389,7 @@ FORMATO SUGERIDO:
         max_tokens: 500,
       });
 
-      this.registrarUso('summary', summaryResponse);
+      this.registrarUso('summary', summaryResponse, username);
 
       const summary = summaryResponse.choices[0].message.content || '';
       console.log(`✅ Resumen generado: ${summary.substring(0, 100)}...`);
@@ -385,19 +405,39 @@ FORMATO SUGERIDO:
    * Registra el consumo de una llamada al modelo. Fire-and-forget a propósito:
    * medir no puede sumar latencia a la respuesta ni romperla si Mongo falla.
    * `usage` es opcional en la respuesta según el proveedor detrás de
-   * OPENAI_BASE_URL, de ahí los `?? 0`.
+   * OPENAI_BASE_URL, de ahí los `?? 0`. Si `usage` viene undefined, la línea
+   * queda en 0/0 indistinguible de una medición real — se avisa una sola vez
+   * por proceso para que no pase desapercibido.
    */
   private registrarUso(
     kind: LlmKind,
-    response: { usage?: { prompt_tokens?: number; completion_tokens?: number } },
+    response: {
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+      };
+    },
     user?: string,
+    intents?: string[],
   ): void {
+    if (!response.usage && !this.usageMissingWarned) {
+      this.usageMissingWarned = true;
+      this.logger.warn(
+        `El proveedor detrás de OPENAI_BASE_URL no devolvió "usage" en la respuesta. ` +
+          `La medición de tokens (línea base para la fase 3) va a quedar en 0/0 y no va a servir con este proveedor.`,
+      );
+    }
+
     void this.usageService
       .record({
         kind,
         user: user ?? '',
         promptTokens: response.usage?.prompt_tokens ?? 0,
         completionTokens: response.usage?.completion_tokens ?? 0,
+        cachedPromptTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        model: this.configService.get<string>('openai.model') ?? '',
+        intents: intents ?? [],
       })
       .catch(() => {});
   }

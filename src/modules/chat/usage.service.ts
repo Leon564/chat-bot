@@ -8,6 +8,8 @@ export interface RecordUsageInput {
   user?: string;
   promptTokens: number;
   completionTokens: number;
+  cachedPromptTokens?: number;
+  model?: string;
   intents?: string[];
   cacheHit?: boolean;
 }
@@ -43,6 +45,8 @@ export class UsageService {
         user: input.user ?? '',
         promptTokens: input.promptTokens,
         completionTokens: input.completionTokens,
+        cachedPromptTokens: input.cachedPromptTokens ?? 0,
+        model: input.model ?? '',
         intents: input.intents ?? [],
         cacheHit: input.cacheHit ?? false,
       });
