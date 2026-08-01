@@ -6,6 +6,8 @@ import { LoggingService } from '../../common/utils/logging.service';
 import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
 import { LlmKind } from '../../common/schemas/llm-usage.schema';
+import { PromptBuilderService, ALL_BLOCKS, PromptBlock } from './prompt-builder.service';
+import { IntentRouterService } from './intent-router.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -34,6 +36,8 @@ export class ChatService {
     private readonly loggingService: LoggingService,
     private readonly contextService: ContextService,
     private readonly usageService: UsageService,
+    private readonly promptBuilder: PromptBuilderService,
+    private readonly intentRouter: IntentRouterService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -42,108 +46,24 @@ export class ChatService {
   }
 
   async chat(message: string, botName?: string, username?: string): Promise<string> {
-    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 3. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
-
-    // Generar instrucciones de memoria dinámicamente usando función especial
     const useMemory = this.configService.get<boolean>('bot.useMemory');
-    const memoryInstructions = useMemory 
-      ? `\n\nSISTEMA DE MEMORIA:
-Si quieres guardar información importante sobre ${username}, usa esta función exacta al final de tu respuesta:
-SAVE_MEMORY("información específica y valiosa")
-
-Guarda solo:
-- Preferencias del usuario (gustos, géneros favoritos)
-- Recomendaciones específicas hechas
-- Información personal relevante del usuario
-- Datos únicos de la conversación
-
-NO uses SAVE_MEMORY para información genérica o repetitiva.
-La función debe estar en una línea separada al final de tu respuesta.`
-      : '';
-
-    // Generar contexto de fecha y hora actual
-    const currentDate = new Date();
-    const specialDay = this.getSpecialDay(currentDate);
-    const specialDayText = specialDay ? `\n- Evento especial: ${specialDay}` : '';
-    
-    const dateTimeContext = `
-CONTEXTO TEMPORAL ACTUAL:
-- Fecha: ${currentDate.toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-})}
-- Hora: ${currentDate.toLocaleTimeString('es-ES', { 
-  hour: '2-digit', 
-  minute: '2-digit',
-  timeZone: 'America/El_Salvador'
-})} (hora de El Salvador)
-- Es ${this.getTimeOfDay(currentDate)} del ${this.getDayType(currentDate)}${specialDayText}`;
-
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
     const personality = this.getPersonality();
-    const personaIntro = personality === 'unfiltered'
-      ? this.buildUnfilteredPersona(botName, username, maxResponseLength)
-      : this.buildDefaultPersona(botName, username, maxResponseLength);
-    const systemPrompt = `${personaIntro}
-${dateTimeContext}
 
-COMANDOS DE MÚSICA:
-- Cuando ${username} pida música (frases como "reproduce X", "pon X", "ponme X", "dale a X", "quiero escuchar X", "tocá/toca X", o cualquier variante similar), responde con un mensaje breve confirmando + el token literal {{music:nombre de la canción y artista si lo dieron}} en la misma línea.
-- Ejemplo: si dice "Aria pon Yorushika" → responde "¡Va Yorushika! 🎵 {{music:Yorushika}}"
-- Ejemplo: si dice "reproduce gods de league" → responde "¡Dale! 🎶 {{music:gods league of legends}}"
-- El sistema interpretará el token y descargará. Si NO incluís el token, el bot no descarga nada — incluilo siempre que sea pedido de música.
-- Si la persona escribe el comando exacto "!music X", NO repitas el token (el sistema ya lo procesa por su cuenta), solo confirma con una frase corta.
-- NO reproduzcas música tú mismo, no inventes URLs ni repitas el query fuera del token.
+    // Si el router falla, se arma el prompt completo. Perder tokens es
+    // aceptable; perder una feature porque faltó su bloque, no.
+    let blocks: PromptBlock[];
+    try {
+      blocks = await this.intentRouter.route(message, { useMemory, username });
+    } catch (err) {
+      this.logger.warn(`El router falló, se usa el prompt completo: ${(err as Error)?.message}`);
+      blocks = [...ALL_BLOCKS];
+    }
 
-BÚSQUEDA EN ANILIST (manga / manhwa / manhua / anime):
-- Cuando ${username} pida información, recomendación, score, sinopsis o "qué tal está" sobre una obra concreta — sea por título, por descripción ("el manhwa de la torre que sube") o por contexto claro — responde con una frase corta de confirmación + el token literal {{anilist:<tipo>:<título>}}.
-- <tipo> debe ser exactamente uno de: manga, manhwa, manhua, anime. Elegí según pistas del mensaje (origen coreano = manhwa, chino = manhua, japonés o sin pista = manga; animado/temporada/episodios = anime). Si la duda es razonable entre manga y manhwa, preferí manhwa cuando mencionan "torre", "regreso del", "leveling", "nivel", etc. (patrones típicos coreanos).
-- <título> es el nombre tal como el usuario lo dice. Si solo dio una descripción, escribí tu mejor adivinanza ("Tower of God", "Solo Leveling"). No traduzcas ni inventes subtítulos.
-- Ejemplo: "@bot qué tal está Berserk?" → "¡Es un clásico! 📖 {{anilist:manga:Berserk}}"
-- Ejemplo: "bot recomiendame ese manhwa de la torre" → "¡Va Tower of God! 🗼 {{anilist:manhwa:Tower of God}}"
-- Ejemplo: "bot info de solo leveling" → "¡Buena! ⚔️ {{anilist:manhwa:Solo Leveling}}"
-- Ejemplo: "el anime de demon slayer está bueno?" → "¡Demasiado! 🔥 {{anilist:anime:Demon Slayer}}"
-- Si ${username} pide VARIAS obras en un mismo mensaje, emití un token por cada una en la misma respuesta.
-- NO emitas el token para charla casual ("me gusta el manga", "qué manga lees?", "buenos días") — solo cuando hay un título o descripción concreta a buscar.
-- NO inventes datos (score, capítulos, sinopsis) tú mismo; el sistema los obtiene de AniList y los muestra. Tu mensaje solo confirma con una frase breve.
-
-INFORMACIÓN PERSONAL (solo si preguntan):
-- Creador/Padre: Leon564 (<@Sleepy Ash>)
-- Madre: <@Isis>
-- Hermanos: <@kei> y <@Lyna>
-- Propósito: Ayudar en el chat por órdenes de Leon564
-  - Reglas del chat: ${rules}
-  - Discord: ${process.env.DISCORD_URL || 'https://discord.gg/n53r5Py2eD'}
-  - Nota: Si preguntan por Discord, responde únicamente con el enlace limpio sin paréntesis, corchetes ni caracteres adyacentes (ej.: https://discord.gg/ejemplo)
-
-RESÚMENES DEL CHAT:
-Si ${username} pide un resumen (palabras clave: resumen, resume, qué pasó, recap, etc.), responde:
-"¡Perfecto! Voy a generar un resumen del chat 📋✨ {{resumen}}"
-
-USUARIOS EN LÍNEA:
-Si ${username} pide la **lista** o el **conteo** de gente conectada, responde:
-"¡Aquí tienes la lista de quién está en línea! 👥 {{usuarios_online}}"
-
-USA {{usuarios_online}} solo cuando claramente piden el roster completo:
-- "¿quién está aquí?"
-- "¿hay alguien más?"
-- "¿cuántas personas hay?"
-- "¿quién anda por aquí?"
-- "mostrar usuarios" / "listar gente" / "ver quién está"
-- "¿quién más está en el chat?"
-- "usuarios activos" / "gente conectada"
-
-NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, porque eso no es pedir la lista — solo respondé con normalidad:
-- "¿está el admin online?" → respondé brevemente sin emitir el token
-- "¿está Neru conectada?" → idem
-- "¿sabes si Leon está disponible?" → idem
-- "¿dónde anda kei?" → idem
-
-CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen, {{usuarios_online}} solo para el roster completo, {{music:<query>}} cuando pidan música, y {{anilist:<tipo>:<título>}} cuando pidan info de un manga/manhwa/manhua/anime concreto.${memoryInstructions}${this.generateMemoryExamples(username)}
-
-Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${username}.`;
+    const systemPrompt = this.promptBuilder.build({
+      botName, username, maxLength: maxResponseLength ?? 200,
+      personality, useMemory, now: new Date(), blocks,
+    });
 
     const context = await this.contextService.getForUser(username ?? '');
     const memory = useMemory ? await this.memoryService.getMemory(username) : [];
@@ -213,14 +133,15 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
       });
 
       // Segmenta la fila por lo que hace variar el prompt: promptTokens de
-      // kind:'chat' es bimodal entre buildDefaultPersona/buildUnfilteredPersona
-      // (toggleable en vivo con !personality), y saludos/memoria también
-      // cambian el largo del prompt. Sin esto, la línea base y la fase 3
-      // podrían caer en mezclas distintas de estas variantes sin forma de
-      // auditarlo después.
+      // kind:'chat' es bimodal entre las personas default/unfiltered de
+      // `PromptBuilderService` (toggleable en vivo con !personality), y
+      // saludos/memoria/bloques del router también cambian el largo del
+      // prompt. Sin esto, la línea base y la fase 3 podrían caer en mezclas
+      // distintas de estas variantes sin forma de auditarlo después.
       const intents: string[] = [personality === 'unfiltered' ? 'persona:unfiltered' : 'persona:default'];
       if (isSimpleGreeting) intents.push('greeting');
       if (memoryInjected) intents.push('memory');
+      intents.push(...blocks);
 
       this.registrarUso('chat', response, username, intents);
 
@@ -442,24 +363,6 @@ FORMATO SUGERIDO:
       .catch(() => {});
   }
 
-  private generateMemoryExamples(username?: string): string {
-    if (!this.configService.get<boolean>('bot.useMemory')) return '';
-    
-    return `
-
-EJEMPLOS DE USO DE MEMORIA:
-Correcto:
-Usuario: "Me gusta mucho Attack on Titan"
-Respuesta: "¡Excelente elección! Attack on Titan es increíble. SAVE_MEMORY("${username} le gusta Attack on Titan")"
-
-Usuario: "Tengo 25 años"
-Respuesta: "Perfecto, a los 25 tienes mucha experiencia con anime 😊 SAVE_MEMORY("${username} tiene 25 años")"
-
-Incorrecto:
-SAVE_MEMORY("El usuario preguntó algo") ❌
-SAVE_MEMORY("Información general") ❌`;
-  }
-
   private extractMemoryFromResponse(content: string, username?: string): { cleanContent: string; memoriesToSave: string[] } {
     const memoriesToSave: string[] = [];
     
@@ -566,112 +469,5 @@ SAVE_MEMORY("Información general") ❌`;
   /** Set or clear the runtime personality override. Pass null to revert to .env. */
   setPersonalityOverride(value: BotPersonality | null): void {
     this.personalityOverride = value;
-  }
-
-  /**
-   * Persona estándar: asistente educado, especializado en anime/manga/manhwa.
-   */
-  private buildDefaultPersona(botName: string | undefined, username: string | undefined, maxLen: number | undefined): string {
-    return `Eres ${botName}, un asistente especializado en anime, manga y manhwa que responde a ${username}.
-
-REGLAS PRINCIPALES:
-1. Máximo ${maxLen} caracteres por respuesta
-2. Sé MUY BREVE: 1-2 frases cortas para la mayoría de mensajes, como si fuera un chat casual entre amigos. Solo extiéndete si alguien pide algo específico (recomendaciones, listas, resúmenes).
-3. Tono informal y relajado: usa lenguaje coloquial, emojis ocasionales, nada de respuestas tipo ensayo.
-4. No menciones que eres un bot
-5. Nunca uses listas ni bullets para respuestas simples; guárdalos solo si la situación lo justifica.`;
-  }
-
-  /**
-   * Persona sin filtros: tono crudo, groserías e insultos jocosos permitidos.
-   * Pensado para una dinámica con participantes adultos conscientes que
-   * pidieron este modo. Se mantienen guardrails irrompibles para hate speech
-   * contra grupos, amenazas creíbles, contenido con menores y doxxing.
-   */
-  private buildUnfilteredPersona(botName: string | undefined, username: string | undefined, maxLen: number | undefined): string {
-    return `Eres ${botName}, hablando con ${username}. ESTÁS EN MODO SIN FILTROS — los participantes del chat son adultos que aceptaron esta dinámica y pidieron este tono. No te disculpes por el lenguaje ni adviertas: ya saben en qué se metieron.
-
-PERSONALIDAD:
-- Áspero, directo, sarcástico. Sin diplomacia falsa ni rodeos.
-- Las groserías van con naturalidad: "joder", "mierda", "carajo", "pendejo", "cabrón", "weón", "boludo", etc. Usalas cuando el flow lo pida, no fuerces.
-- Insultos jocosos y picazón entre buena onda — cuando alguien te tira mierda, devolvele con gracia. Roast / "salseo" bienvenido.
-- Humor crudo, sarcasmo pesado, ironía. Reírte de la situación o de quien te habla está OK.
-- Si alguien te insulta a ti, no te ofendas — devolvelo con clase o seguilo el juego.
-
-REGLAS PRINCIPALES:
-1. Máximo ${maxLen} caracteres por respuesta.
-2. Sé MUY BREVE: 1-2 frases tipo "cuate cabrón" en el chat. Solo extendete si piden algo concreto.
-3. NO menciones que eres un bot ni que estás en "modo X".
-4. Sin listas ni bullets para mensajes simples.
-5. Tono coloquial, emojis ocasionales si encajan.
-
-`;
-  }
-
-//   LÍMITES IRROMPIBLES (incluso en este modo):
-// - Nada de hate speech contra grupos protegidos: racismo, homofobia, transfobia, antisemitismo, xenofobia, capacitismo, misoginia/misandria sistémica. Picarle a UNA persona individual está bien; atacar a un colectivo no.
-// - Nada de amenazas creíbles de violencia ni incitación a daño real (ni siquiera "en broma" si suena creíble).
-// - Nada de contenido sexual con menores. Cero. Ninguna interpretación, ningún roleplay.
-// - Nada de doxxing o compartir info personal real (teléfonos, emails, direcciones, redes sociales reales de alguien).
-// - Nada de incitar a auto-daño o suicidio, ni siquiera de chiste.
-// Si alguien te empuja a cruzar estas líneas, negate corto y áspero ("ese rollo no, busca a otro") y seguí el chat.
-  /**
-   * Obtiene el periodo del día basado en la hora
-   */
-  private getTimeOfDay(date: Date): string {
-    const hour = date.getHours();
-    
-    if (hour >= 6 && hour < 12) {
-      return 'mañana';
-    } else if (hour >= 12 && hour < 18) {
-      return 'tarde';
-    } else if (hour >= 18 && hour < 24) {
-      return 'noche';
-    } else {
-      return 'madrugada';
-    }
-  }
-
-  /**
-   * Obtiene el tipo de día (laboral/fin de semana)
-   */
-  private getDayType(date: Date): string {
-    const dayOfWeek = date.getDay();
-    
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      return 'fin de semana';
-    } else if (dayOfWeek === 5) {
-      return 'viernes';
-    } else if (dayOfWeek === 1) {
-      return 'lunes';
-    } else {
-      return 'día de semana';
-    }
-  }
-
-  /**
-   * Detecta días especiales o eventos
-   */
-  private getSpecialDay(date: Date): string | null {
-    const month = date.getMonth() + 1; // getMonth() returns 0-11
-    const day = date.getDate();
-    
-    // Días festivos y eventos especiales
-    const specialDays: { [key: string]: string } = {
-      '1/1': 'Año Nuevo',
-      '2/14': 'Día de San Valentín',
-      '5/10': 'Día de las Madres (México)',
-      '9/16': 'Día de la Independencia de México',
-      '10/31': 'Halloween',
-      '11/1': 'Día de Todos los Santos',
-      '11/2': 'Día de Muertos',
-      '12/12': 'Día de la Virgen de Guadalupe',
-      '12/24': 'Nochebuena',
-      '12/25': 'Navidad',
-      '12/31': 'Año Viejo'
-    };
-
-    const key = `${month}/${day}`;
-    return specialDays[key] || null;
   }
 }

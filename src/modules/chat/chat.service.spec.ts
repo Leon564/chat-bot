@@ -14,6 +14,8 @@ import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
+import { PromptBuilderService } from './prompt-builder.service';
+import { IntentRouterService } from './intent-router.service';
 
 const respuesta = (content: string, prompt = 100, completion = 20) => ({
   choices: [{ message: { content } }],
@@ -24,6 +26,8 @@ describe('ChatService — instrumentación de tokens', () => {
   let service: ChatService;
   let usage: { record: jest.Mock };
   let context: { getForUser: jest.Mock; save: jest.Mock };
+  let builder: { build: jest.Mock };
+  let router: { route: jest.Mock };
 
   beforeEach(async () => {
     crearMock.mockReset();
@@ -32,6 +36,8 @@ describe('ChatService — instrumentación de tokens', () => {
       getForUser: jest.fn().mockResolvedValue([]),
       save: jest.fn().mockResolvedValue(undefined),
     };
+    builder = { build: jest.fn().mockReturnValue('system prompt de prueba') };
+    router = { route: jest.fn().mockResolvedValue(['PERSONA', 'TEMPORAL']) };
 
     const config = {
       get: jest.fn((clave: string) => {
@@ -55,6 +61,8 @@ describe('ChatService — instrumentación de tokens', () => {
         { provide: UsageService, useValue: usage },
         { provide: MemoryService, useValue: { getMemory: jest.fn().mockResolvedValue([]), saveMemory: jest.fn() } },
         { provide: LoggingService, useValue: { getLastMessages: jest.fn().mockResolvedValue([{ user: 'Nico', message: 'hola' }]) } },
+        { provide: PromptBuilderService, useValue: builder },
+        { provide: IntentRouterService, useValue: router },
       ],
     }).compile();
 
@@ -134,5 +142,39 @@ describe('ChatService — instrumentación de tokens', () => {
     await service.chat('hola', 'Aria', 'Nico');
 
     expect(context.getForUser).toHaveBeenCalledWith('Nico');
+  });
+
+  it('rutea el mensaje y arma el prompt sólo con los bloques que devolvió el router', async () => {
+    router.route.mockResolvedValue(['PERSONA', 'TEMPORAL']);
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('hola', 'Aria', 'Nico');
+
+    expect(router.route).toHaveBeenCalledWith('hola', expect.objectContaining({ username: 'Nico' }));
+    expect(builder.build).toHaveBeenCalledWith(
+      expect.objectContaining({ blocks: ['PERSONA', 'TEMPORAL'] }),
+    );
+  });
+
+  it('registra los bloques usados en intents, junto a las etiquetas de la fase 2', async () => {
+    router.route.mockResolvedValue(['PERSONA', 'TEMPORAL', 'ANILIST']);
+    crearMock.mockResolvedValue(respuesta('va!'));
+
+    await service.chat('qué tal berserk', 'Aria', 'Nico');
+    await dejarCorrer();
+
+    const registrado = usage.record.mock.calls[0][0];
+    expect(registrado.intents).toEqual(expect.arrayContaining(['ANILIST', 'persona:default']));
+  });
+
+  it('si el router falla, arma el prompt completo en vez de quedarse sin bloques', async () => {
+    router.route.mockRejectedValue(new Error('mongo caído'));
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('qué tal berserk', 'Aria', 'Nico');
+
+    expect(builder.build).toHaveBeenCalledWith(
+      expect.objectContaining({ blocks: expect.arrayContaining(['ANILIST', 'MUSIC']) }),
+    );
   });
 });

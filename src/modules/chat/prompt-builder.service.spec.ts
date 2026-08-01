@@ -24,27 +24,6 @@ describe('PromptBuilderService', () => {
     service = moduleRef.get<PromptBuilderService>(PromptBuilderService);
   });
 
-  /** La copia legacy existe sólo para este test; se borra en la Task 4. */
-  const legacy = (input: PromptInput): string =>
-    (service as unknown as { buildLegacy(i: PromptInput): string }).buildLegacy(input);
-
-  describe('caracterización — la extracción fue fiel', () => {
-    it('con TODOS los bloques produce exactamente el prompt de antes (persona default)', () => {
-      const input = baseInput({ personality: 'default' });
-      expect(service.build(input)).toBe(legacy(input));
-    });
-
-    it('con TODOS los bloques produce exactamente el prompt de antes (persona unfiltered)', () => {
-      const input = baseInput({ personality: 'unfiltered' });
-      expect(service.build(input)).toBe(legacy(input));
-    });
-
-    it('con TODOS los bloques y useMemory=false produce exactamente el prompt de antes', () => {
-      const input = baseInput({ useMemory: false });
-      expect(service.build(input)).toBe(legacy(input));
-    });
-  });
-
   describe('inclusión y exclusión de bloques', () => {
     const marcadores: Record<string, string> = {
       MUSIC: 'COMANDOS DE MÚSICA',
