@@ -7,6 +7,7 @@ import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
+import { GraphIngestService } from '../graph/graph-ingest.service';
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -19,6 +20,7 @@ export class BotService implements OnModuleInit {
     private readonly loggingService: LoggingService,
     private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
+    private readonly graphIngestService: GraphIngestService,
   ) {}
 
   async onModuleInit() {
@@ -47,6 +49,13 @@ export class BotService implements OnModuleInit {
     const botUsername = this.chatSocketService.username ?? 'bot';
 
     await this.loggingService.saveLog(authorUsername, content);
+    // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
+    // por eso va acá y no después del filtro de menciones de abajo.
+    // Fire-and-forget: la ingesta es best-effort y no debe demorar la
+    // respuesta al usuario ni, si falla, disparar el manejador de error que
+    // le habla (este método no tiene un catch que hable al usuario, pero el
+    // patrón se mantiene uniforme con los otros tres sitios de ingesta).
+    void this.graphIngestService.ingestSocial(msg).catch(() => {});
 
     // Admin runtime command: switch the bot's personality without restarting.
     // Handled before the trigger gating so admins don't need to mention the
@@ -58,12 +67,21 @@ export class BotService implements OnModuleInit {
 
     const containsBotWord = (text: string): boolean => /\bbot\b/i.test(text);
 
+    // Responder a un mensaje del propio bot cuenta como interpelarlo, aunque el
+    // texto no lo mencione. Con repliesEnabled=true el backend NO reescribe el
+    // contenido con una mención, así que sin esto el bot ignoraría las
+    // respuestas a sus propios mensajes. (Con replies desactivadas el contenido
+    // ya llega con "<@bot>" y lo captura containsExactBotName.)
+    const isReplyToBot =
+      !!msg.replyTo && msg.replyTo.authorUsername?.toLowerCase() === botUsername.toLowerCase();
+
     const isMusicRequest = MusicService.isMusicRequest(content);
     const isOnlineReq = this.isOnlineUsersRequest(content);
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
     if (
+      !isReplyToBot &&
       !containsBotWord(content) &&
       !containsExactBotName(content) &&
       !isMusicRequest &&
@@ -121,7 +139,13 @@ export class BotService implements OnModuleInit {
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          // Fire-and-forget: la ingesta es best-effort y no debe demorar
+          // esta respuesta ni poder disparar el .catch() de abajo (que le
+          // habla al usuario) si el grafo falla.
+          void this.graphIngestService.ingestTrack(authorUsername, query, result.track).catch(() => {});
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
@@ -154,6 +178,11 @@ export class BotService implements OnModuleInit {
         );
         return;
       }
+
+      // Fire-and-forget: la ingesta es best-effort y no debe ni demorar el
+      // armado de la tarjeta ni poder disparar el catch de abajo (que le
+      // habla al usuario) si el grafo falla.
+      void this.graphIngestService.ingestAniList(authorUsername, result, title).catch(() => {});
 
       // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
       // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
@@ -282,7 +311,13 @@ export class BotService implements OnModuleInit {
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          // Fire-and-forget: la ingesta es best-effort y no debe demorar
+          // esta respuesta ni poder disparar el .catch() de abajo (que le
+          // habla al usuario) si el grafo falla.
+          void this.graphIngestService.ingestTrack(authorUsername, query, result.track).catch(() => {});
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
@@ -585,7 +620,7 @@ export class BotService implements OnModuleInit {
     const lower = message
       .toLowerCase()
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, ''); // strip accents so linea/línea both match
+      .replace(/[\u0300-\u036f]/g, ''); // strip accents so linea/línea both match
 
     // Reject questions about a specific user, e.g. "está el admin online?",
     // "esta neru conectado?", "donde anda kei?". Singular "está/esta" + person

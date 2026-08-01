@@ -15,6 +15,8 @@ import {
   MusicRequest,
   YouTubeCookie,
   QueueStatus,
+  MusicResult,
+  TrackMeta,
 } from "../../common/interfaces";
 
 // Configurar ffmpeg
@@ -295,7 +297,7 @@ export class MusicService {
   /**
    * Procesa una solicitud de música
    */
-  async processMusic(query: string, username: string): Promise<string> {
+  async processMusic(query: string, username: string): Promise<MusicResult> {
     return new Promise((resolve, reject) => {
       const request: MusicRequest = {
         query,
@@ -321,7 +323,7 @@ export class MusicService {
    * shared queue so audio and video stay serialized — no concurrent ffmpeg /
    * upload pressure, and preserves the existing 5s spacing between items.
    */
-  async processVideo(query: string, username: string): Promise<string> {
+  async processVideo(query: string, username: string): Promise<MusicResult> {
     return new Promise((resolve, reject) => {
       const request: MusicRequest = {
         query,
@@ -436,7 +438,7 @@ export class MusicService {
     query: string,
     username: string,
     prefetched?: any[],
-  ): Promise<string> {
+  ): Promise<MusicResult> {
     try {
       // Si processQueue ya disparó la búsqueda mientras procesaba el item
       // anterior, la reutilizamos. Si el prefetch falló (null/undefined)
@@ -594,14 +596,24 @@ export class MusicService {
         console.log(`🗑️ [CLEANUP] Archivo temporal eliminado: ${outputPath}`);
 
         const audioTag = this.buildAudioBBCode(uploadUrl, video);
-        return `🎵 <@${username}> Aquí tienes "${video.title}": ${audioTag}`;
+        return {
+          text: `🎵 <@${username}> Aquí tienes "${video.title}": ${audioTag}`,
+          track: {
+            title: video.title,
+            artist: video.author?.name ?? null,
+            thumb: video.bestThumbnail?.url ?? null,
+            youtubeUrl: video.url ?? null,
+            uploadUrl,
+            uploadService: this.serviceFromUploadUrl(uploadUrl),
+          },
+        };
       } catch (uploadError) {
         const uploadErrorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
 
         // Si es un problema de conectividad, mantener el archivo y dar instrucciones
         if (uploadErrorMsg.includes('temporalmente no disponibles')) {
           console.log(`💾 [BACKUP] Manteniendo archivo local debido a problemas de conectividad: ${outputPath}`);
-          return `🎵 <@${username}> Audio "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. El archivo se ha guardado localmente. Por favor, intenta nuevamente en unos minutos.`;
+          return { text: `🎵 <@${username}> Audio "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. El archivo se ha guardado localmente. Por favor, intenta nuevamente en unos minutos.`, track: null };
         }
 
         // Para otros errores, limpiar archivo y relanzar error
@@ -650,7 +662,7 @@ export class MusicService {
     query: string,
     username: string,
     prefetched?: any[],
-  ): Promise<string> {
+  ): Promise<MusicResult> {
     let videos = prefetched;
     if (!videos) {
       console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
@@ -733,12 +745,22 @@ export class MusicService {
       const uploadUrl = await this.uploadFile(outputPath);
       console.log(`☁️ [VIDEO UPLOAD] OK: ${uploadUrl}`);
       fs.unlinkSync(outputPath);
-      return `🎬 <@${username}> Aquí tienes "${video.title}": [video]${uploadUrl}[/video]`;
+      return {
+        text: `🎬 <@${username}> Aquí tienes "${video.title}": [video]${uploadUrl}[/video]`,
+        track: {
+          title: video.title,
+          artist: video.author?.name ?? null,
+          thumb: video.bestThumbnail?.url ?? null,
+          youtubeUrl: video.url ?? null,
+          uploadUrl,
+          uploadService: this.serviceFromUploadUrl(uploadUrl),
+        },
+      };
     } catch (uploadError) {
       const msg = uploadError instanceof Error ? uploadError.message : String(uploadError);
       if (msg.includes('temporalmente no disponibles')) {
         console.log(`💾 [VIDEO BACKUP] Manteniendo archivo local: ${outputPath}`);
-        return `🎬 <@${username}> Video "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. Probá más tarde.`;
+        return { text: `🎬 <@${username}> Video "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. Probá más tarde.`, track: null };
       }
       try { fs.unlinkSync(outputPath); } catch {}
       throw uploadError;
@@ -1612,6 +1634,21 @@ export class MusicService {
       console.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
       return null;
     }
+  }
+
+  /**
+   * El servicio que realmente sirvió la URL, no el configurado: uploadFile
+   * tiene una cadena de fallback interna que puede terminar en otro host.
+   * De esto depende uploadPermanent en el grafo, y por tanto que una fase
+   * futura no sirva desde caché un enlace ya expirado.
+   */
+  private serviceFromUploadUrl(url: string): string {
+    if (/litterbox\.catbox\.moe/i.test(url)) return 'litterbox';
+    if (/catbox\.moe/i.test(url)) return 'catbox';
+    if (/file\.garden/i.test(url)) return 'filegarden';
+    if (/uguu\.se/i.test(url)) return 'uguu';
+    if (/0x0\.st/i.test(url)) return '0x0';
+    return 'unknown';
   }
 
   private getRandomUserAgent(): string {

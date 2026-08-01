@@ -46,6 +46,26 @@ export interface MessageData {
   message: string;
 }
 
+/** Metadatos de una pista ya resuelta y subida. */
+export interface TrackMeta {
+  title: string;
+  artist: string | null;
+  thumb: string | null;
+  youtubeUrl: string | null;
+  uploadUrl: string;
+  uploadService: string;
+}
+
+/**
+ * Lo que resuelve processMusic/processVideo. Antes era solo el string; se
+ * ensanchó para que el grafo pueda registrar la pista sin re-parsear el
+ * BBCode del mensaje.
+ */
+export interface MusicResult {
+  text: string;
+  track: TrackMeta | null;
+}
+
 export interface MusicRequest {
   query: string;
   username: string;
@@ -56,7 +76,7 @@ export interface MusicRequest {
    * failed transiently — caller should fall back to an inline search.
    */
   prefetch?: Promise<any[] | null>;
-  resolve: (result: string) => void;
+  resolve: (value: MusicResult) => void;
   reject: (error: Error) => void;
 }
 

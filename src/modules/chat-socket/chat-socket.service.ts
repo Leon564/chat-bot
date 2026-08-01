@@ -12,6 +12,15 @@ export interface ChatMessage {
   authorRole?: string;
   type: 'text' | 'sticker';
   createdAt: string;
+  // Snapshot del mensaje al que se responde (Discord-style replies). Presente
+  // cuando repliesEnabled=true; con replies desactivadas el backend reescribe
+  // el contenido con una mención en vez de mandar este campo.
+  replyTo?: {
+    messageId: string;
+    authorUsername: string;
+    authorColor: string;
+    contentExcerpt: string;
+  } | null;
 }
 
 @Injectable()
