@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   GraphNode,
   GraphNodeDocument,
@@ -9,6 +9,8 @@ import {
 import {
   GraphEdge,
   GraphEdgeDocument,
+  EdgeType,
+  EdgeSource,
 } from '../../common/schemas/graph-edge.schema';
 
 export interface UpsertNodeInput {
@@ -19,6 +21,20 @@ export interface UpsertNodeInput {
   props?: Record<string, unknown>;
   /** Sube el contador de menciones. Falso para nodos creados de refilón. */
   bumpWeight?: boolean;
+}
+
+export interface UpsertEdgeInput {
+  from: Types.ObjectId;
+  to: Types.ObjectId;
+  type: EdgeType;
+  source: EdgeSource;
+}
+
+export interface TopEdge {
+  type: EdgeType;
+  weight: number;
+  label: string;
+  nodeType: NodeType;
 }
 
 @Injectable()
@@ -105,5 +121,71 @@ export class GraphService {
     if (types && types.length > 0) filter.type = { $in: types };
 
     return this.nodeModel.findOne(filter).sort({ weight: -1, lastSeenAt: -1 }).exec();
+  }
+
+  /**
+   * Crea o refuerza una relación. Idempotente por el índice único
+   * {from, to, type}: repetirla sube `weight` en vez de duplicar. El `source`
+   * se fija en la inserción y no se pisa — una arista nacida de una señal
+   * dura no se degrada porque el lote la vuelva a proponer.
+   */
+  async upsertEdge(input: UpsertEdgeInput): Promise<void> {
+    // Un nodo relacionado consigo mismo no aporta nada y ensucia
+    // interacts_with cuando alguien se auto-menciona.
+    if (input.from.equals(input.to)) return;
+
+    await this.edgeModel
+      .updateOne(
+        { from: input.from, to: input.to, type: input.type },
+        {
+          $setOnInsert: {
+            from: input.from,
+            to: input.to,
+            type: input.type,
+            source: input.source,
+          },
+          $inc: { weight: 1 },
+          $set: { lastSeenAt: new Date() },
+        },
+        { upsert: true },
+      )
+      .exec();
+  }
+
+  /**
+   * Las relaciones más fuertes de un nodo, con el label del destino resuelto.
+   * Es la consulta que alimenta la línea de contexto del prompt (fase 4), por
+   * eso resuelve el nodo destino acá y no en el llamador.
+   */
+  async topEdges(from: Types.ObjectId, types: EdgeType[], limit: number): Promise<TopEdge[]> {
+    if (!types.length || limit <= 0) return [];
+
+    const rows = await this.edgeModel
+      .aggregate([
+        { $match: { from, type: { $in: types } } },
+        { $sort: { weight: -1, lastSeenAt: -1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: 'bot_nodes',
+            localField: 'to',
+            foreignField: '_id',
+            as: 'node',
+          },
+        },
+        { $unwind: '$node' },
+        {
+          $project: {
+            _id: 0,
+            type: 1,
+            weight: 1,
+            label: '$node.label',
+            nodeType: '$node.type',
+          },
+        },
+      ])
+      .exec();
+
+    return rows as TopEdge[];
   }
 }

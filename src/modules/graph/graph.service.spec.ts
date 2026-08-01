@@ -168,4 +168,84 @@ describe('GraphService — nodos', () => {
       expect(await service.resolveByAlias('no existe')).toBeNull();
     });
   });
+
+  describe('upsertEdge y topEdges', () => {
+    it('crea la arista con peso 1 y la repetición la sube a 2', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const sl = await service.upsertNode({ type: 'work', key: 'anilist:105398', label: 'Solo Leveling' });
+
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'fact' });
+
+      const edges = await connection.collection('bot_edges').find({}).toArray();
+      expect(edges).toHaveLength(1);
+      expect(edges[0].weight).toBe(2);
+    });
+
+    it('conserva el source original al repetirse', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const sl = await service.upsertNode({ type: 'work', key: 'anilist:105398', label: 'Solo Leveling' });
+
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'signal' });
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'batch' });
+
+      const edge = await connection.collection('bot_edges').findOne({});
+      expect(edge!.source).toBe('signal');
+    });
+
+    it('no escribe nada si from y to son el mismo nodo', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+
+      await service.upsertEdge({ from: nico!._id, to: nico!._id, type: 'interacts_with', source: 'signal' });
+
+      const total = await connection.collection('bot_edges').countDocuments({});
+      expect(total).toBe(0);
+    });
+
+    it('topEdges devuelve las de mayor peso primero, con el label del destino', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const sl = await service.upsertNode({ type: 'work', key: 'a', label: 'Solo Leveling' });
+      const tog = await service.upsertNode({ type: 'work', key: 'b', label: 'Tower of God' });
+
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: nico!._id, to: tog!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: nico!._id, to: tog!._id, type: 'likes', source: 'fact' });
+
+      const top = await service.topEdges(nico!._id, ['likes'], 10);
+
+      expect(top).toHaveLength(2);
+      expect(top[0].label).toBe('Tower of God');
+      expect(top[0].weight).toBe(2);
+      expect(top[0].nodeType).toBe('work');
+      expect(top[1].label).toBe('Solo Leveling');
+    });
+
+    it('topEdges filtra por tipo de arista', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const sl = await service.upsertNode({ type: 'work', key: 'a', label: 'Solo Leveling' });
+
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: nico!._id, to: sl!._id, type: 'asked_about', source: 'signal' });
+
+      const top = await service.topEdges(nico!._id, ['asked_about'], 10);
+      expect(top).toHaveLength(1);
+      expect(top[0].type).toBe('asked_about');
+    });
+
+    it('topEdges respeta el límite', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      for (let i = 0; i < 5; i++) {
+        const w = await service.upsertNode({ type: 'work', key: `w${i}`, label: `Obra ${i}` });
+        await service.upsertEdge({ from: nico!._id, to: w!._id, type: 'likes', source: 'fact' });
+      }
+
+      const top = await service.topEdges(nico!._id, ['likes'], 3);
+      expect(top).toHaveLength(3);
+    });
+
+    it('topEdges devuelve vacío para un nodo sin aristas', async () => {
+      const solo = await service.upsertNode({ type: 'user', key: 'solo', label: 'Solo' });
+      expect(await service.topEdges(solo!._id, ['likes'], 10)).toEqual([]);
+    });
+  });
 });
