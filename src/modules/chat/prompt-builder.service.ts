@@ -252,6 +252,23 @@ REGLAS PRINCIPALES:
 `;
   }
 
+  // LÍMITES IRROMPIBLES (incluso en modo unfiltered) — INERTE, pendiente de
+  // decisión. Este texto vivía comentado en `ChatService.buildUnfilteredPersona`
+  // antes de la fase 3 (la Task 1 de esta rama no lo copió al extraer el
+  // builder y la Task 4 borró el original, así que quedó sin rastro en el
+  // repo). Nunca se concatenó al prompt real — no cambia ningún
+  // comportamiento restaurarlo — pero documenta una deuda de seguridad
+  // pendiente: si se decide activar estos guardrails, van acá, dentro de
+  // `buildUnfilteredPersona`, no en un bloque aparte.
+  //
+  //   LÍMITES IRROMPIBLES (incluso en este modo):
+  // - Nada de hate speech contra grupos protegidos: racismo, homofobia, transfobia, antisemitismo, xenofobia, capacitismo, misoginia/misandria sistémica. Picarle a UNA persona individual está bien; atacar a un colectivo no.
+  // - Nada de amenazas creíbles de violencia ni incitación a daño real (ni siquiera "en broma" si suena creíble).
+  // - Nada de contenido sexual con menores. Cero. Ninguna interpretación, ningún roleplay.
+  // - Nada de doxxing o compartir info personal real (teléfonos, emails, direcciones, redes sociales reales de alguien).
+  // - Nada de incitar a auto-daño o suicidio, ni siquiera de chiste.
+  // Si alguien te empuja a cruzar estas líneas, negate corto y áspero ("ese rollo no, busca a otro") y seguí el chat.
+
   /**
    * Obtiene el periodo del día basado en la hora. Copiado tal cual desde
    * `ChatService.getTimeOfDay`.
