@@ -89,16 +89,49 @@ export class IntentRouterService {
 
   // ANILIST por grafo — condición 3, ver `isAnilistByGraph`.
   //
-  // N-gramas de 2 a 5 palabras (un alias de una sola palabra colisionaría
-  // demasiado con vocabulario suelto — ver el test "monster" en el spec).
+  // N-gramas de 1 a 5 palabras. El mínimo era 2 mientras la consulta era un
+  // `await` por candidato (un unigrama disparaba demasiado ruido a un costo
+  // por-consulta que no valía la pena); con `GraphService.resolveAnyAlias`
+  // todos los candidatos viajan en un único `$in`, así que agregar
+  // unigramas no agrega consultas — sólo términos a la misma consulta. Y
+  // hacía falta: la condición 1 existe para reconocer un título cuando el
+  // mensaje NO trae vocabulario de media, y en un bot de anime/manga la
+  // mayoría de los títulos son una sola palabra (Berserk, Naruto, Frieren,
+  // Monster, Bleach). Sin unigramas, "alguien sigue berserk?" no tenía
+  // ninguna vía hacia ANILIST.
+  //
+  // El unigrama sí se filtra (ver `isPlausibleTitleWord`) para no llenar la
+  // consulta de ruido: palabras de menos de 3 caracteres y una lista corta
+  // de vacías en español/inglés quedan afuera. Los n-gramas de 2+ palabras
+  // NO se filtran — ahí la combinación ya es señal suficiente.
+  //
   // Se generan de mayor a menor tamaño (los títulos completos son más
-  // específicos que sus subcadenas) y se acota a 40 candidatos: no porque
-  // dispare 40 consultas (van todos juntos en un único `$in`, ver
-  // `GraphService.resolveAnyAlias`), sino para no mandar un array gigante a
-  // Mongo cuando el mensaje es muy largo.
+  // específicos que sus subcadenas) y se acota a `GRAPH_NGRAM_CANDIDATE_CAP`
+  // candidatos: no porque dispare más consultas (van todos juntos en un
+  // único `$in`), sino para no mandar un array desmedido a Mongo cuando el
+  // mensaje es muy largo.
   private static readonly GRAPH_NGRAM_MAX_SIZE = 5;
-  private static readonly GRAPH_NGRAM_MIN_SIZE = 2;
-  private static readonly GRAPH_NGRAM_CANDIDATE_CAP = 40;
+  private static readonly GRAPH_NGRAM_MIN_SIZE = 1;
+  private static readonly GRAPH_NGRAM_CANDIDATE_CAP = 60;
+  private static readonly GRAPH_UNIGRAM_MIN_LENGTH = 3;
+
+  // Palabras vacías frecuentes en español e inglés (artículos, preposiciones,
+  // pronombres, conjunciones, verbos comunes) — sólo filtran UNIGRAMAS. No
+  // pretende ser exhaustiva, sólo cortar el ruido más obvio.
+  private static readonly GRAPH_STOPWORDS = new Set([
+    // español
+    'que', 'los', 'las', 'del', 'con', 'por', 'para', 'una', 'uno', 'este',
+    'esta', 'esto', 'eso', 'esa', 'ese', 'esos', 'esas', 'estos', 'estas',
+    'como', 'pero', 'mas', 'muy', 'todo', 'toda', 'todos', 'todas', 'unos',
+    'unas', 'algo', 'nada', 'aqui', 'alli', 'ahi', 'cada', 'otra', 'otro',
+    'sobre', 'entre', 'desde', 'hasta', 'donde', 'cuando', 'porque', 'ahora',
+    'antes', 'siempre', 'nunca', 'tambien',
+    // inglés
+    'the', 'and', 'for', 'you', 'this', 'that', 'not', 'are', 'was', 'were',
+    'have', 'has', 'his', 'her', 'its', 'our', 'their', 'from', 'with',
+    'about', 'then', 'than', 'will', 'would', 'can', 'could', 'just',
+    'your', 'they', 'them', 'what', 'when', 'where', 'why', 'how',
+  ]);
 
   // "En sus últimos 2 turnos" (spec original) no es algo que el grafo pueda
   // responder: las aristas guardan `lastSeenAt`, no posición conversacional.
@@ -210,10 +243,12 @@ export class IntentRouterService {
   }
 
   /**
-   * Genera los n-gramas candidatos de 2 a 5 palabras, de mayor a menor
+   * Genera los n-gramas candidatos de 1 a 5 palabras, de mayor a menor
    * tamaño (un título completo es más específico que su subcadena, así que
    * conviene intentarlo primero — importa para el desempate por peso en
    * `resolveAnyAlias` sólo en el margen, pero no hay razón para invertirlo).
+   * Los unigramas se filtran con `isPlausibleTitleWord`; los n-gramas de 2+
+   * palabras se incluyen todos, sin filtrar.
    *
    * La puntuación se recorta SÓLO al principio y al final de cada palabra,
    * nunca en el medio: así "tower of god?" sigue generando el candidato
@@ -236,6 +271,7 @@ export class IntentRouterService {
       size--
     ) {
       for (let i = 0; i + size <= words.length; i++) {
+        if (size === 1 && !this.isPlausibleTitleWord(words[i])) continue;
         candidates.push(words.slice(i, i + size).join(' '));
         if (candidates.length >= IntentRouterService.GRAPH_NGRAM_CANDIDATE_CAP) {
           return candidates;
@@ -243,6 +279,19 @@ export class IntentRouterService {
       }
     }
     return candidates;
+  }
+
+  /**
+   * Filtro de unigramas: descarta palabras de menos de 3 caracteres y una
+   * lista corta de vacías en español/inglés (ver `GRAPH_STOPWORDS`). Sólo se
+   * aplica a candidatos de una palabra — un n-grama de 2+ palabras ya es
+   * señal suficiente por la combinación, aunque una de ellas fuera vacía.
+   */
+  private isPlausibleTitleWord(word: string): boolean {
+    return (
+      word.length >= IntentRouterService.GRAPH_UNIGRAM_MIN_LENGTH &&
+      !IntentRouterService.GRAPH_STOPWORDS.has(word)
+    );
   }
 
   /**

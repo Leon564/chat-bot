@@ -247,6 +247,35 @@ describe('IntentRouterService', () => {
       expect(await rutear("conoces jojo's bizarre adventure?")).toContain('ANILIST');
     });
 
+    it('reconoce un título de una sola palabra, sin vocabulario de media', async () => {
+      await graph.upsertNode({ type: 'work', key: 'anilist:3', label: 'Berserk', aliases: ['berserk'] });
+
+      // La mayoría de los títulos de anime/manga son una sola palabra — este
+      // es justo el caso que la condición 1 (unigramas) existe para cubrir.
+      // "sigue" no dispara ninguna heurística de vocabulario.
+      expect(await rutear('alguien sigue berserk?')).toContain('ANILIST');
+    });
+
+    it('un unigrama de una palabra vacía no dispara ANILIST por el grafo', async () => {
+      // Alias absurdo a propósito: "que" es una stopword del filtro de
+      // unigramas (ver GRAPH_STOPWORDS), así que aunque el nodo exista no
+      // debería convertirse en candidato.
+      await graph.upsertNode({ type: 'work', key: 'anilist:98', label: 'Que (nodo de prueba)', aliases: ['que'] });
+
+      // Mensaje normal que contiene "que" pero no dispara ninguna otra
+      // heurística de vocabulario.
+      expect(await rutear('no se que onda hoy')).not.toContain('ANILIST');
+    });
+
+    it('reconoce un alias de una sola palabra con puntuación interna', async () => {
+      await graph.upsertNode({ type: 'work', key: 'anilist:60', label: 'Re:Zero', aliases: ['re:zero'] });
+
+      // Antes de bajar el mínimo de n-gramas a 1, un título de una sola
+      // palabra con puntuación interna (ni siquiera se generaba como
+      // candidato de 2+ palabras) quedaba fuera de alcance por completo.
+      expect(await rutear('alguien vio re:zero?')).toContain('ANILIST');
+    });
+
     it('no se rompe cuando el grafo falla', async () => {
       // "bot qué tal está Berserk?" NO sirve para este test: matchea
       // ANILIST_QUERY_RE ("que tal esta") y el `||` corta antes de llegar al
