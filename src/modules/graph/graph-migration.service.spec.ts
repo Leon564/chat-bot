@@ -68,7 +68,7 @@ describe('GraphMigrationService', () => {
       type: 'work', key: 'anilist:16498', label: 'Attack on Titan',
       aliases: ['attack on titan'],
     });
-    await memoryModel.create({ scope: 'user', user: 'Nico', content: 'Attack on Titan' });
+    await memoryModel.create({ scope: 'user', user: 'Nico', content: 'A Nico le gusta Attack on Titan' });
 
     await service.run();
 
