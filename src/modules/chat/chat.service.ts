@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { ContextService } from './context.service';
+import { UsageService } from './usage.service';
+import { LlmKind } from '../../common/schemas/llm-usage.schema';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -23,6 +25,7 @@ export class ChatService {
     private readonly memoryService: MemoryService,
     private readonly loggingService: LoggingService,
     private readonly contextService: ContextService,
+    private readonly usageService: UsageService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -199,6 +202,8 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         max_tokens: maxTokens,
       });
 
+      this.registrarUso('chat', response, username);
+
       let content = response.choices[0].message.content || '';
       console.log(`Respuesta de OpenAI: ${content}`);
       
@@ -300,6 +305,9 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         temperature: 0.2,
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
+
+      this.registrarUso('translate', response);
+
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
     } catch (err) {
@@ -361,6 +369,8 @@ FORMATO SUGERIDO:
         max_tokens: 500,
       });
 
+      this.registrarUso('summary', summaryResponse);
+
       const summary = summaryResponse.choices[0].message.content || '';
       console.log(`✅ Resumen generado: ${summary.substring(0, 100)}...`);
       
@@ -369,6 +379,27 @@ FORMATO SUGERIDO:
       console.error('Error generando resumen:', error);
       return '❌ Error al generar el resumen. Intenta más tarde.';
     }
+  }
+
+  /**
+   * Registra el consumo de una llamada al modelo. Fire-and-forget a propósito:
+   * medir no puede sumar latencia a la respuesta ni romperla si Mongo falla.
+   * `usage` es opcional en la respuesta según el proveedor detrás de
+   * OPENAI_BASE_URL, de ahí los `?? 0`.
+   */
+  private registrarUso(
+    kind: LlmKind,
+    response: { usage?: { prompt_tokens?: number; completion_tokens?: number } },
+    user?: string,
+  ): void {
+    void this.usageService
+      .record({
+        kind,
+        user: user ?? '',
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+      })
+      .catch(() => {});
   }
 
   private generateMemoryExamples(username?: string): string {
