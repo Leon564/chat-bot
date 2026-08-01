@@ -129,6 +129,28 @@ export class GraphService {
   }
 
   /**
+   * Igual que `resolveByAlias` pero para N candidatos en una sola consulta:
+   * arma un único `$in` en vez de que el llamador dispare una consulta por
+   * candidato. Pensado para el router de intención (`intent-router.service.ts`),
+   * que genera hasta 40 n-gramas por mensaje — antes de este método hacía
+   * hasta 40 round-trips secuenciales a Mongo por respuesta del bot.
+   * Si varios candidatos matchean nodos distintos, gana el de mayor peso.
+   */
+  async resolveAnyAlias(candidates: string[], types?: NodeType[]): Promise<GraphNodeDocument | null> {
+    const needles = Array.from(
+      new Set((candidates ?? []).map((c) => this.normalizeKey(c)).filter((c) => c.length > 0)),
+    );
+    if (needles.length === 0) return null;
+
+    const filter: Record<string, unknown> = {
+      $or: [{ aliases: { $in: needles } }, { key: { $in: needles } }],
+    };
+    if (types && types.length > 0) filter.type = { $in: types };
+
+    return this.nodeModel.findOne(filter).sort({ weight: -1, lastSeenAt: -1 }).exec();
+  }
+
+  /**
    * Crea o refuerza una relación. Idempotente por el índice único
    * {from, to, type}: repetirla sube `weight` en vez de duplicar. El `source`
    * se fija en la inserción y no se pisa — una arista nacida de una señal

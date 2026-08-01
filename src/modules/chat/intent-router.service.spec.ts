@@ -202,21 +202,66 @@ describe('IntentRouterService', () => {
         .toContain('ANILIST');
     });
 
+    it('no incluye ANILIST si la arista es vieja (fuera de la ventana de 10 min)', async () => {
+      const user = await graph.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Berserk' });
+      await graph.upsertEdge({ from: user!._id, to: work!._id, type: 'asked_about', source: 'signal' });
+
+      // upsertEdge siempre fija lastSeenAt a "ahora" — lo retrasamos a mano
+      // para simular una arista que quedó fuera de la ventana de 10 min.
+      await connection.collection('bot_edges').updateOne(
+        { from: user!._id, to: work!._id, type: 'asked_about' },
+        { $set: { lastSeenAt: new Date(Date.now() - 11 * 60 * 1000) } },
+      );
+
+      expect(await router.route('y el segundo?', { useMemory: true, username: 'Nico' }))
+        .not.toContain('ANILIST');
+    });
+
     it('no aplica el hilo reciente a otro usuario', async () => {
       const user = await graph.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
       const work = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Berserk' });
       await graph.upsertEdge({ from: user!._id, to: work!._id, type: 'asked_about', source: 'signal' });
+      // `kei` existe como nodo propio, sin aristas — si `hasRecentWorkThread`
+      // tuviera un bug que ignora el `_id` del usuario (p. ej. usa el primer
+      // nodo `user` que encuentra) este test lo detecta; con `kei`
+      // inexistente el corte llegaría antes, por `findNode` devolviendo null,
+      // y no probaría nada sobre el uso del `_id`.
+      await graph.upsertNode({ type: 'user', key: 'kei', label: 'Kei' });
 
       expect(await router.route('y el segundo?', { useMemory: true, username: 'kei' }))
         .not.toContain('ANILIST');
     });
 
-    it('no se rompe cuando el grafo falla', async () => {
-      jest.spyOn(graph, 'resolveByAlias').mockRejectedValueOnce(new Error('mongo caído'));
+    it('conserva la puntuación interna del alias (no lo confunde con separador de palabras)', async () => {
+      await graph.upsertNode({
+        type: 'work', key: 'anilist:50', label: "JoJo's Bizarre Adventure",
+        aliases: ["jojo's bizarre adventure"],
+      });
 
-      const bloques = await rutear('bot qué tal está Berserk?');
-      expect(bloques).toContain('ANILIST'); // por vocabulario, la otra condición
+      // "conoces" no dispara ninguna heurística de vocabulario (a diferencia
+      // de "viste", que sí matchea ANILIST_QUERY_RE) — la única vía posible
+      // hacia ANILIST acá es el alias del grafo. El apóstrofe es interno a
+      // "jojo's": si el candidato lo reemplazara por un espacio ("jojo s
+      // bizarre adventure") nunca matchearía el alias guardado.
+      expect(await rutear("conoces jojo's bizarre adventure?")).toContain('ANILIST');
+    });
+
+    it('no se rompe cuando el grafo falla', async () => {
+      // "bot qué tal está Berserk?" NO sirve para este test: matchea
+      // ANILIST_QUERY_RE ("que tal esta") y el `||` corta antes de llegar al
+      // grafo, así que el spy nunca se ejecuta y el test queda vacuo. Acá
+      // usamos un mensaje sin ningún vocabulario de media/consulta, para que
+      // la única vía posible hacia ANILIST sea el grafo.
+      const spy = jest
+        .spyOn(graph, 'resolveAnyAlias')
+        .mockRejectedValueOnce(new Error('mongo caído'));
+
+      const bloques = await rutear('y el segundo?');
+
+      expect(spy).toHaveBeenCalled();
       expect(bloques).toContain('PERSONA');
+      expect(bloques).toContain('TEMPORAL');
     });
   });
 });

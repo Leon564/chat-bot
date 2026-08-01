@@ -92,8 +92,10 @@ export class IntentRouterService {
   // N-gramas de 2 a 5 palabras (un alias de una sola palabra colisionaría
   // demasiado con vocabulario suelto — ver el test "monster" en el spec).
   // Se generan de mayor a menor tamaño (los títulos completos son más
-  // específicos que sus subcadenas) y se acota a 40 candidatos para que un
-  // mensaje largo no dispare decenas de consultas.
+  // específicos que sus subcadenas) y se acota a 40 candidatos: no porque
+  // dispare 40 consultas (van todos juntos en un único `$in`, ver
+  // `GraphService.resolveAnyAlias`), sino para no mandar un array gigante a
+  // Mongo cuando el mensaje es muy largo.
   private static readonly GRAPH_NGRAM_MAX_SIZE = 5;
   private static readonly GRAPH_NGRAM_MIN_SIZE = 2;
   private static readonly GRAPH_NGRAM_CANDIDATE_CAP = 40;
@@ -194,33 +196,37 @@ export class IntentRouterService {
   }
 
   /**
-   * Consulta contra el grafo los n-gramas candidatos del mensaje, cortando
-   * en el primer match. Sólo n-gramas de 2 a 5 palabras (ver constantes de
-   * clase) y como mucho `GRAPH_NGRAM_CANDIDATE_CAP` candidatos: un mensaje
-   * corto genera pocas consultas secuenciales y encuentra o descarta rápido;
-   * el tope existe para el caso patológico de un mensaje largo sin ningún
-   * alias conocido.
+   * Consulta contra el grafo, en una sola llamada, todos los n-gramas
+   * candidatos del mensaje (`resolveAnyAlias` arma un único `$in` — ver
+   * `GraphService`). Antes esto era un loop con un `await` por candidato,
+   * hasta 40 round-trips secuenciales a Mongo en el peor caso; ahora es
+   * siempre 1 consulta, tenga el mensaje 2 candidatos o 40.
    */
   private async matchesKnownWorkAlias(normalized: string): Promise<boolean> {
-    for (const candidate of this.extractAliasCandidates(normalized)) {
-      const node = await this.graphService.resolveByAlias(candidate, ['work', 'genre']);
-      if (node) return true;
-    }
-    return false;
+    const candidates = this.extractAliasCandidates(normalized);
+    if (candidates.length === 0) return false;
+    const node = await this.graphService.resolveAnyAlias(candidates, ['work', 'genre']);
+    return node !== null;
   }
 
   /**
    * Genera los n-gramas candidatos de 2 a 5 palabras, de mayor a menor
    * tamaño (un título completo es más específico que su subcadena, así que
-   * conviene intentarlo primero). La puntuación se descarta palabra por
-   * palabra para que "tower of god?" siga generando el candidato "tower of
-   * god" — de lo contrario el signo pegado a la última palabra nunca
-   * matchea contra el alias guardado (sin puntuación).
+   * conviene intentarlo primero — importa para el desempate por peso en
+   * `resolveAnyAlias` sólo en el margen, pero no hay razón para invertirlo).
+   *
+   * La puntuación se recorta SÓLO al principio y al final de cada palabra,
+   * nunca en el medio: así "tower of god?" sigue generando el candidato
+   * "tower of god" (el signo pegado a la última palabra no debe impedir el
+   * match), pero un alias con puntuación interna legítima como "jojo's
+   * bizarre adventure" o "re:zero" no se destruye — `GraphService.normalizeKey`
+   * tampoco le toca la puntuación interna, así que candidato y alias
+   * guardado tienen que coincidir carácter a carácter.
    */
   private extractAliasCandidates(normalized: string): string[] {
     const words = normalized
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
+      .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
       .filter(Boolean);
 
     const candidates: string[] = [];

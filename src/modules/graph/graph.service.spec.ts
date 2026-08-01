@@ -169,6 +169,42 @@ describe('GraphService — nodos', () => {
     });
   });
 
+  describe('resolveAnyAlias', () => {
+    it('encuentra el nodo por uno de varios candidatos', async () => {
+      await service.upsertNode({
+        type: 'work', key: 'anilist:85143', label: 'Tower of God',
+        aliases: ['tower of god', 'el manhwa de la torre'],
+      });
+
+      const found = await service.resolveAnyAlias(
+        ['alguien sigue', 'sigue tower', 'tower of god', 'of god acaso'],
+        ['work'],
+      );
+      expect(found!.label).toBe('Tower of God');
+    });
+
+    it('desempata por peso cuando varios candidatos matchean nodos distintos', async () => {
+      await service.upsertNode({ type: 'work', key: 'a', label: 'Obra A', aliases: ['torre'] });
+      const b = await service.upsertNode({ type: 'work', key: 'b', label: 'Obra B', aliases: ['monster'], bumpWeight: true });
+      expect(b!.weight).toBe(1);
+
+      const found = await service.resolveAnyAlias(['torre', 'monster']);
+      expect(found!.label).toBe('Obra B');
+    });
+
+    it('devuelve null si ningún candidato matchea', async () => {
+      await service.upsertNode({ type: 'work', key: 'a', label: 'Obra A', aliases: ['torre'] });
+
+      expect(await service.resolveAnyAlias(['no existe', 'tampoco esto'])).toBeNull();
+    });
+
+    it('devuelve null con una lista vacía de candidatos', async () => {
+      await service.upsertNode({ type: 'work', key: 'a', label: 'Obra A', aliases: ['torre'] });
+
+      expect(await service.resolveAnyAlias([])).toBeNull();
+    });
+  });
+
   describe('upsertEdge y topEdges', () => {
     it('crea la arista con peso 1 y la repetición la sube a 2', async () => {
       const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
