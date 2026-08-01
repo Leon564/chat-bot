@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
+import { GraphIngestService } from './graph-ingest.service';
 
 /**
  * Módulo autónomo del grafo. No importa ningún otro módulo del bot a
@@ -16,7 +17,7 @@ import { GraphService } from './graph.service';
       { name: GraphEdge.name, schema: GraphEdgeSchema },
     ]),
   ],
-  providers: [GraphService],
-  exports: [GraphService, MongooseModule],
+  providers: [GraphService, GraphIngestService],
+  exports: [GraphService, GraphIngestService, MongooseModule],
 })
 export class GraphModule {}

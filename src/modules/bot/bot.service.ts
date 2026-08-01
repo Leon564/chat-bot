@@ -7,6 +7,7 @@ import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
+import { GraphIngestService } from '../graph/graph-ingest.service';
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -19,6 +20,7 @@ export class BotService implements OnModuleInit {
     private readonly loggingService: LoggingService,
     private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
+    private readonly graphIngestService: GraphIngestService,
   ) {}
 
   async onModuleInit() {
@@ -47,6 +49,9 @@ export class BotService implements OnModuleInit {
     const botUsername = this.chatSocketService.username ?? 'bot';
 
     await this.loggingService.saveLog(authorUsername, content);
+    // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
+    // por eso va acá y no después del filtro de menciones de abajo.
+    await this.graphIngestService.ingestSocial(msg);
 
     // Admin runtime command: switch the bot's personality without restarting.
     // Handled before the trigger gating so admins don't need to mention the
