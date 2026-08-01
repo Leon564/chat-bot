@@ -1,19 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import OpenAI from 'openai';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { Context, ContextDocument } from '../../common/schemas/context.schema';
-
-const CONTEXT_CAP = 10;
+import { ContextService } from './context.service';
+import { UsageService } from './usage.service';
+import { LlmKind } from '../../common/schemas/llm-usage.schema';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
 @Injectable()
 export class ChatService {
   private openai: OpenAI;
+  private readonly logger = new Logger(ChatService.name);
 
   /**
    * Runtime override for the bot personality. Lives in memory only — on
@@ -22,11 +21,19 @@ export class ChatService {
    */
   private personalityOverride: BotPersonality | null = null;
 
+  /**
+   * Asegura un único warn por proceso cuando el proveedor detrás de
+   * OPENAI_BASE_URL omite `usage` en la respuesta — sin este flag, cada
+   * llamada al modelo inundaría el log con el mismo aviso.
+   */
+  private usageMissingWarned = false;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly memoryService: MemoryService,
     private readonly loggingService: LoggingService,
-    @InjectModel(Context.name) private readonly contextModel: Model<ContextDocument>,
+    private readonly contextService: ContextService,
+    private readonly usageService: UsageService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -138,7 +145,7 @@ CRÍTICO: Incluye SIEMPRE el token {{resumen}} cuando se solicite un resumen, {{
 
 Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${username}.`;
 
-    const context = await this.getContext();
+    const context = await this.contextService.getForUser(username ?? '');
     const memory = useMemory ? await this.memoryService.getMemory(username) : [];
 
     // Optimized payload structure to reduce token usage
@@ -156,14 +163,16 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
     }
 
     // Add memory context if available (optimized and filtered) and enabled
+    let memoryInjected = false;
     if (useMemory && memory && memory.length > 0) {
       // Solo usar memoria relevante, máximo 3 elementos
       const relevantMemories = memory.slice(-3);
       if (relevantMemories.length > 0) {
         messages.push({
-          role: 'system', 
+          role: 'system',
           content: `Contexto relevante recordado: ${relevantMemories.join(' | ')}`
         });
+        memoryInjected = true;
       }
     }
 
@@ -202,6 +211,18 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         temperature: isSimpleGreeting ? 0.3 : 0.7, // Temperatura baja para saludos
         max_tokens: maxTokens,
       });
+
+      // Segmenta la fila por lo que hace variar el prompt: promptTokens de
+      // kind:'chat' es bimodal entre buildDefaultPersona/buildUnfilteredPersona
+      // (toggleable en vivo con !personality), y saludos/memoria también
+      // cambian el largo del prompt. Sin esto, la línea base y la fase 3
+      // podrían caer en mezclas distintas de estas variantes sin forma de
+      // auditarlo después.
+      const intents: string[] = [personality === 'unfiltered' ? 'persona:unfiltered' : 'persona:default'];
+      if (isSimpleGreeting) intents.push('greeting');
+      if (memoryInjected) intents.push('memory');
+
+      this.registrarUso('chat', response, username, intents);
 
       let content = response.choices[0].message.content || '';
       console.log(`Respuesta de OpenAI: ${content}`);
@@ -265,7 +286,11 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         console.log('Error sanitizando enlace de Discord:', e);
       }
 
-      await this.saveContext({ question: message, answer: content || '', user: username || 'unknown' });
+      // Sin usuario no hay hilo al que pertenecer: antes se guardaba como
+      // 'unknown', que en la práctica era un cajón compartido.
+      if (username) {
+        await this.contextService.save({ question: message, answer: content || '', user: username });
+      }
 
       console.log(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
       
@@ -282,7 +307,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
    * para evitar que agregue comentarios o cambie la voz del original. Si la
    * llamada falla, devuelve el texto original para no romper el flujo.
    */
-  async translateToSpanish(text: string): Promise<string> {
+  async translateToSpanish(text: string, username?: string): Promise<string> {
     const input = (text ?? '').trim();
     if (!input) return '';
 
@@ -300,6 +325,9 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
         temperature: 0.2,
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
+
+      this.registrarUso('translate', response, username);
+
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
     } catch (err) {
@@ -308,7 +336,7 @@ Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${user
     }
   }
 
-  async generateSummary(): Promise<string> {
+  async generateSummary(username?: string): Promise<string> {
     const messages = await this.loggingService.getLastMessages();
     
     if (!messages || messages.length === 0) {
@@ -361,6 +389,8 @@ FORMATO SUGERIDO:
         max_tokens: 500,
       });
 
+      this.registrarUso('summary', summaryResponse, username);
+
       const summary = summaryResponse.choices[0].message.content || '';
       console.log(`✅ Resumen generado: ${summary.substring(0, 100)}...`);
       
@@ -371,38 +401,45 @@ FORMATO SUGERIDO:
     }
   }
 
-  private async getContext(): Promise<{ question: string; answer: string; user: string }[]> {
-    try {
-      const rows = await this.contextModel
-        .find()
-        .sort({ createdAt: 1 })
-        .limit(CONTEXT_CAP)
-        .lean()
-        .exec();
-      return rows.map((r) => ({ question: r.question, answer: r.answer, user: r.user ?? '' }));
-    } catch (error) {
-      console.error('Error loading context:', error);
-      return [];
+  /**
+   * Registra el consumo de una llamada al modelo. Fire-and-forget a propósito:
+   * medir no puede sumar latencia a la respuesta ni romperla si Mongo falla.
+   * `usage` es opcional en la respuesta según el proveedor detrás de
+   * OPENAI_BASE_URL, de ahí los `?? 0`. Si `usage` viene undefined, la línea
+   * queda en 0/0 indistinguible de una medición real — se avisa una sola vez
+   * por proceso para que no pase desapercibido.
+   */
+  private registrarUso(
+    kind: LlmKind,
+    response: {
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+      };
+    },
+    user?: string,
+    intents?: string[],
+  ): void {
+    if (!response.usage && !this.usageMissingWarned) {
+      this.usageMissingWarned = true;
+      this.logger.warn(
+        `El proveedor detrás de OPENAI_BASE_URL no devolvió "usage" en la respuesta. ` +
+          `La medición de tokens (línea base para la fase 3) va a quedar en 0/0 y no va a servir con este proveedor.`,
+      );
     }
-  }
 
-  private async saveContext(contextItem: { question: string; answer: string; user: string }): Promise<void> {
-    try {
-      await this.contextModel.create(contextItem);
-      // Trim to keep only the latest CONTEXT_CAP rows.
-      const overflow = await this.contextModel
-        .find()
-        .sort({ createdAt: -1 })
-        .skip(CONTEXT_CAP)
-        .select({ _id: 1 })
-        .lean()
-        .exec();
-      if (overflow.length > 0) {
-        await this.contextModel.deleteMany({ _id: { $in: overflow.map((d) => d._id) } });
-      }
-    } catch (error) {
-      console.error('Error saving context:', error);
-    }
+    void this.usageService
+      .record({
+        kind,
+        user: user ?? '',
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        cachedPromptTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        model: this.configService.get<string>('openai.model') ?? '',
+        intents: intents ?? [],
+      })
+      .catch(() => {});
   }
 
   private generateMemoryExamples(username?: string): string {
