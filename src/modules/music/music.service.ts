@@ -604,7 +604,7 @@ export class MusicService {
             thumb: video.bestThumbnail?.url ?? null,
             youtubeUrl: video.url ?? null,
             uploadUrl,
-            uploadService: this.configService.get<string>('music.uploadService') || 'catbox',
+            uploadService: this.serviceFromUploadUrl(uploadUrl),
           },
         };
       } catch (uploadError) {
@@ -753,7 +753,7 @@ export class MusicService {
           thumb: video.bestThumbnail?.url ?? null,
           youtubeUrl: video.url ?? null,
           uploadUrl,
-          uploadService: this.configService.get<string>('music.uploadService') || 'catbox',
+          uploadService: this.serviceFromUploadUrl(uploadUrl),
         },
       };
     } catch (uploadError) {
@@ -1634,6 +1634,21 @@ export class MusicService {
       console.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
       return null;
     }
+  }
+
+  /**
+   * El servicio que realmente sirvió la URL, no el configurado: uploadFile
+   * tiene una cadena de fallback interna que puede terminar en otro host.
+   * De esto depende uploadPermanent en el grafo, y por tanto que una fase
+   * futura no sirva desde caché un enlace ya expirado.
+   */
+  private serviceFromUploadUrl(url: string): string {
+    if (/litterbox\.catbox\.moe/i.test(url)) return 'litterbox';
+    if (/catbox\.moe/i.test(url)) return 'catbox';
+    if (/file\.garden/i.test(url)) return 'filegarden';
+    if (/uguu\.se/i.test(url)) return 'uguu';
+    if (/0x0\.st/i.test(url)) return '0x0';
+    return 'unknown';
   }
 
   private getRandomUserAgent(): string {
