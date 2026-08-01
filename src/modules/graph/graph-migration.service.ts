@@ -60,6 +60,7 @@ export class GraphMigrationService implements OnModuleInit {
     if (already) return null;
 
     const rows = await this.memoryModel.find().lean().exec();
+    this.logger.log(`🧠 Migración al grafo: procesando ${rows.length} memoria(s)...`);
     let migrated = 0;
     let skipped = 0;
 

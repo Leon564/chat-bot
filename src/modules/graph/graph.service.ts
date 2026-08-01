@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -39,8 +39,6 @@ export interface TopEdge {
 
 @Injectable()
 export class GraphService {
-  private readonly logger = new Logger(GraphService.name);
-
   constructor(
     @InjectModel(GraphNode.name) private readonly nodeModel: Model<GraphNodeDocument>,
     @InjectModel(GraphEdge.name) private readonly edgeModel: Model<GraphEdgeDocument>,
@@ -55,7 +53,7 @@ export class GraphService {
     if (!raw || typeof raw !== 'string') return '';
     return raw
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
+      .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase()
       .trim()
       .replace(/\s+/g, ' ');
@@ -95,7 +93,7 @@ export class GraphService {
     return this.nodeModel
       .findOneAndUpdate({ type: input.type, key }, update, {
         upsert: true,
-        new: true,
+        returnDocument: 'after',
       })
       .exec();
   }
