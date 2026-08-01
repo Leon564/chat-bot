@@ -94,6 +94,26 @@ describe('GraphMigrationService', () => {
     expect(stats!.skipped).toBe(1);
   });
 
+  it('descarta una memoria factual que no es un gusto (sin patrón de LIKE_PREFIXES)', async () => {
+    await memoryModel.create({ scope: 'user', user: 'Nico', content: 'Nico tiene 25 años' });
+
+    const stats = await service.run();
+
+    expect(stats!.migrated).toBe(0);
+    expect(stats!.skipped).toBe(1);
+    const nico = await graph.findNode('user', 'nico');
+    expect(nico).toBeNull();
+  });
+
+  it('descarta cuando el objeto queda demasiado corto tras recortar puntuación', async () => {
+    await memoryModel.create({ scope: 'user', user: 'Nico', content: 'A Nico le gusta ¿?' });
+
+    const stats = await service.run();
+
+    expect(stats!.migrated).toBe(0);
+    expect(stats!.skipped).toBe(1);
+  });
+
   it('NO borra la colección memories', async () => {
     await memoryModel.create({ scope: 'user', user: 'Nico', content: 'A Nico le gusta Berserk' });
 

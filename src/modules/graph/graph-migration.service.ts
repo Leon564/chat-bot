@@ -73,7 +73,7 @@ export class GraphMigrationService implements OnModuleInit {
         continue;
       }
 
-      const object = this.extractObject(content, owner);
+      const object = this.extractObject(content);
       if (!object) {
         skipped++;
         continue;
@@ -117,21 +117,26 @@ export class GraphMigrationService implements OnModuleInit {
   }
 
   /**
-   * Saca el objeto del gusto de una frase en texto plano. Si ninguna frase
-   * conocida matchea, usa el contenido entero sin el nombre del usuario —
-   * mejor un topic impreciso que perder el dato.
+   * Saca el objeto del gusto de una frase en texto plano, solo cuando matchea
+   * una de las frases conocidas de LIKE_PREFIXES. La colección `memories`
+   * guarda mucho más que gustos (edad, ciudad, profesión, etc. — ver
+   * isMemoryWorthSaving en chat.service.ts), así que si ninguna frase
+   * matchea no hay forma confiable de saber si el contenido es un gusto: se
+   * descarta en vez de forzarlo como `likes` hacia un topic. Una arista mal
+   * tipada es peor que una ausente, porque una fase futura la va a leer y
+   * presentar como un hecho. `memories` queda intacta como respaldo, así que
+   * una extracción mejor puede reintentarse más adelante.
    */
-  private extractObject(content: string, owner: string): string {
+  private extractObject(content: string): string {
     for (const prefix of LIKE_PREFIXES) {
       const match = content.match(prefix);
       if (match && match.index !== undefined) {
         const tail = content.slice(match.index + match[0].length).trim();
-        if (tail.length > 0) return tail.replace(/[.!?]+$/, '').trim();
+        const cleaned = tail.replace(/[.!?]+$/, '').trim();
+        if (cleaned.length >= 3) return cleaned;
       }
     }
 
-    const withoutOwner = content.replace(new RegExp(owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '').trim();
-    const cleaned = withoutOwner.replace(/^[aA]\s+/, '').replace(/[.!?]+$/, '').trim();
-    return cleaned.length >= 3 ? cleaned : '';
+    return '';
   }
 }
