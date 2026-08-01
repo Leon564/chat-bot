@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MusicService } from '../music/music.service';
 import { ALL_BLOCKS, PromptBlock } from './prompt-builder.service';
+import { GraphService } from '../graph/graph.service';
 
 /**
  * Decide qué bloques del prompt (ver `prompt-builder.service.ts`) se incluyen
@@ -86,12 +87,34 @@ export class IntentRouterService {
     /\bquien(es)?\s+(mas\s+)?(esta|estan|anda|andan)\s+(aqui|por\s+aqui|en\s+(la\s+)?(sala|chat))/,
   ];
 
+  // ANILIST por grafo — condición 3, ver `isAnilistByGraph`.
+  //
+  // N-gramas de 2 a 5 palabras (un alias de una sola palabra colisionaría
+  // demasiado con vocabulario suelto — ver el test "monster" en el spec).
+  // Se generan de mayor a menor tamaño (los títulos completos son más
+  // específicos que sus subcadenas) y se acota a 40 candidatos para que un
+  // mensaje largo no dispare decenas de consultas.
+  private static readonly GRAPH_NGRAM_MAX_SIZE = 5;
+  private static readonly GRAPH_NGRAM_MIN_SIZE = 2;
+  private static readonly GRAPH_NGRAM_CANDIDATE_CAP = 40;
+
+  // "En sus últimos 2 turnos" (spec original) no es algo que el grafo pueda
+  // responder: las aristas guardan `lastSeenAt`, no posición conversacional.
+  // Se aproxima con una ventana de 10 minutos — ver nota en el reporte de
+  // la Task 3.
+  private static readonly RECENT_THREAD_WINDOW_MS = 10 * 60 * 1000;
+
+  constructor(private readonly graphService: GraphService) {}
+
   /**
-   * `route` es `async` desde ahora aunque todavía no lo necesite: una fase
-   * futura le agrega consultas al grafo de conocimiento, y cambiar la firma
-   * en ese momento obligaría a tocar a todos los llamadores dos veces.
+   * `route` es `async` desde la Task 2: la Task 3 le agrega dos condiciones
+   * que consultan el grafo de conocimiento (alias de obras ya conocidas +
+   * hilo reciente del usuario).
    */
-  async route(message: string, opts: { useMemory: boolean }): Promise<PromptBlock[]> {
+  async route(
+    message: string,
+    opts: { useMemory: boolean; username?: string },
+  ): Promise<PromptBlock[]> {
     const normalized = this.normalize(message);
     const included = new Set<PromptBlock>(['PERSONA', 'TEMPORAL']);
 
@@ -106,7 +129,10 @@ export class IntentRouterService {
       included.add('MUSIC');
     }
 
-    if (this.isAnilistRequest(normalized)) {
+    if (
+      this.isAnilistRequest(normalized) ||
+      (await this.isAnilistByGraph(normalized, opts.username))
+    ) {
       included.add('ANILIST');
     }
 
@@ -148,10 +174,86 @@ export class IntentRouterService {
   private isAnilistRequest(normalized: string): boolean {
     if (IntentRouterService.ANILIST_MEDIA_RE.test(normalized)) return true;
     if (IntentRouterService.ANILIST_QUERY_RE.test(normalized)) return true;
-    // Punto de extensión: una fase futura agrega acá señales basadas en el
-    // grafo de conocimiento (por ejemplo, títulos ya mencionados en la
-    // conversación reciente) como tercera condición.
     return false;
+  }
+
+  /**
+   * ANILIST — condición 3: señales basadas en el grafo de conocimiento.
+   * Todo lo que toca Mongo acá está deliberadamente en un único try/catch:
+   * un grafo caído degrada a las heurísticas de vocabulario de
+   * `isAnilistRequest`, nunca deja al router sin poder decidir.
+   */
+  private async isAnilistByGraph(normalized: string, username?: string): Promise<boolean> {
+    try {
+      if (await this.matchesKnownWorkAlias(normalized)) return true;
+      if (username && (await this.hasRecentWorkThread(username))) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Consulta contra el grafo los n-gramas candidatos del mensaje, cortando
+   * en el primer match. Sólo n-gramas de 2 a 5 palabras (ver constantes de
+   * clase) y como mucho `GRAPH_NGRAM_CANDIDATE_CAP` candidatos: un mensaje
+   * corto genera pocas consultas secuenciales y encuentra o descarta rápido;
+   * el tope existe para el caso patológico de un mensaje largo sin ningún
+   * alias conocido.
+   */
+  private async matchesKnownWorkAlias(normalized: string): Promise<boolean> {
+    for (const candidate of this.extractAliasCandidates(normalized)) {
+      const node = await this.graphService.resolveByAlias(candidate, ['work', 'genre']);
+      if (node) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Genera los n-gramas candidatos de 2 a 5 palabras, de mayor a menor
+   * tamaño (un título completo es más específico que su subcadena, así que
+   * conviene intentarlo primero). La puntuación se descarta palabra por
+   * palabra para que "tower of god?" siga generando el candidato "tower of
+   * god" — de lo contrario el signo pegado a la última palabra nunca
+   * matchea contra el alias guardado (sin puntuación).
+   */
+  private extractAliasCandidates(normalized: string): string[] {
+    const words = normalized
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const candidates: string[] = [];
+    for (
+      let size = IntentRouterService.GRAPH_NGRAM_MAX_SIZE;
+      size >= IntentRouterService.GRAPH_NGRAM_MIN_SIZE;
+      size--
+    ) {
+      for (let i = 0; i + size <= words.length; i++) {
+        candidates.push(words.slice(i, i + size).join(' '));
+        if (candidates.length >= IntentRouterService.GRAPH_NGRAM_CANDIDATE_CAP) {
+          return candidates;
+        }
+      }
+    }
+    return candidates;
+  }
+
+  /**
+   * "El usuario tocó un nodo `work` en sus últimos 2 turnos" (spec original)
+   * no es algo que el grafo pueda responder tal cual: las aristas guardan
+   * `lastSeenAt` (un instante), no una posición conversacional. Se aproxima
+   * con una ventana de 10 minutos — ver desviación anotada en el reporte.
+   */
+  private async hasRecentWorkThread(username: string): Promise<boolean> {
+    const userNode = await this.graphService.findNode('user', username);
+    if (!userNode) return false;
+
+    const [topEdge] = await this.graphService.topEdges(userNode._id, ['asked_about'], 1);
+    if (!topEdge || !topEdge.lastSeenAt) return false;
+
+    const ageMs = Date.now() - new Date(topEdge.lastSeenAt).getTime();
+    return ageMs >= 0 && ageMs <= IntentRouterService.RECENT_THREAD_WINDOW_MS;
   }
 
   private isOnlineUsersRequest(normalized: string): boolean {

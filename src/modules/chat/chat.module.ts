@@ -16,6 +16,7 @@ import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema'
 import { MigrationService } from '../../common/utils/migration.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
+import { GraphModule } from '../graph/graph.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { IntentRouterService } from './intent-router.service';
       { name: Context.name, schema: ContextSchema },
       { name: LlmUsage.name, schema: LlmUsageSchema },
     ]),
+    GraphModule,
   ],
   providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, UtilsService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
   exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, MongooseModule],

@@ -35,6 +35,13 @@ export interface TopEdge {
   weight: number;
   label: string;
   nodeType: NodeType;
+  /**
+   * Cuándo se reforzó esta arista por última vez. Se agrega en la fase 3 del
+   * router (`intent-router.service.ts`) para aproximar "hilo reciente" con
+   * una ventana temporal — no rompe a los llamadores existentes, que sólo
+   * leen `label`/`weight`/`type`/`nodeType`.
+   */
+  lastSeenAt: Date;
 }
 
 @Injectable()
@@ -177,6 +184,7 @@ export class GraphService {
             _id: 0,
             type: 1,
             weight: 1,
+            lastSeenAt: 1,
             label: '$node.label',
             nodeType: '$node.type',
           },

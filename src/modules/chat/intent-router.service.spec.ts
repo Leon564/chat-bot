@@ -1,14 +1,47 @@
 import { Test } from '@nestjs/testing';
+import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
+import {
+  rootMongooseTestModule,
+  closeMongoConnection,
+  syncAllIndexes,
+} from '../../common/testing/mongo-test.helper';
+import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
+import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
+import { GraphService } from '../graph/graph.service';
 import { IntentRouterService } from './intent-router.service';
 
 describe('IntentRouterService', () => {
+  let connection: Connection;
   let router: IntentRouterService;
+  let graph: GraphService;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        rootMongooseTestModule(),
+        MongooseModule.forFeature([
+          { name: GraphNode.name, schema: GraphNodeSchema },
+          { name: GraphEdge.name, schema: GraphEdgeSchema },
+        ]),
+      ],
+      providers: [GraphService, IntentRouterService],
+    }).compile();
+
+    connection = moduleRef.get<Connection>(getConnectionToken());
+    graph = moduleRef.get<GraphService>(GraphService);
+    router = moduleRef.get<IntentRouterService>(IntentRouterService);
+    await syncAllIndexes(connection);
+  });
+
+  afterAll(async () => {
+    await closeMongoConnection(connection);
+  });
 
   beforeEach(async () => {
-    const moduleRef = await Test.createTestingModule({
-      providers: [IntentRouterService],
-    }).compile();
-    router = moduleRef.get<IntentRouterService>(IntentRouterService);
+    await connection.collection('bot_nodes').deleteMany({});
+    await connection.collection('bot_edges').deleteMany({});
+    jest.restoreAllMocks();
   });
 
   const rutear = (msg: string, useMemory = true) => router.route(msg, { useMemory });
@@ -135,5 +168,55 @@ describe('IntentRouterService', () => {
   it('nunca devuelve un bloque repetido', async () => {
     const bloques = await rutear('bot pon música de berserk y decime quién está online');
     expect(new Set(bloques).size).toBe(bloques.length);
+  });
+
+  describe('ANILIST por alias del grafo', () => {
+    it('reconoce un título que ya está en el grafo, sin vocabulario de media', async () => {
+      await graph.upsertNode({
+        type: 'work', key: 'anilist:85143', label: 'Tower of God',
+        aliases: ['tower of god', 'el manhwa de la torre'],
+      });
+
+      // Sin la palabra manga/manhwa/anime en ningún lado.
+      expect(await rutear('alguien sigue tower of god?')).toContain('ANILIST');
+      expect(await rutear('que onda el manhwa de la torre')).toContain('ANILIST');
+    });
+
+    it('no confunde una palabra suelta con un título', async () => {
+      await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Monster', aliases: ['monster'] });
+
+      // "monster" aparece pero no como referencia a la obra. El router es
+      // permisivo, asi que incluir ANILIST aca es aceptable; lo que NO puede
+      // pasar es que rompa el resto del ruteo.
+      const bloques = await rutear('ese bicho es un monster jaja');
+      expect(bloques).toContain('PERSONA');
+    });
+
+    it('reconoce una obra que el usuario consultó hace poco', async () => {
+      const user = await graph.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Berserk' });
+      await graph.upsertEdge({ from: user!._id, to: work!._id, type: 'asked_about', source: 'signal' });
+
+      // Pregunta de seguimiento, sin nombrar la obra ni vocabulario de media.
+      expect(await router.route('y el segundo?', { useMemory: true, username: 'Nico' }))
+        .toContain('ANILIST');
+    });
+
+    it('no aplica el hilo reciente a otro usuario', async () => {
+      const user = await graph.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Berserk' });
+      await graph.upsertEdge({ from: user!._id, to: work!._id, type: 'asked_about', source: 'signal' });
+
+      expect(await router.route('y el segundo?', { useMemory: true, username: 'kei' }))
+        .not.toContain('ANILIST');
+    });
+
+    it('no se rompe cuando el grafo falla', async () => {
+      jest.spyOn(graph, 'resolveByAlias').mockRejectedValueOnce(new Error('mongo caído'));
+
+      const bloques = await rutear('bot qué tal está Berserk?');
+      expect(bloques).toContain('ANILIST'); // por vocabulario, la otra condición
+      expect(bloques).toContain('PERSONA');
+    });
   });
 });
