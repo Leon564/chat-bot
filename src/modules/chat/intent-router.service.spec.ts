@@ -73,11 +73,63 @@ describe('IntentRouterService', () => {
       expect(await rutear(msg)).toContain('ANILIST');
     });
 
+    // Corpus agregado en la revisión final de la fase 3: correr el router
+    // contra 28 frases típicas de un chat de anime/manga (grafo vacío) dejó
+    // 18 sin cubrir — estas 16 son las que la revisión listó explícitamente
+    // (ver ANILIST_QUERY_RE / ANILIST_MEDIA_RE para el detalle de qué
+    // patrón cubre cada una).
+    const debenIncluirRevisionFinal = [
+      'bot que opinas de chainsaw man',
+      'bot conoces solo leveling?',
+      'bot has visto frieren?',
+      'esta buena frieren bot?',
+      'bot quien escribio berserk',
+      'bot hablame de vagabond',
+      'opiniones sobre oshi no ko bot?',
+      'bot que onda con chainsaw man',
+      'bot deberia empezar solo leveling?',
+      'bot dame la ficha de berserk',
+      'bot cual es mejor, naruto o bleach',
+      'bot me pasas el score de monster',
+      'bot como termina attack on titan',
+      'bot sabes de kagurabachi?',
+      'bot informacion de one piece',
+      'bot esta buenaza vinland saga',
+    ];
+
+    it.each(debenIncluirRevisionFinal)(
+      'incluye ANILIST para (revisión final): %s',
+      async (msg) => {
+        expect(await rutear(msg)).toContain('ANILIST');
+      },
+    );
+
     const noNecesitan = ['hola', 'buenas noches bot', 'jajaja', 'gracias bot'];
 
     it.each(noNecesitan)('omite ANILIST para: %s', async (msg) => {
       expect(await rutear(msg)).not.toContain('ANILIST');
     });
+
+    // La ampliación de vocabulario de la revisión final no puede arrastrar
+    // charla común al bloque ANILIST — estas frases tienen que seguir
+    // reduciéndose a sólo PERSONA + TEMPORAL (ninguna otra heurística de
+    // ningún bloque debería dispararse tampoco).
+    const charlaComun = [
+      'jaja si',
+      'buen dia gente',
+      'que calor hace hoy',
+      'ya volvi',
+      'alguien vio el partido',
+      'hola',
+      'gracias bot',
+    ];
+
+    it.each(charlaComun)(
+      'la charla común sigue devolviendo sólo PERSONA y TEMPORAL: %s',
+      async (msg) => {
+        expect((await rutear(msg)).sort()).toEqual(['PERSONA', 'TEMPORAL']);
+      },
+    );
   });
 
   describe('MUSIC', () => {
@@ -93,6 +145,30 @@ describe('IntentRouterService', () => {
     it.each(debenIncluir)('incluye MUSIC para: %s', async (msg) => {
       expect(await rutear(msg)).toContain('MUSIC');
     });
+
+    // El bloque MUSIC del prompt (prompt-builder.service.ts) le enseña al
+    // modelo frases como "dale a X" / "ponme X" que el router no reconocía.
+    // El daño estaba acotado porque el fast-path de bot.service.ts corta
+    // antes de llegar al LLM en la mayoría de los casos, pero el router
+    // comparte casi el mismo vocabulario que ese fast-path — así que el
+    // conjunto de frases que el fast-path NO atrapa es justo el que
+    // necesita el bloque en el prompt, y era el mismo que el router dejaba
+    // afuera.
+    const debenIncluirRevisionFinal = [
+      'bot dale a stairway to heaven',
+      'poneme algo',
+      'pasame una rola',
+      'quiero oir algo',
+      'reproduci esa cancion',
+      'subi algo de rock',
+    ];
+
+    it.each(debenIncluirRevisionFinal)(
+      'incluye MUSIC para (revisión final): %s',
+      async (msg) => {
+        expect(await rutear(msg)).toContain('MUSIC');
+      },
+    );
 
     it('omite MUSIC en una charla cualquiera', async () => {
       expect(await rutear('hola cómo va todo')).not.toContain('MUSIC');
@@ -165,6 +241,24 @@ describe('IntentRouterService', () => {
     );
   });
 
+  describe('isSimpleGreeting — única fuente compartida con chat.service.ts', () => {
+    // Antes `chat.service.ts` sostenía su propia regex de saludo, más
+    // angosta (sin "<saludo> bot", sin des-acentuar el mensaje, sin
+    // puntuación repetida): "hey bot" era saludo para el router pero NO
+    // para `chat.service.ts`; "qué tal" (con tilde) y "hola!!" tampoco.
+    // Ahora `chat.service.ts` llama a `router.isSimpleGreeting`, así que
+    // ambos lados usan siempre el mismo resultado.
+    const divergian = ['hey bot', 'qué tal', 'hola!!'];
+
+    it.each(divergian)('isSimpleGreeting("%s") es true', (msg) => {
+      expect(router.isSimpleGreeting(msg)).toBe(true);
+    });
+
+    it.each(divergian)('route() también lo recorta a PERSONA+TEMPORAL: %s', async (msg) => {
+      expect((await rutear(msg)).sort()).toEqual(['PERSONA', 'TEMPORAL']);
+    });
+  });
+
   it('nunca devuelve un bloque repetido', async () => {
     const bloques = await rutear('bot pon música de berserk y decime quién está online');
     expect(new Set(bloques).size).toBe(bloques.length);
@@ -198,6 +292,33 @@ describe('IntentRouterService', () => {
       await graph.upsertEdge({ from: user!._id, to: work!._id, type: 'asked_about', source: 'signal' });
 
       // Pregunta de seguimiento, sin nombrar la obra ni vocabulario de media.
+      expect(await router.route('y el segundo?', { useMemory: true, username: 'Nico' }))
+        .toContain('ANILIST');
+    });
+
+    it('usa la arista más RECIENTE, no la de mayor peso, para detectar hilo activo', async () => {
+      // Escenario exacto de la revisión final: un usuario que preguntó 5
+      // veces por One Piece hace una semana (arista pesada, vieja) y 1 vez
+      // por Frieren hace unos segundos (arista liviana, reciente). Con
+      // `hasRecentWorkThread` basado en `topEdges` (ordena por weight) esto
+      // devolvía la arista de One Piece — fuera de la ventana de 10 min —
+      // y el bloque se omitía. Con `recentEdges` (ordena por lastSeenAt) se
+      // detecta correctamente el hilo reciente de Frieren.
+      const user = await graph.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const heavy = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'One Piece' });
+      const light = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Frieren' });
+
+      for (let i = 0; i < 5; i++) {
+        await graph.upsertEdge({ from: user!._id, to: heavy!._id, type: 'asked_about', source: 'signal' });
+      }
+      await connection.collection('bot_edges').updateOne(
+        { from: user!._id, to: heavy!._id, type: 'asked_about' },
+        { $set: { lastSeenAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+      );
+
+      // `upsertEdge` fija lastSeenAt a "ahora" — dentro de la ventana de 10 min.
+      await graph.upsertEdge({ from: user!._id, to: light!._id, type: 'asked_about', source: 'signal' });
+
       expect(await router.route('y el segundo?', { useMemory: true, username: 'Nico' }))
         .toContain('ANILIST');
     });
@@ -267,6 +388,21 @@ describe('IntentRouterService', () => {
       expect(await rutear('no se que onda hoy')).not.toContain('ANILIST');
     });
 
+    it('separa por coma y punto y coma al generar candidatos (preserva apóstrofos y dos puntos)', async () => {
+      await graph.upsertNode({ type: 'work', key: 'anilist:70', label: 'Bleach', aliases: ['bleach'] });
+
+      // Mensaje elegido para que la ÚNICA vía hacia ANILIST sea el alias
+      // del grafo: ninguna palabra dispara ANILIST_MEDIA_RE/ANILIST_QUERY_RE.
+      // Sin la coma actuando como separador, "naruto,bleach" queda pegado
+      // como un solo candidato que nunca matchea el alias "bleach" guardado
+      // por separado.
+      //
+      // (La frase del hallazgo original, "bot cual es mejor, naruto o
+      // bleach", ya dispara ANILIST por vocabulario — ver "mejor" en el
+      // corpus de ANILIST más arriba — así que no aislaría este fix.)
+      expect(await rutear('che fijate naruto,bleach porfa')).toContain('ANILIST');
+    });
+
     it('reconoce un alias de una sola palabra con puntuación interna', async () => {
       await graph.upsertNode({ type: 'work', key: 'anilist:60', label: 'Re:Zero', aliases: ['re:zero'] });
 
@@ -291,6 +427,10 @@ describe('IntentRouterService', () => {
       expect(spy).toHaveBeenCalled();
       expect(bloques).toContain('PERSONA');
       expect(bloques).toContain('TEMPORAL');
+      // Éste es el único camino de degradación crítico de la fase: si el
+      // grafo falla, ANILIST debe quedar afuera (no hay vocabulario ni alias
+      // que lo respalde en este mensaje). Antes el test no lo aseveraba.
+      expect(bloques).not.toContain('ANILIST');
     });
   });
 });

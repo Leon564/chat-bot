@@ -38,8 +38,14 @@ export class IntentRouterService {
   // cubre "reproduce", "pon música", "!music", "quiero escuchar", etc). El
   // fast-path del dispatcher en bot.service.ts ya filtra lo que este bloque
   // no atrape, así que acá conviene ser generoso.
+  //
+  // Ampliado tras la revisión final de la fase 3: el propio bloque MUSIC del
+  // prompt (`prompt-builder.service.ts`) le enseña al modelo frases como
+  // "dale a X" o "ponme X" que este regex no reconocía — "poneme", "ponele",
+  // "pasame", "rola", "oir", "reproduc" (cubre "reproduci"/"reproduce") y
+  // "subi" tapan ese hueco.
   private static readonly MUSIC_VOCAB_RE =
-    /\b(cancion|musica|tema|escuchar|ponme|toca|tocar|suena|playlist)\b/;
+    /\b(cancion|musica|tema|escuchar|ponme|poneme|ponele|pasame|toca|tocar|suena|playlist|rola|oir|reproduc|sonar|subi)\b|dale a/;
 
   // RESUMEN: mismo regex que ya usa `chat()` en chat.service.ts, reescrito
   // sin acentos porque acá trabajamos sobre el mensaje ya normalizado.
@@ -56,16 +62,52 @@ export class IntentRouterService {
     /\b(me gusta|me encanta|odio|prefiero|soy|tengo|vivo en|estudio|trabajo)\b/;
 
   // ANILIST — condición 1: vocabulario de media concreto.
+  //
+  // `\bcap\b` y `\bscan\b` (antes `cap\b` y `scan` sin ancla izquierda):
+  // el hallazgo más caro de la revisión final era que `cap\b` matcheaba
+  // dentro de "recap", así que todo pedido de resumen arrastraba también el
+  // bloque ANILIST completo (~1.777 caracteres) sin necesidad. Con el
+  // límite en ambos lados sólo matchea la palabra suelta "cap". Mismo
+  // razonamiento para "scan" vs. "scanner".
+  //
+  // "escrib" se agregó para preguntas de autoría ("quién escribió X") que
+  // no caían en "autor"/"mangaka".
   private static readonly ANILIST_MEDIA_RE =
-    /manga|manhwa|manhua|anime|capitulo|cap\b|tomo|volumen|temporada|episodio|ova|light novel|novela ligera|scan|autor|mangaka/;
+    /manga|manhwa|manhua|anime|capitulo|\bcap\b|tomo|volumen|temporada|episodio|ova|light novel|novela ligera|\bscan\b|autor|mangaka|escrib/;
 
   // ANILIST — condición 2: vocabulario de consulta sobre una obra concreta.
   // "recomend"/"recomiend" cubren ambas familias de conjugación española
   // ("recomendar" y su forma con diptongo "recomienda/recomiendo"); "info
   // de" y "busca" se agregaron porque el corpus real las usa y no caían en
   // ninguna de las otras dos condiciones.
+  //
+  // Ampliado en la revisión final de la fase 3: correr el router contra 28
+  // frases típicas de chat de anime/manga (grafo vacío) dejó 18 sin cubrir.
+  // Causas concretas del hueco:
+  // - `esta bueno` (literal) no cubría `esta buena`/`estan buenos` — ahora
+  //   `esta buen\w*`/`estan buen\w*` cubre cualquier concordancia de género
+  //   y grado ("buenaza", "buenísima", etc).
+  // - `viste` no cubría `has visto`/`has leído` — se agregó como frase
+  //   propia en vez de intentar generalizar la conjugación.
+  // - `info de` (substring literal) NO está contenido en `informacion de`
+  //   ("informacion" no tiene el hueco "info de"; son letras contiguas
+  //   distintas) — se agregó `informacion` como término independiente.
+  // - Faltaban por completo: `conoc`, `opin` (opinas/opino/opinión/
+  //   opiniones), `has (visto|leido)`, `hablame de`, `sabes de`,
+  //   `que onda con` (NO `que onda` a secas: eso colisiona con el test
+  //   existente "no se que onda hoy", que verifica que el filtro de
+  //   stopwords de unigramas siga cortando "que" como candidato de alias —
+  //   "que onda con" es la forma real del corpus y no pisa ese caso),
+  //   `ficha`, `score`, `puntaje`, `termina`, `empezar`, `mejor`, y los
+  //   literales `leer`/`ver` que el spec original (§5 del design doc)
+  //   pedía y la implementación había angostado a formas estrechas
+  //   ("estoy leyendo"/"estoy viendo"/"que tal esta").
+  // Verificado contra el corpus de charla común (`jaja si`, `buen día
+  // gente`, `que calor hace hoy`, `ya volví`, `alguien vio el partido`,
+  // `hola`, `gracias bot`) para que la ampliación no arrastre falsos
+  // positivos — ver el describe correspondiente en el spec.
   private static readonly ANILIST_QUERY_RE =
-    /recomend|recomiend|esta bueno|que tal esta|vale la pena|de que trata|sinopsis|leiste|viste|estoy leyendo|estoy viendo|que estas (leyendo|viendo)|info de|busca/;
+    /recomend|recomiend|esta buen\w*|estan buen\w*|que tal esta|vale la pena|de que trata|sinopsis|leiste|viste|estoy leyendo|estoy viendo|que estas (leyendo|viendo)|info de|informacion|busca|conoc|opin|has (visto|leido)|hablame de|sabes de|que onda con|\bficha\b|\bscore\b|\bpuntaje\b|\btermina\b|\bempezar\b|\bmejor\b|\bleer\b|\bver\b/;
 
   // ONLINE — guarda contra preguntas sobre UNA persona, copiada tal cual de
   // `isOnlineUsersRequest` en bot.service.ts (es la que evita el falso
@@ -153,7 +195,7 @@ export class IntentRouterService {
     const normalized = this.normalize(message);
     const included = new Set<PromptBlock>(['PERSONA', 'TEMPORAL']);
 
-    if (IntentRouterService.SIMPLE_GREETING_RE.test(normalized)) {
+    if (IntentRouterService.isSimpleGreetingNormalized(normalized)) {
       return ALL_BLOCKS.filter((block) => included.has(block));
     }
 
@@ -188,6 +230,26 @@ export class IntentRouterService {
     }
 
     return ALL_BLOCKS.filter((block) => included.has(block));
+  }
+
+  /**
+   * Predicado de "saludo simple" — única fuente de verdad, para uso externo
+   * (p. ej. `chat.service.ts`). Antes `chat.service.ts` sostenía su propia
+   * regex, más angosta (sin `(\s+bot)?`, sin `[?!.]*`, y sobre el mensaje
+   * SIN des-acentuar), lo que hacía que "hey bot", "qué tal" (con tilde) y
+   * "hola!!" contaran como saludo para el router pero NO para
+   * `chat.service.ts` — esos mensajes recibían el prompt recortado de
+   * saludo pero ninguno de los efectos que dependen de la detección propia
+   * de `chat.service.ts` (system message de saludo, tope de 50 tokens,
+   * `temperature: 0.3`, etiqueta `greeting` en `intents`). Con una sola
+   * fuente, ambos lados coinciden siempre.
+   */
+  isSimpleGreeting(message: string): boolean {
+    return IntentRouterService.isSimpleGreetingNormalized(this.normalize(message));
+  }
+
+  private static isSimpleGreetingNormalized(normalized: string): boolean {
+    return IntentRouterService.SIMPLE_GREETING_RE.test(normalized);
   }
 
   /**
@@ -259,7 +321,14 @@ export class IntentRouterService {
    * guardado tienen que coincidir carácter a carácter.
    */
   private extractAliasCandidates(normalized: string): string[] {
+    // La coma y el punto y coma SÍ actúan como separador de palabras (a
+    // diferencia del apóstrofe y los dos puntos, que se conservan a
+    // propósito — ver el comentario de la clase sobre "jojo's"/"re:zero").
+    // Sin esto, "naruto,bleach" sin espacio quedaba como un único candidato
+    // pegado ("naruto,bleach") que nunca podía matchear ningún alias
+    // guardado por separado.
     const words = normalized
+      .replace(/[,;]+/g, ' ')
       .split(/\s+/)
       .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
       .filter(Boolean);
@@ -299,16 +368,26 @@ export class IntentRouterService {
    * no es algo que el grafo pueda responder tal cual: las aristas guardan
    * `lastSeenAt` (un instante), no una posición conversacional. Se aproxima
    * con una ventana de 10 minutos — ver desviación anotada en el reporte.
+   *
+   * Usa `GraphService.recentEdges` (ordena por `lastSeenAt`), NO
+   * `topEdges` (ordena por `weight`). La revisión final encontró que con
+   * `topEdges` un usuario que preguntó 5 veces por One Piece hace una
+   * semana y 1 vez por Frieren hace 10 segundos recibía la arista de One
+   * Piece — la de mayor peso — cuyo `lastSeenAt` cae fuera de la ventana,
+   * y la condición daba `false`. El bug degradaba con el uso: cuanto más
+   * peso acumula la arista más vieja, más probable que tape a la reciente.
    */
   private async hasRecentWorkThread(username: string): Promise<boolean> {
     const userNode = await this.graphService.findNode('user', username);
     if (!userNode) return false;
 
-    const [topEdge] = await this.graphService.topEdges(userNode._id, ['asked_about'], 1);
-    if (!topEdge || !topEdge.lastSeenAt) return false;
-
-    const ageMs = Date.now() - new Date(topEdge.lastSeenAt).getTime();
-    return ageMs >= 0 && ageMs <= IntentRouterService.RECENT_THREAD_WINDOW_MS;
+    const [recentEdge] = await this.graphService.recentEdges(
+      userNode._id,
+      ['asked_about'],
+      IntentRouterService.RECENT_THREAD_WINDOW_MS,
+      1,
+    );
+    return !!recentEdge;
   }
 
   private isOnlineUsersRequest(normalized: string): boolean {
