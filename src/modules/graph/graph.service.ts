@@ -216,4 +216,59 @@ export class GraphService {
 
     return rows as TopEdge[];
   }
+
+  /**
+   * Las relaciones más RECIENTES de un nodo, dentro de una ventana de
+   * `sinceMs` milisegundos hacia atrás desde ahora — a diferencia de
+   * `topEdges` (que ordena por `weight`), acá se ordena por `lastSeenAt`.
+   *
+   * Existe porque `IntentRouterService.hasRecentWorkThread` usaba
+   * `topEdges` para aproximar "hilo de conversación reciente" y eso está
+   * mal: la revisión final encontró que un usuario que preguntó 5 veces
+   * por One Piece hace una semana y 1 vez por Frieren hace 10 segundos
+   * recibía la arista de One Piece (mayor peso), cuyo `lastSeenAt` cae
+   * fuera de cualquier ventana razonable — el comportamiento empeoraba
+   * cuanto más se usaba AniList. `topEdges` en sí no cambia: su orden por
+   * peso es correcto para lo que otros llamadores necesitan (contexto del
+   * prompt en fase 4).
+   */
+  async recentEdges(
+    from: Types.ObjectId,
+    types: EdgeType[],
+    sinceMs: number,
+    limit: number,
+  ): Promise<TopEdge[]> {
+    if (!types.length || limit <= 0) return [];
+
+    const cutoff = new Date(Date.now() - sinceMs);
+
+    const rows = await this.edgeModel
+      .aggregate([
+        { $match: { from, type: { $in: types }, lastSeenAt: { $gte: cutoff } } },
+        { $sort: { lastSeenAt: -1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: 'bot_nodes',
+            localField: 'to',
+            foreignField: '_id',
+            as: 'node',
+          },
+        },
+        { $unwind: '$node' },
+        {
+          $project: {
+            _id: 0,
+            type: 1,
+            weight: 1,
+            lastSeenAt: 1,
+            label: '$node.label',
+            nodeType: '$node.type',
+          },
+        },
+      ])
+      .exec();
+
+    return rows as TopEdge[];
+  }
 }

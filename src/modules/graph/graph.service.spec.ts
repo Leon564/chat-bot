@@ -284,4 +284,60 @@ describe('GraphService — nodos', () => {
       expect(await service.topEdges(solo!._id, ['likes'], 10)).toEqual([]);
     });
   });
+
+  describe('recentEdges', () => {
+    it('ordena por lastSeenAt descendente, no por weight', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const a = await service.upsertNode({ type: 'work', key: 'a', label: 'Obra A' });
+      const b = await service.upsertNode({ type: 'work', key: 'b', label: 'Obra B' });
+
+      await service.upsertEdge({ from: nico!._id, to: a!._id, type: 'asked_about', source: 'signal' });
+      await connection.collection('bot_edges').updateOne(
+        { from: nico!._id, to: a!._id, type: 'asked_about' },
+        { $set: { lastSeenAt: new Date(Date.now() - 60_000) } },
+      );
+      await service.upsertEdge({ from: nico!._id, to: b!._id, type: 'asked_about', source: 'signal' });
+
+      const rows = await service.recentEdges(nico!._id, ['asked_about'], 5 * 60 * 1000, 10);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].label).toBe('Obra B'); // la más reciente, primero
+      expect(rows[1].label).toBe('Obra A');
+    });
+
+    it('excluye aristas fuera de la ventana de sinceMs', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const vieja = await service.upsertNode({ type: 'work', key: 'vieja', label: 'Vieja' });
+      await service.upsertEdge({ from: nico!._id, to: vieja!._id, type: 'asked_about', source: 'signal' });
+      await connection.collection('bot_edges').updateOne(
+        { from: nico!._id, to: vieja!._id, type: 'asked_about' },
+        { $set: { lastSeenAt: new Date(Date.now() - 20 * 60 * 1000) } },
+      );
+
+      expect(await service.recentEdges(nico!._id, ['asked_about'], 10 * 60 * 1000, 10)).toEqual([]);
+    });
+
+    it('prioriza recencia sobre peso — a diferencia de topEdges', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      const heavy = await service.upsertNode({ type: 'work', key: 'heavy', label: 'Pesada' });
+      const light = await service.upsertNode({ type: 'work', key: 'light', label: 'Liviana' });
+
+      for (let i = 0; i < 5; i++) {
+        await service.upsertEdge({ from: nico!._id, to: heavy!._id, type: 'asked_about', source: 'signal' });
+      }
+      await connection.collection('bot_edges').updateOne(
+        { from: nico!._id, to: heavy!._id, type: 'asked_about' },
+        { $set: { lastSeenAt: new Date(Date.now() - 5 * 60 * 1000) } },
+      );
+      await service.upsertEdge({ from: nico!._id, to: light!._id, type: 'asked_about', source: 'signal' });
+
+      const [top] = await service.recentEdges(nico!._id, ['asked_about'], 10 * 60 * 1000, 1);
+      expect(top.label).toBe('Liviana');
+    });
+
+    it('devuelve vacío con una lista de tipos vacía o un límite <= 0', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
+      expect(await service.recentEdges(nico!._id, [], 60_000, 10)).toEqual([]);
+      expect(await service.recentEdges(nico!._id, ['asked_about'], 60_000, 0)).toEqual([]);
+    });
+  });
 });
