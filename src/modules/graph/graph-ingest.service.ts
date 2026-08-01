@@ -3,6 +3,7 @@ import { GraphService } from './graph.service';
 import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 import { AniListResult } from '../anilist/anilist.service';
+import { TrackMeta } from '../../common/interfaces';
 
 /** Las menciones no vienen como campo: llegan inline dentro del contenido. */
 const MENTION_RE = /<@([^>\n\r]+)>/g;
@@ -33,6 +34,9 @@ const GENRE_ES: Record<string, string> = {
   Supernatural: 'Sobrenatural',
   Thriller: 'Suspenso',
 };
+
+/** Servicios cuyas URLs no expiran. Litterbox sí expira (LITTERBOX_EXPIRY). */
+const PERMANENT_UPLOADS = ['catbox', 'filegarden'];
 
 /**
  * Traduce eventos del bot a escrituras en el grafo. Todo es best-effort: una
@@ -160,6 +164,66 @@ export class GraphIngestService {
       }
     } catch (err) {
       this.logger.warn(`Ingesta de AniList falló: ${(err as Error)?.message}`);
+    }
+  }
+
+  /**
+   * Persiste una pista ya resuelta y subida. El `uploadUrl` en props es lo
+   * que permitirá (fase 4) responder un pedido repetido sin entrar a la cola:
+   * hoy cada pedido re-busca, re-descarga, re-transcodifica y re-sube.
+   */
+  async ingestTrack(username: string, query: string, track: TrackMeta): Promise<void> {
+    try {
+      const user = await this.touchUser(username);
+      if (!user) return;
+
+      const node = await this.graph.upsertNode({
+        type: 'track',
+        key: query,
+        label: track.title || query,
+        aliases: [track.title].filter((a) => a && a.trim().length > 0),
+        props: {
+          title: track.title,
+          artist: track.artist,
+          thumb: track.thumb,
+          youtubeUrl: track.youtubeUrl,
+          uploadUrl: track.uploadUrl,
+          uploadService: track.uploadService,
+          // Esta fase solo registra. Con un servicio permanente el vencimiento
+          // es null para siempre; con litterbox lo calcula la fase 4 desde
+          // LITTERBOX_EXPIRY, que es quien va a leer el caché. Guardar acá una
+          // fecha que nadie consume todavía sería inventar semántica.
+          expiresAt: null,
+          uploadPermanent: PERMANENT_UPLOADS.includes(track.uploadService),
+        },
+        bumpWeight: true,
+      });
+      if (!node) return;
+
+      await this.graph.upsertEdge({
+        from: user._id,
+        to: node._id,
+        type: 'requested',
+        source: 'signal',
+      });
+
+      if (track.artist && track.artist.trim()) {
+        const artist = await this.graph.upsertNode({
+          type: 'artist',
+          key: track.artist,
+          label: track.artist.trim(),
+        });
+        if (artist) {
+          await this.graph.upsertEdge({
+            from: node._id,
+            to: artist._id,
+            type: 'by_artist',
+            source: 'signal',
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Ingesta de música falló: ${(err as Error)?.message}`);
     }
   }
 }

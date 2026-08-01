@@ -208,4 +208,70 @@ describe('GraphIngestService — señales sociales', () => {
       expect(top[0].weight).toBe(2);
     });
   });
+
+  describe('ingesta de música', () => {
+    const track = {
+      title: 'Say It Ain\'t So',
+      artist: 'Weezer',
+      thumb: 'https://img/t.jpg',
+      youtubeUrl: 'https://youtu.be/abc',
+      uploadUrl: 'https://files.catbox.moe/x.mp3',
+      uploadService: 'catbox',
+    };
+
+    it('crea el nodo track con la query normalizada como key', async () => {
+      await ingest.ingestTrack('Nico', '  Weezer   Say It Ain\'t So ', track);
+
+      const node = await graph.findNode('track', 'weezer say it ain\'t so');
+      expect(node).not.toBeNull();
+      expect(node!.label).toBe('Say It Ain\'t So');
+      expect(node!.props.uploadUrl).toBe('https://files.catbox.moe/x.mp3');
+      expect(node!.props.uploadService).toBe('catbox');
+    });
+
+    it('marca catbox como subida permanente', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+      const node = await graph.findNode('track', 'q');
+      expect(node!.props.uploadPermanent).toBe(true);
+      expect(node!.props.expiresAt).toBeNull();
+    });
+
+    it('marca litterbox como subida no permanente', async () => {
+      await ingest.ingestTrack('Nico', 'q', { ...track, uploadService: 'litterbox' });
+      const node = await graph.findNode('track', 'q');
+      expect(node!.props.uploadPermanent).toBe(false);
+    });
+
+    it('crea la arista requested del usuario al track', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['requested'], 10);
+      expect(top[0].label).toBe('Say It Ain\'t So');
+    });
+
+    it('crea el nodo artist y la arista by_artist', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const t = await graph.findNode('track', 'q');
+      const artistas = await graph.topEdges(t!._id, ['by_artist'], 10);
+      expect(artistas[0].label).toBe('Weezer');
+    });
+
+    it('no crea nodo artist cuando el artista es null', async () => {
+      await ingest.ingestTrack('Nico', 'q', { ...track, artist: null });
+
+      const total = await connection.collection('bot_nodes').countDocuments({ type: 'artist' });
+      expect(total).toBe(0);
+    });
+
+    it('refuerza la arista cuando la misma canción se pide dos veces', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['requested'], 10);
+      expect(top[0].weight).toBe(2);
+    });
+  });
 });

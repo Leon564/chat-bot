@@ -135,7 +135,10 @@ export class BotService implements OnModuleInit {
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          await this.graphIngestService.ingestTrack(authorUsername, query, result.track);
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
@@ -298,7 +301,10 @@ export class BotService implements OnModuleInit {
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          await this.graphIngestService.ingestTrack(authorUsername, query, result.track);
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
