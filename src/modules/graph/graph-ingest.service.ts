@@ -2,9 +2,37 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphService } from './graph.service';
 import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
+import { AniListResult } from '../anilist/anilist.service';
 
 /** Las menciones no vienen como campo: llegan inline dentro del contenido. */
 const MENTION_RE = /<@([^>\n\r]+)>/g;
+
+/**
+ * Los 18 géneros oficiales de AniList con su traducción. Duplica el mapa de
+ * formatAniListCard a propósito: allá es presentación efímera, acá es el
+ * label persistido del nodo. Un género no mapeado se guarda en inglés.
+ */
+const GENRE_ES: Record<string, string> = {
+  Action: 'Acción',
+  Adventure: 'Aventura',
+  Comedy: 'Comedia',
+  Drama: 'Drama',
+  Ecchi: 'Ecchi',
+  Fantasy: 'Fantasía',
+  Hentai: 'Hentai',
+  Horror: 'Terror',
+  'Mahou Shoujo': 'Mahou Shoujo',
+  Mecha: 'Mecha',
+  Music: 'Música',
+  Mystery: 'Misterio',
+  Psychological: 'Psicológico',
+  Romance: 'Romance',
+  'Sci-Fi': 'Ciencia ficción',
+  'Slice of Life': 'Slice of Life',
+  Sports: 'Deportes',
+  Supernatural: 'Sobrenatural',
+  Thriller: 'Suspenso',
+};
 
 /**
  * Traduce eventos del bot a escrituras en el grafo. Todo es best-effort: una
@@ -67,6 +95,71 @@ export class GraphIngestService {
       }
     } catch (err) {
       this.logger.warn(`Ingesta social falló: ${(err as Error)?.message}`);
+    }
+  }
+
+  /**
+   * Persiste una ficha de AniList ya resuelta. La ficha completa va a props
+   * para que la fase 4 pueda servirla sin volver a pegarle a la API ni
+   * re-traducir la sinopsis. Los géneros se guardan TODOS, no solo los 5 que
+   * muestra la tarjeta.
+   */
+  async ingestAniList(username: string, result: AniListResult, rawQuery: string): Promise<void> {
+    try {
+      const user = await this.touchUser(username);
+      if (!user) return;
+
+      const label = result.titleEnglish || result.titleRomaji;
+      const aliases = [result.titleRomaji, result.titleEnglish ?? '', rawQuery].filter(
+        (a) => a && a.trim().length > 0,
+      );
+
+      const work = await this.graph.upsertNode({
+        type: 'work',
+        key: `anilist:${result.id}`,
+        label,
+        aliases,
+        props: {
+          anilistId: result.id,
+          kind: result.kind,
+          url: result.url,
+          coverImage: result.coverImage,
+          score: result.score,
+          status: result.status,
+          chapters: result.chapters,
+          volumes: result.volumes,
+          episodes: result.episodes,
+          startYear: result.startYear,
+          genres: result.genres,
+          cachedAt: new Date(),
+        },
+        bumpWeight: true,
+      });
+      if (!work) return;
+
+      await this.graph.upsertEdge({
+        from: user._id,
+        to: work._id,
+        type: 'asked_about',
+        source: 'signal',
+      });
+
+      for (const genre of result.genres) {
+        const node = await this.graph.upsertNode({
+          type: 'genre',
+          key: genre,
+          label: GENRE_ES[genre] ?? genre,
+        });
+        if (!node) continue;
+        await this.graph.upsertEdge({
+          from: work._id,
+          to: node._id,
+          type: 'has_genre',
+          source: 'signal',
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Ingesta de AniList falló: ${(err as Error)?.message}`);
     }
   }
 }

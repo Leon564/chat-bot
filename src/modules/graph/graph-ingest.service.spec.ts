@@ -122,4 +122,90 @@ describe('GraphIngestService — señales sociales', () => {
   it('no lanza cuando el autor viene vacío', async () => {
     await expect(ingest.ingestSocial(baseMsg({ authorUsername: '' }))).resolves.toBeUndefined();
   });
+
+  describe('ingesta de AniList', () => {
+    const result = {
+      id: 105398,
+      url: 'https://anilist.co/manga/105398',
+      kind: 'manhwa' as const,
+      titleRomaji: 'Na Honjaman Level Up',
+      titleEnglish: 'Solo Leveling',
+      coverImage: 'https://img/cover.jpg',
+      bannerImage: null,
+      score: 84,
+      status: 'FINISHED',
+      chapters: 179,
+      volumes: null,
+      episodes: null,
+      genres: ['Action', 'Adventure', 'Fantasy'],
+      description: 'Un cazador débil...',
+      startYear: 2018,
+    };
+
+    it('crea el nodo work con key anilist:<id> y la ficha en props', async () => {
+      await ingest.ingestAniList('Nico', result, 'solo leveling');
+
+      const node = await graph.findNode('work', 'anilist:105398');
+      expect(node).not.toBeNull();
+      expect(node!.label).toBe('Solo Leveling');
+      expect(node!.props.score).toBe(84);
+      expect(node!.props.status).toBe('FINISHED');
+      expect(node!.props.chapters).toBe(179);
+      expect(node!.props.cachedAt).toBeDefined();
+    });
+
+    it('usa titleRomaji como label cuando no hay inglés', async () => {
+      await ingest.ingestAniList('Nico', { ...result, titleEnglish: null }, 'x');
+
+      const node = await graph.findNode('work', 'anilist:105398');
+      expect(node!.label).toBe('Na Honjaman Level Up');
+    });
+
+    it('guarda como alias ambos títulos y la query original', async () => {
+      await ingest.ingestAniList('Nico', result, 'el manhwa del cazador débil');
+
+      const node = await graph.findNode('work', 'anilist:105398');
+      expect(node!.aliases).toContain('solo leveling');
+      expect(node!.aliases).toContain('na honjaman level up');
+      expect(node!.aliases).toContain('el manhwa del cazador debil');
+    });
+
+    it('crea la arista asked_about desde el usuario', async () => {
+      await ingest.ingestAniList('Nico', result, 'x');
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['asked_about'], 10);
+      expect(top[0].label).toBe('Solo Leveling');
+    });
+
+    it('crea un nodo genre y una arista has_genre por CADA género', async () => {
+      await ingest.ingestAniList('Nico', result, 'x');
+
+      const work = await graph.findNode('work', 'anilist:105398');
+      const generos = await graph.topEdges(work!._id, ['has_genre'], 10);
+      expect(generos.map((g) => g.label).sort()).toEqual(['Acción', 'Aventura', 'Fantasía']);
+    });
+
+    it('deja el género en inglés si no está en el mapa de traducción', async () => {
+      await ingest.ingestAniList('Nico', { ...result, genres: ['Isekai'] }, 'x');
+
+      const work = await graph.findNode('work', 'anilist:105398');
+      const generos = await graph.topEdges(work!._id, ['has_genre'], 10);
+      expect(generos[0].label).toBe('Isekai');
+    });
+
+    it('es idempotente: dos consultas no duplican nodos ni aristas', async () => {
+      await ingest.ingestAniList('Nico', result, 'solo leveling');
+      await ingest.ingestAniList('Nico', result, 'solo leveling');
+
+      const works = await connection.collection('bot_nodes').countDocuments({ type: 'work' });
+      const generos = await connection.collection('bot_nodes').countDocuments({ type: 'genre' });
+      expect(works).toBe(1);
+      expect(generos).toBe(3);
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['asked_about'], 10);
+      expect(top[0].weight).toBe(2);
+    });
+  });
 });

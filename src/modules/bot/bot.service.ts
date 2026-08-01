@@ -169,6 +169,8 @@ export class BotService implements OnModuleInit {
         return;
       }
 
+      await this.graphIngestService.ingestAniList(authorUsername, result, title);
+
       // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
       // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
       // cae al texto original para no romper la tarjeta.
