@@ -6,7 +6,7 @@ import { LoggingService } from '../../common/utils/logging.service';
 import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
 import { LlmKind } from '../../common/schemas/llm-usage.schema';
-import { PromptBuilderService, ALL_BLOCKS, PromptBlock } from './prompt-builder.service';
+import { PromptBuilderService, ALL_BLOCKS } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
@@ -50,31 +50,50 @@ export class ChatService {
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
     const personality = this.getPersonality();
 
-    // Si el router falla, se arma el prompt completo. Perder tokens es
-    // aceptable; perder una feature porque faltó su bloque, no.
-    let blocks: PromptBlock[];
-    try {
-      blocks = await this.intentRouter.route(message, { useMemory, username });
-    } catch (err) {
-      this.logger.warn(`El router falló, se usa el prompt completo: ${(err as Error)?.message}`);
-      blocks = [...ALL_BLOCKS];
-    }
+    // Tres lecturas independientes a Mongo, antes serializadas una tras
+    // otra (route → getForUser → getMemory): el aggregate con $lookup del
+    // router es el más caro y corría delante de las otras dos incluso para
+    // un mensaje casual. Con `Promise.all` corren en paralelo.
+    //
+    // El fallback del router se mantiene igual: si `route` rechaza, se usa
+    // el prompt completo (perder tokens es aceptable; perder una feature
+    // porque faltó su bloque, no). El `.catch()` va ANTES del
+    // `Promise.all` para que un rechazo del router no tumbe las otras dos
+    // promesas (`Promise.all` rechaza entera ante el primer rechazo).
+    const blocksPromise = this.intentRouter
+      .route(message, { useMemory, username })
+      .catch((err) => {
+        this.logger.warn(`El router falló, se usa el prompt completo: ${(err as Error)?.message}`);
+        return [...ALL_BLOCKS];
+      });
+    const contextPromise = this.contextService.getForUser(username ?? '');
+    const memoryPromise = useMemory ? this.memoryService.getMemory(username) : Promise.resolve([]);
+
+    const [blocks, context, memory] = await Promise.all([
+      blocksPromise,
+      contextPromise,
+      memoryPromise,
+    ]);
 
     const systemPrompt = this.promptBuilder.build({
       botName, username, maxLength: maxResponseLength ?? 200,
       personality, useMemory, now: new Date(), blocks,
     });
 
-    const context = await this.contextService.getForUser(username ?? '');
-    const memory = useMemory ? await this.memoryService.getMemory(username) : [];
-
     // Optimized payload structure to reduce token usage
     const messages: Array<{role: 'system' | 'user' | 'assistant', content: string}> = [
       { role: 'system', content: systemPrompt }
     ];
 
-    // Agregar instrucción específica para saludos simples
-    const isSimpleGreeting = message.toLowerCase().match(/^(@\w+\s+)?(hola|hi|hey|hello|como estas|que tal|buenas|saludos|bot)(\?|\!|\.)?$/i);
+    // Agregar instrucción específica para saludos simples. Delegado a
+    // `IntentRouterService.isSimpleGreeting` — antes esta clase sostenía su
+    // propia regex, más angosta (sin "<saludo> bot", sin des-acentuar, sin
+    // puntuación repetida), que divergía de la del router para casos como
+    // "hey bot", "qué tal" (con tilde) o "hola!!": esos mensajes recibían el
+    // prompt recortado de saludo (por el router) pero NO el tope de 50
+    // tokens, la `temperature: 0.3` ni la etiqueta `greeting` en `intents`
+    // (que dependían de esta regex). Una sola fuente evita la divergencia.
+    const isSimpleGreeting = this.intentRouter.isSimpleGreeting(message);
     if (isSimpleGreeting) {
       messages.push({
         role: 'system',

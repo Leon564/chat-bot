@@ -27,7 +27,7 @@ describe('ChatService — instrumentación de tokens', () => {
   let usage: { record: jest.Mock };
   let context: { getForUser: jest.Mock; save: jest.Mock };
   let builder: { build: jest.Mock };
-  let router: { route: jest.Mock };
+  let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
 
   beforeEach(async () => {
     crearMock.mockReset();
@@ -37,7 +37,10 @@ describe('ChatService — instrumentación de tokens', () => {
       save: jest.fn().mockResolvedValue(undefined),
     };
     builder = { build: jest.fn().mockReturnValue('system prompt de prueba') };
-    router = { route: jest.fn().mockResolvedValue(['PERSONA', 'TEMPORAL']) };
+    router = {
+      route: jest.fn().mockResolvedValue(['PERSONA', 'TEMPORAL']),
+      isSimpleGreeting: jest.fn().mockReturnValue(false),
+    };
 
     const config = {
       get: jest.fn((clave: string) => {
@@ -165,6 +168,32 @@ describe('ChatService — instrumentación de tokens', () => {
 
     const registrado = usage.record.mock.calls[0][0];
     expect(registrado.intents).toEqual(expect.arrayContaining(['ANILIST', 'persona:default']));
+  });
+
+  it('usa isSimpleGreeting del router (fuente única) para el tratamiento de saludo', async () => {
+    // Antes chat.service.ts sostenía su propia regex de saludo, más angosta
+    // que la del router — "hey bot" era saludo para el router pero no para
+    // esta clase. Ahora delega en `intentRouter.isSimpleGreeting`.
+    router.isSimpleGreeting.mockReturnValue(true);
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('hey bot', 'Aria', 'Nico');
+
+    expect(router.isSimpleGreeting).toHaveBeenCalledWith('hey bot');
+    expect(crearMock).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: 0.3, max_tokens: 50 }),
+    );
+  });
+
+  it('no aplica el tratamiento de saludo cuando el router dice que no lo es', async () => {
+    router.isSimpleGreeting.mockReturnValue(false);
+    crearMock.mockResolvedValue(respuesta('respuesta normal'));
+
+    await service.chat('cuéntame de vinland saga', 'Aria', 'Nico');
+
+    expect(crearMock).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: 0.7 }),
+    );
   });
 
   it('si el router falla, arma el prompt completo en vez de quedarse sin bloques', async () => {
