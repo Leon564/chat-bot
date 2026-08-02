@@ -397,5 +397,70 @@ describe('ChatService — instrumentación de tokens', () => {
         { user: 'Sora', relation: 'likes', object: 'Bleach' },
       ]);
     });
+
+    describe('Ronda de corrección 1 — delimitador tolerante y red de seguridad', () => {
+      it('detecta el delimitador en minúsculas: el texto enviado al chat no lo incluye, y los hechos se extraen igual', async () => {
+        crearMock.mockResolvedValue(
+          respuesta('Resumen normal.\n<<<hechos>>>\nNico|likes|Berserk'),
+        );
+
+        const resultado = await service.generateSummary();
+
+        // `resultado.text` es literalmente lo que bot.service.ts trocea y
+        // manda al chat sin más transformación — esta es la aserción sobre
+        // "lo que ve el usuario".
+        expect(resultado.text).toBe('Resumen normal.');
+        expect(resultado.text).not.toContain('<<<hechos>>>');
+        expect(resultado.text).not.toContain('Nico|likes|Berserk');
+        expect(resultado.facts).toEqual([{ user: 'Nico', relation: 'likes', object: 'Berserk' }]);
+      });
+
+      it('detecta el delimitador con espacios internos ("<<< HECHOS >>>"): mismo resultado', async () => {
+        crearMock.mockResolvedValue(
+          respuesta('Resumen normal.\n<<< HECHOS >>>\nkei|asked_about|Solo Leveling'),
+        );
+
+        const resultado = await service.generateSummary();
+
+        expect(resultado.text).toBe('Resumen normal.');
+        expect(resultado.text).not.toContain('HECHOS');
+        expect(resultado.facts).toEqual([
+          { user: 'kei', relation: 'asked_about', object: 'Solo Leveling' },
+        ]);
+      });
+
+      it('con una variante que el regex tolerante NO reconoce ("### HECHOS ###"), la red de seguridad igual saca las líneas con pinta de hecho del texto enviado', async () => {
+        crearMock.mockResolvedValue(
+          respuesta('Resumen normal.\n### HECHOS ###\nNico|likes|Bleach\nkei|asked_about|AoT'),
+        );
+
+        const resultado = await service.generateSummary();
+
+        // El delimitador "###...###" no matchea `FACTS_DELIMITER_RE`, así
+        // que esto no se trata como bloque de hechos (no hay ingesta) — pero
+        // la defensa en profundidad igual impide que las líneas
+        // usuario|relación|objeto lleguen al texto que ve el chat. Si la red
+        // de seguridad no existiera, `resultado.text` contendría ambas
+        // líneas con barras tal cual.
+        expect(resultado.text).not.toContain('Nico|likes|Bleach');
+        expect(resultado.text).not.toContain('kei|asked_about|AoT');
+        expect(resultado.facts).toEqual([]);
+      });
+
+      it('si el delimitador aparece al principio de todo, el usuario recibe el mensaje de error, no una cadena vacía', async () => {
+        crearMock.mockResolvedValue(respuesta('<<<HECHOS>>>\nNico|likes|Bleach'));
+
+        const resultado = await service.generateSummary();
+
+        // Antes: `text` quedaba '' y el bucle de envío de bot.service.ts
+        // (`if (!part) continue`) no mandaba NADA — quien pidió el resumen
+        // no recibía ni siquiera un aviso de error. `toBeTruthy` por sí solo
+        // no distinguiría el bug (una cadena vacía también sería "enviada"
+        // por un bug distinto); comparar contra el mensaje de error exacto sí.
+        expect(resultado.text).toBe('❌ Error al generar el resumen. Intenta más tarde.');
+        // La ingesta de hechos no depende de que el texto mostrado sea válido.
+        expect(resultado.facts).toEqual([{ user: 'Nico', relation: 'likes', object: 'Bleach' }]);
+      });
+    });
   });
 });

@@ -355,7 +355,7 @@ escribas nada después del delimitador.`
       return { text, facts };
     } catch (error) {
       console.error('Error generando resumen:', error);
-      return { text: '❌ Error al generar el resumen. Intenta más tarde.', facts: [] };
+      return { text: ChatService.SUMMARY_PARSE_ERROR, facts: [] };
     }
   }
 
@@ -364,13 +364,35 @@ escribas nada después del delimitador.`
    * (Task 5, fase 4b) — ninguna llamada nueva al modelo, sólo aprovecha la
    * respuesta que `generateSummary` ya pide. El parseo es defensivo porque el
    * modelo puede no seguir el formato pedido en el prompt:
-   *   - Sin el delimitador `<<<HECHOS>>>`, todo el texto es el resumen y no
-   *     hay hechos — nunca se asume que el modelo lo va a emitir.
+   *   - Sin `FACTS_DELIMITER_RE` (tolerante a mayúsculas/espacios), todo el
+   *     texto es candidato a resumen — nunca se asume que el modelo lo va a
+   *     emitir.
    *   - Con el delimitador, el resumen es lo anterior a él y los hechos son
    *     las líneas posteriores que tengan EXACTAMENTE tres partes separadas
    *     por `|` (usuario|relación|objeto). Cualquier línea que no matchee
    *     (vacía, sin pipes, con pipes de más) se descarta en silencio — no
    *     rompe el resumen ni el resto de los hechos bien formados.
+   *
+   * Ronda de corrección 1 (Important): un `indexOf` exacto sobre
+   * `<<<HECHOS>>>` fallaba apenas el modelo escribía una variante
+   * (`<<<hechos>>>`, `<<< HECHOS >>>`) — caía en "no hay delimitador" y
+   * mandaba TODO `raw`, delimitador roto y líneas `usuario|relación|objeto`
+   * incluidas, tal cual al chat. Dos capas lo cierran:
+   *   1. `FACTS_DELIMITER_RE` (case-insensitive, espacios internos) reconoce
+   *      la gran mayoría de los intentos fallidos del modelo.
+   *   2. Defensa en profundidad: se aplica SIEMPRE (matcheara o no la regex
+   *      de arriba) un filtro línea por línea sobre el texto candidato a
+   *      resumen que descarta cualquier línea con pinta de delimitador
+   *      (`<<<algo>>>`) o de hecho (tres partes separadas por `|`) — por si
+   *      el modelo inventa una forma que ni la regex tolerante reconoce.
+   *
+   * Ronda de corrección 1 (Minor): si el delimitador aparece al principio de
+   * todo (o el filtro de arriba deja el resumen vacío), el texto resultante
+   * quedaba `''` y `bot.service.ts` (`if (!part) continue`) no mandaba NADA
+   * — el usuario que pidió el resumen no recibía ni siquiera un error. Ahora
+   * se sustituye por el mismo mensaje de error que usa el `catch` de
+   * `generateSummary`, y se loguea un `warn`.
+   *
    * La validación de la relación contra el enum cerrado y la sanitización del
    * objeto quedan en `GraphIngestService.ingestFact`, que es quien las
    * ingesta — acá sólo se separa el texto.
@@ -379,31 +401,74 @@ escribas nada después del delimitador.`
     text: string;
     facts: Array<{ user: string; relation: string; object: string }>;
   } {
-    const delimiterIndex = raw.indexOf(ChatService.FACTS_DELIMITER);
-    if (delimiterIndex === -1) {
-      return { text: raw.trim(), facts: [] };
-    }
-
-    const text = raw.slice(0, delimiterIndex).trim();
-    const factsBlock = raw.slice(delimiterIndex + ChatService.FACTS_DELIMITER.length);
+    const match = ChatService.FACTS_DELIMITER_RE.exec(raw);
+    const textCandidate = match ? raw.slice(0, match.index) : raw;
+    const factsBlock = match ? raw.slice(match.index + match[0].length) : '';
 
     const facts: Array<{ user: string; relation: string; object: string }> = [];
     for (const rawLine of factsBlock.split('\n')) {
       const line = rawLine.trim();
       if (!line) continue;
 
-      const parts = line.split('|').map((p) => p.trim());
-      if (parts.length !== 3) continue;
+      const parts = ChatService.splitThreeParts(line);
+      if (!parts) continue;
 
       const [user, relation, object] = parts;
       facts.push({ user, relation, object });
     }
 
+    // Defensa en profundidad (ver comentario arriba): corre siempre, no sólo
+    // cuando la regex de arriba no matcheó.
+    const text = textCandidate
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return true; // preserva líneas en blanco del resumen real
+        if (ChatService.DELIMITER_LOOKALIKE_RE.test(trimmed)) return false;
+        if (ChatService.splitThreeParts(trimmed)) return false;
+        return true;
+      })
+      .join('\n')
+      .trim();
+
+    if (!text) {
+      this.logger.warn(
+        'generateSummary: el resumen quedó vacío tras el parseo (delimitador al inicio, o el texto entero era ruido de formato) — se devuelve el mensaje de error en vez de una cadena vacía.',
+      );
+      return { text: ChatService.SUMMARY_PARSE_ERROR, facts };
+    }
+
     return { text, facts };
   }
 
-  /** Delimitador que separa el resumen del bloque de hechos en la respuesta cruda del modelo. */
-  private static readonly FACTS_DELIMITER = '<<<HECHOS>>>';
+  /**
+   * Reconoce el delimitador tolerando mayúsculas/minúsculas y espacios
+   * internos (`<<<HECHOS>>>`, `<<<hechos>>>`, `<<< HECHOS >>>`) — variantes
+   * de forma que el modelo puede escribir aunque "intentó" seguir el formato
+   * pedido en el prompt.
+   */
+  private static readonly FACTS_DELIMITER_RE = /<<<\s*HECHOS\s*>>>/i;
+
+  /**
+   * Cualquier línea con pinta de delimitador (`<<<algo>>>`, `<<algo>>`, …),
+   * aunque no sea exactamente la forma esperada — parte de la red de
+   * seguridad que impide que un delimitador roto llegue al chat.
+   */
+  private static readonly DELIMITER_LOOKALIKE_RE = /^<{2,}.*>{2,}$/;
+
+  /** Mismo mensaje que ya usaba el `catch` de `generateSummary`, reusado cuando el parseo deja el resumen vacío. */
+  private static readonly SUMMARY_PARSE_ERROR = '❌ Error al generar el resumen. Intenta más tarde.';
+
+  /**
+   * Si `line` tiene EXACTAMENTE tres partes separadas por `|`, la trata como
+   * candidata a hecho (`usuario|relación|objeto`). Se reusa tanto para
+   * extraer hechos del bloque posterior al delimitador como para la red de
+   * seguridad que limpia el texto del resumen.
+   */
+  private static splitThreeParts(line: string): [string, string, string] | null {
+    const parts = line.split('|').map((p) => p.trim());
+    return parts.length === 3 ? (parts as [string, string, string]) : null;
+  }
 
   /**
    * Registra el consumo de una llamada al modelo. Fire-and-forget a propósito:
