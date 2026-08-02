@@ -9,7 +9,40 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphUserService, UserFact } from '../graph/graph-user.service';
+import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
+
+/**
+ * Etiquetas legibles en segunda persona para cada tipo de arista que puede
+ * devolver `GraphUserService.describe`, usadas por `!quesabes`. `has_genre` y
+ * `by_artist` casi nunca cuelgan de un nodo `user` (nacen de `work`/`track`,
+ * ver `graph-ingest.service.ts`), pero se traducen igual para que el mensaje
+ * nunca muestre un `EdgeType` crudo si el grafo llegara a tener una arista
+ * así.
+ */
+const RELATION_LABELS: Record<EdgeType, string> = {
+  likes: 'Te gusta',
+  dislikes: 'No te gusta',
+  asked_about: 'Preguntaste por',
+  recommended_to: 'Te recomendé',
+  requested: 'Pediste',
+  interacts_with: 'Hablás seguido con',
+  has_genre: 'Género',
+  by_artist: 'Artista',
+};
+
+/** Orden fijo de las secciones del mensaje de `!quesabes`, independiente del orden por peso en que llegan los hechos. */
+const RELATION_ORDER: EdgeType[] = [
+  'likes',
+  'dislikes',
+  'asked_about',
+  'recommended_to',
+  'requested',
+  'interacts_with',
+  'has_genre',
+  'by_artist',
+];
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -24,6 +57,7 @@ export class BotService implements OnModuleInit {
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
+    private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
   ) {}
 
@@ -65,6 +99,10 @@ export class BotService implements OnModuleInit {
     // Handled before the trigger gating so admins don't need to mention the
     // bot for the command to work.
     if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
+
+    // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
+    // También va antes del filtro de menciones, mismo motivo que arriba.
+    if (await this.handleMemoryCommand(content, authorUsername)) return;
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -690,6 +728,68 @@ export class BotService implements OnModuleInit {
       `@${authorUsername} Uso: !personality default | unfiltered | reset | status`,
     );
     return true;
+  }
+
+  // ─── Memory command (!quesabes) ────────────────────────────────────────────
+
+  /**
+   * Recognize and execute the `!quesabes` command: le muestra a quien lo
+   * escribe todo lo que el bot tiene guardado sobre esa persona en el grafo
+   * de conocimiento. Devuelve `true` cuando el mensaje fue este comando
+   * (atendido de cualquier forma) para que el llamador corte el resto del
+   * dispatcher — mismo patrón que `handlePersonalityCommand`. Cero llamadas
+   * al modelo: se resuelve enteramente contra `GraphUserService.describe`.
+   *
+   * Privacidad: el comando SIEMPRE describe a quien lo escribe. Cualquier
+   * texto después de "!quesabes" (p. ej. "!quesabes Nico") se ignora a
+   * propósito — no hay forma de que alguien consulte lo que el bot guarda
+   * sobre otra persona.
+   */
+  private async handleMemoryCommand(content: string, authorUsername: string): Promise<boolean> {
+    const match = content.trim().match(/^!quesabes\b/i);
+    if (!match) return false;
+
+    const facts = await this.graphUserService.describe(authorUsername);
+
+    if (facts.length === 0) {
+      this.sendBotMessage(`@${authorUsername} 🤷 Todavía no tengo nada guardado sobre vos.`);
+      return true;
+    }
+
+    const message = this.formatMemoryFacts(facts);
+    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
+    const parts = this.utilsService.splitMessageIntoParts(message, maxLength);
+
+    for (let i = 0; i < parts.length; i++) {
+      const text = i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i];
+      this.sendBotMessage(text);
+    }
+    return true;
+  }
+
+  /**
+   * Agrupa los hechos del grafo por relación, con una etiqueta legible en
+   * segunda persona (`Te gusta:`, `No te gusta:`, …) en vez del `EdgeType`
+   * crudo. `RELATION_ORDER` fija el orden de las secciones para que el
+   * mensaje sea estable entre llamados, no dependa del orden de llegada de
+   * `describe` (que es por peso, no por tipo).
+   */
+  private formatMemoryFacts(facts: UserFact[]): string {
+    const grouped = new Map<EdgeType, string[]>();
+    for (const fact of facts) {
+      const labels = grouped.get(fact.relation) ?? [];
+      labels.push(fact.label);
+      grouped.set(fact.relation, labels);
+    }
+
+    const lines: string[] = [];
+    for (const relation of RELATION_ORDER) {
+      const labels = grouped.get(relation);
+      if (!labels || labels.length === 0) continue;
+      lines.push(`${RELATION_LABELS[relation]}: ${labels.join(', ')}`);
+    }
+
+    return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
   }
 
   /**

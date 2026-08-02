@@ -7,9 +7,10 @@ import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
-import { ChatSocketService } from '../chat-socket/chat-socket.service';
+import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphUserService } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 
 /**
@@ -95,6 +96,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: cache },
+        { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: usage },
       ],
     }).compile();
@@ -309,6 +311,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
+        { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile();
@@ -396,5 +399,152 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
       expect(logging.saveEventsLog).toHaveBeenCalledWith('Resumen', 'Nico');
       expect(logging.clearMessagesLog).toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * `handleNewChatMessage` es privado — mismo patrón de cast puntual que los
+ * dos describes de arriba. A diferencia de esos, acá lo que importa es el
+ * dispatcher completo (no un handler puntual), porque la garantía a probar
+ * ("no llama al modelo") depende de que el comando corte ANTES de llegar al
+ * resto del método.
+ */
+type BotServiceConDispatcher = {
+  handleNewChatMessage(msg: ChatMessage): Promise<void>;
+};
+
+describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () => {
+  let service: BotService;
+  let chat: { chat: jest.Mock };
+  let graphUser: { describe: jest.Mock };
+  let ingest: { ingestSocial: jest.Mock };
+  let logging: { saveLog: jest.Mock };
+  let socket: {
+    onMessage: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    getOnlineUsers: jest.Mock;
+    username: string;
+  };
+  let utils: { sleep: jest.Mock; splitMessageIntoParts: jest.Mock };
+
+  beforeEach(async () => {
+    chat = { chat: jest.fn().mockResolvedValue('esto NO debería enviarse jamás') };
+    graphUser = { describe: jest.fn() };
+    ingest = { ingestSocial: jest.fn().mockResolvedValue(undefined) };
+    logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
+    socket = {
+      onMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+      deleteMessage: jest.fn(),
+      getOnlineUsers: jest.fn().mockResolvedValue([]),
+      username: 'Aria',
+    };
+    // Split identidad: estas pruebas no ejercitan el troceado en sí (ya
+    // cubierto por los tests de `UtilsService`), sólo que el mensaje armado
+    // llegue a `sendMessage`.
+    utils = {
+      sleep: jest.fn().mockResolvedValue(undefined),
+      splitMessageIntoParts: jest.fn((text: string) => [text]),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: {} },
+        { provide: AniListService, useValue: {} },
+        { provide: UtilsService, useValue: utils },
+        { provide: LoggingService, useValue: logging },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: ingest },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: GraphUserService, useValue: graphUser },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    }).compile();
+
+    // No se llama a onModuleInit: registraría el handler real del socket,
+    // que no hace falta para invocar `handleNewChatMessage` directamente.
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  const mensaje = (content: string, authorUsername: string): ChatMessage => ({
+    _id: '1',
+    content,
+    authorUsername,
+    authorRole: 'user',
+    type: 'text',
+    createdAt: new Date().toISOString(),
+  });
+
+  const invocar = (content: string, authorUsername: string) =>
+    (service as unknown as BotServiceConDispatcher).handleNewChatMessage(mensaje(content, authorUsername));
+
+  /** La ingesta al grafo (ingestSocial) es fire-and-forget. */
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('"!quesabes" responde con la lista y NO llama al modelo', async () => {
+    graphUser.describe.mockResolvedValue([
+      { relation: 'likes', label: 'Berserk', weight: 3 },
+      { relation: 'asked_about', label: 'Solo Leveling', weight: 1 },
+    ]);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(graphUser.describe).toHaveBeenCalledWith('Nico');
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Berserk'));
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Solo Leveling'));
+    // No sólo "se mandó un mensaje": el mensaje agrupa por relación con una
+    // etiqueta legible, no el EdgeType crudo.
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Te gusta'));
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Preguntaste por'));
+    expect(socket.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('asked_about'));
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!quesabes" de alguien sin datos responde un mensaje claro, y tampoco llama al modelo', async () => {
+    graphUser.describe.mockResolvedValue([]);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('nada guardado'));
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('el comando corta el dispatcher: no se procesa como mensaje normal', async () => {
+    // El mensaje incluye la palabra "bot": si el dispatcher NO cortara acá,
+    // seguiría de largo hasta el filtro de menciones (que "bot" sí supera) y
+    // terminaría llamando a `chatService.chat`. Que el modelo nunca se llame
+    // es la única forma de distinguir "cortó en el comando" de "no había
+    // nada más que hacer" — con un mensaje que no dijera "bot" ambos caminos
+    // se verían idénticos desde afuera.
+    graphUser.describe.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 1 }]);
+
+    await invocar('!quesabes bot', 'Nico');
+    await dejarCorrer();
+
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!quesabes" con argumentos extra sigue describiendo al que lo escribió, no a otro', async () => {
+    graphUser.describe.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 1 }]);
+
+    await invocar('!quesabes OtraPersona', 'Nico');
+    await dejarCorrer();
+
+    // Privacidad: cualquier argumento después del comando se ignora. Nadie
+    // puede consultar lo que el bot guarda sobre otra persona — el comando
+    // SIEMPRE describe a quien lo escribió (authorUsername), nunca al texto
+    // que sigue.
+    expect(graphUser.describe).toHaveBeenCalledWith('Nico');
+    expect(graphUser.describe).not.toHaveBeenCalledWith('OtraPersona');
+    expect(chat.chat).not.toHaveBeenCalled();
   });
 });
