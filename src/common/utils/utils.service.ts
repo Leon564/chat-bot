@@ -62,7 +62,16 @@ export class UtilsService {
     if (!s) return '';
 
     s = s.replace(/\{\{[^}]*\}\}/g, '');
-    s = s.replace(/\b(SAVE|LOAD)_(MEMORY|FACT)\s*\([^)]*\)/gi, '');
+    // El `)` de cierre es opcional (re-review de la corrección de
+    // `SAVE_FACT`, misma idea que `createSaveFactRegex` en chat.service.ts):
+    // sin esto, un `SAVE_(MEMORY|FACT)(...)` truncado a mitad — por el mismo
+    // corte de `maxLengthResponse` que motiva esa corrección, o por una
+    // captura fusionada que arrastra la llamada sin cerrar hasta el final
+    // del objeto — sobrevivía tal cual porque `[^)]*\)` exige un ')' que no
+    // existe. `[^)]*` ya no puede cruzar un ')', así que si no hay ninguno
+    // en el resto del string, consume hasta el final y el `)` opcional
+    // simplemente no matchea nada.
+    s = s.replace(/\b(SAVE|LOAD)_(MEMORY|FACT)\s*\([^)]*\)?/gi, '');
     s = s.replace(/\[(img|image|audio|video)(?:\s+[a-z]+="[^"]*")*\][^[\]]*\[\/\1\]/gi, '');
     s = s.replace(/^\s*\^#[0-9a-fA-F]{3,8}\s+/, '');
     s = s.replace(/[\x00-\x1f\x7f]+/g, ' ');

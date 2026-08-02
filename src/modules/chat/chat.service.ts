@@ -719,7 +719,23 @@ escribas nada después del delimitador.`
     while ((match = factRegex.exec(content)) !== null) {
       const relation = match[1].trim().toLowerCase();
       const object = match[2].trim();
-      if (relation && object) {
+
+      // Re-review (verificado empíricamente): el lookahead que decide dónde
+      // cierra una llamada (ver `createSaveFactRegex`) exige que el ')' esté
+      // seguido de fin de respuesta o de otro `SAVE_FACT(`. Con prosa entre
+      // dos llamadas ("SAVE_FACT(likes, Berserk) Y además SAVE_FACT(likes,
+      // Vagabond)"), ninguna de las dos condiciones se cumple en el primer
+      // ')' — el motor retrocede y fusiona ambas llamadas en una sola
+      // captura con el objeto roto ("Berserk) Y además SAVE_FACT(likes,
+      // Vagabond"). Esa fusión siempre deja la subcadena "SAVE_FACT" DENTRO
+      // del objeto capturado (la de la segunda llamada, que nunca se separó
+      // de la primera) — es la señal inequívoca de que la captura no es
+      // confiable. Mejor perder el hecho (los dos, en este caso: la fusión
+      // ya se comió a ambos) que dejar un nodo `topic` con una etiqueta que
+      // arrastra literal "SAVE_FACT(likes, ..." sin cerrar — sobre todo
+      // porque la Fase 5 camina estas aristas para la recomendación
+      // colaborativa: construir sobre datos sucios se paga después.
+      if (relation && object && !/SAVE_FACT/i.test(object)) {
         facts.push({ relation, object });
       }
 

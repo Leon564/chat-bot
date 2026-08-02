@@ -391,6 +391,45 @@ describe('ChatService — instrumentación de tokens', () => {
         );
       });
     });
+
+    describe('Re-review — prosa entre dos SAVE_FACT fusiona la captura del lookahead', () => {
+      it('con prosa entre dos SAVE_FACT, no ingiere ningún hecho con el objeto fusionado', async () => {
+        // El lookahead que decide dónde cierra una llamada (visto en el
+        // describe de arriba) exige que el ')' esté seguido de fin de
+        // respuesta o de otro `SAVE_FACT(`. Con prosa en el medio, ninguna
+        // de las dos cosas es cierta en el primer ')' — el motor retrocede y
+        // fusiona ambas llamadas en una sola captura con el objeto roto:
+        // "Berserk) Y además SAVE_FACT(likes, Vagabond".
+        crearMock.mockResolvedValue(
+          respuesta('Hola. SAVE_FACT(likes, Berserk) Y además SAVE_FACT(likes, Vagabond)'),
+        );
+
+        await service.chat('me gustan berserk y vagabond', 'Aria', 'Nico');
+
+        // Ninguna llamada a ingestFact puede tener un objeto que todavía
+        // contenga "SAVE_FACT" — sería la captura fusionada, no un hecho
+        // real. Más fuerte que "no se llamó": si algún día se relaja para
+        // ingerir el primero de los dos, esta aserción sigue detectando el
+        // objeto roto.
+        for (const llamada of graphIngest.ingestFact.mock.calls) {
+          expect(llamada[2]).not.toMatch(/SAVE_FACT/i);
+        }
+      });
+
+      it('con dos SAVE_FACT adyacentes (sin prosa entre medio), se siguen extrayendo los dos correctamente', async () => {
+        // Caso que ya funcionaba (cubierto también arriba, en el describe
+        // "SAVE_FACT" general) — la guarda nueva no debe romperlo.
+        crearMock.mockResolvedValue(
+          respuesta('Genial. SAVE_FACT(likes, Berserk) SAVE_FACT(likes, Vagabond)'),
+        );
+
+        await service.chat('me gustan berserk y vagabond', 'Aria', 'Nico');
+
+        expect(graphIngest.ingestFact).toHaveBeenCalledTimes(2);
+        expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(1, 'Nico', 'likes', 'Berserk');
+        expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(2, 'Nico', 'likes', 'Vagabond');
+      });
+    });
   });
 
   describe('generateSummary — extracción de hechos en lote (Task 5, fase 4b)', () => {

@@ -41,6 +41,20 @@ describe('UtilsService — sanitizeMemoryContent', () => {
     expect(limpio).not.toContain('SAVE_MEMORY');
   });
 
+  it('un SAVE_FACT(...) sin paréntesis de cierre (truncado, o arrastrado de una captura fusionada) tampoco sobrevive', () => {
+    // Re-review: antes el regex exigía el ')' de cierre (`[^)]*\)`), así que
+    // un SAVE_FACT truncado a mitad —el mismo corte de maxLengthResponse que
+    // motivó la corrección del regex de extracción en chat.service.ts, o el
+    // resto de una captura fusionada por prosa entre dos llamadas— sobrevivía
+    // tal cual porque nunca aparece un ')' que lo cierre.
+    const sucio = 'Nico le gusta esto SAVE_FACT(likes, Berserk';
+
+    const limpio = service.sanitizeMemoryContent(sucio);
+
+    expect(limpio).toBe('Nico le gusta esto');
+    expect(limpio).not.toContain('SAVE_FACT');
+  });
+
   it('elimina tokens de intención embebidos como {{resumen}} y {{usuarios_online}}', () => {
     const sucio = 'Aviso: {{resumen}} y {{usuarios_online}} listo';
 
