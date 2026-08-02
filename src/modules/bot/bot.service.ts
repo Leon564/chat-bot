@@ -9,6 +9,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphService, MAX_CANDIDATES } from '../graph/graph.service';
 import {
   GraphUserService,
   UserFact,
@@ -70,6 +71,7 @@ export class BotService implements OnModuleInit {
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
+    private readonly graphService: GraphService,
     private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
     private readonly rateLimitService: RateLimitService,
@@ -199,6 +201,64 @@ export class BotService implements OnModuleInit {
     if (!response) return;
 
     await this.handleChatResponse(response, authorUsername);
+
+    // Fire-and-forget, con su propio catch, como el resto de la ingesta al
+    // grafo: marca qué candidatas de la recomendación colaborativa (Task 3,
+    // fase 5b) terminaron de verdad mencionadas en la respuesta del modelo.
+    // SÓLO se marcan esas — marcar de más significa no volver a ofrecer algo
+    // bueno; marcar de menos significa repetirse.
+    void this.markCollaborativeRecommendations(authorUsername, response).catch(() => {});
+  }
+
+  // ─── Recomendación colaborativa (Task 3, fase 5b) ──────────────────────────
+
+  /**
+   * Tras responder, revisa cuáles de las candidatas de
+   * `GraphService.collaborative` aparecen mencionadas en el TEXTO que el
+   * modelo generó (la misma respuesta que ya se envió) y las marca con
+   * `recommended_to` — es lo único que evita que el bot vuelva a sugerir lo
+   * mismo la próxima vez (`collaborative` excluye lo ya marcado).
+   *
+   * Deliberadamente vuelve a consultar `collaborative` en vez de reutilizar
+   * las candidatas que `GraphContextService.build` ya calculó para el mismo
+   * turno: `ChatService.chat` sólo devuelve el texto final, no ese dato
+   * intermedio, y cambiar esa firma (usada desde varios lugares) para colar
+   * un valor que sólo esta marcación necesita no vale la duplicación de una
+   * consulta contra Mongo. Como nada se escribe entre ambas lecturas, la
+   * lista es la misma que vio el modelo.
+   *
+   * La comparación es por `label` normalizado (minúsculas, sin acentos, vía
+   * `GraphService.normalizeKey`) contra el texto de la respuesta — no hace
+   * falta resolver alias: el label es tal como se lo mostramos al modelo en
+   * la línea de contexto, así que si el modelo lo menciona, lo hace con ese
+   * mismo texto (o una variación de mayúsculas/acentos que la normalización
+   * ya cubre).
+   */
+  private async markCollaborativeRecommendations(
+    authorUsername: string,
+    response: string,
+  ): Promise<void> {
+    const userNode = await this.graphService.findNode('user', authorUsername);
+    if (!userNode) return;
+
+    const candidates = await this.graphService.collaborative(userNode._id, MAX_CANDIDATES);
+    if (candidates.length === 0) return;
+
+    const normalizedResponse = this.graphService.normalizeKey(response);
+    const mentioned = candidates.filter((c) =>
+      normalizedResponse.includes(this.graphService.normalizeKey(c.label)),
+    );
+
+    for (const candidate of mentioned) {
+      const node = await this.graphService.findNode('work', candidate.key);
+      if (!node) continue;
+      await this.graphService.upsertEdge({
+        from: userNode._id,
+        to: node._id,
+        type: 'recommended_to',
+        source: 'signal',
+      });
+    }
   }
 
   // ─── Music ─────────────────────────────────────────────────────────────────

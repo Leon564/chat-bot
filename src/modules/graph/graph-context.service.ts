@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GraphService, TopEdge } from './graph.service';
+import { GraphService, TopEdge, Candidate, MIN_CANDIDATES, MAX_CANDIDATES } from './graph.service';
 import { GraphNodeDocument, LastNodeProp, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 
@@ -37,6 +37,7 @@ export const LAST_NODE_WINDOW_MS = 30 * 60 * 1000;
 const DANGLING_SUFFIXES = [
   'le gusta',
   'ya le recomendé',
+  'a otros con gustos parecidos también les gustó',
   'interactuó con',
   'lo último que miró fue',
   'justo preguntó por',
@@ -87,8 +88,12 @@ export class GraphContextService {
       if (edges.length === 0 && !lastNode) return '';
 
       const highlight = await this.resolveHighlight(message, edges);
+      // Sólo lectura, igual que el resto de este método: si el usuario no
+      // tiene ningún `likes` hacia una obra, `collaborative` devuelve vacío
+      // sin tocar Mongo de más (ver el corte temprano en `GraphService`).
+      const candidates = await this.graph.collaborative(userNode._id, MAX_CANDIDATES);
 
-      const line = this.render(userNode.label || username, edges, highlight, lastNode);
+      const line = this.render(userNode.label || username, edges, highlight, lastNode, candidates);
       return this.truncate(line);
     } catch (err) {
       this.logger.warn(`build falló, se sigue sin contexto extra: ${(err as Error).message}`);
@@ -154,12 +159,25 @@ export class GraphContextService {
    * marcador). El verbo elegido ("miró", no "le gusta" ni "pidió") es a
    * propósito neutro: mirar algo no implica que guste, así que el modelo no
    * puede confundir "lo último que miró" con una preferencia.
+   *
+   * Las candidatas de `collaborative` (Task 3, fase 5b) se agregan justo
+   * después de "ya le recomendé": ambas secciones son sobre sugerencias
+   * (una ya dada, otra nueva), así que quedan agrupadas — y ANTES de
+   * interacciones/lastNode/highlight, que son sobre el turno reciente, no
+   * sobre gustos. Señaladas explícitamente como algo que le gustó A OTROS
+   * ("a otros con gustos parecidos también les gustó..."), nunca como algo
+   * que el propio usuario ya tiene — mezclarlas con "le gusta" haría que el
+   * modelo las confundiera con una preferencia ya confirmada del usuario.
+   * Sólo se muestran con al menos `MIN_CANDIDATES`: por debajo de eso sería
+   * "le gustó a alguien más" apoyado en una sola coincidencia, que no es
+   * una señal de comunidad real.
    */
   private render(
     displayName: string,
     edges: TopEdge[],
     highlight: string | null,
     lastNode: LastNodeProp | null,
+    candidates: Candidate[],
   ): string {
     const likes = edges.filter((e) => e.type === 'likes').map((e) => e.label);
     const recommended = edges.filter((e) => e.type === 'recommended_to').map((e) => e.label);
@@ -168,6 +186,9 @@ export class GraphContextService {
     const segments: string[] = [];
     if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);
     if (recommended.length > 0) segments.push(`ya le recomendé ${recommended.join(', ')}`);
+    if (candidates.length >= MIN_CANDIDATES) {
+      segments.push(`a otros con gustos parecidos también les gustó ${candidates.map((c) => c.label).join(', ')}`);
+    }
     if (interactions.length > 0) segments.push(`interactuó con ${interactions.join(', ')}`);
     if (lastNode) segments.push(`lo último que miró fue ${lastNode.label}`);
     if (highlight) segments.push(`justo preguntó por ${highlight}`);

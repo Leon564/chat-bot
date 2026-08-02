@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
-import { Connection } from 'mongoose';
+import { Connection, Types } from 'mongoose';
 import {
   rootMongooseTestModule,
   closeMongoConnection,
@@ -10,6 +10,7 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
 import { GraphContextService, MAX_EDGES, MAX_CHARS, LAST_NODE_WINDOW_MS } from './graph-context.service';
+import { MIN_CANDIDATES } from './graph.service';
 
 describe('GraphContextService', () => {
   let connection: Connection;
@@ -281,6 +282,48 @@ describe('GraphContextService', () => {
       .filter((o) => new RegExp(`${o}(?!\\d)`).test(linea));
 
     expect(mencionadas.length).toBeLessThanOrEqual(MAX_EDGES);
+  });
+
+  describe('candidatas de recomendación colaborativa (Task 3, fase 5b)', () => {
+    /** Suma `n` candidatas distintas que `otro` (ya con un gusto compartido con `sujeto`) también le gustan. */
+    const sembrarCandidatas = async (otro: { _id: Types.ObjectId }, n: number) => {
+      for (let i = 0; i < n; i++) {
+        const w = await graph.upsertNode({ type: 'work', key: `candidata${i}`, label: `Candidata ${i}` });
+        await graph.upsertEdge({ from: otro._id, to: w!._id, type: 'likes', source: 'fact' });
+      }
+    };
+
+    it('con >= MIN_CANDIDATES, la línea las menciona señalándolas como sugerencias de la comunidad', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+      const { u: kei } = await sembrarGusto('kei', 'Berserk');
+      await sembrarCandidatas(kei, MIN_CANDIDATES);
+
+      const linea = await service.build('Nico', 'hola');
+
+      // Señaladas como algo que le gustó a OTROS, no como un gusto propio de
+      // Nico -- de lo contrario el modelo las confundiría con una preferencia
+      // ya confirmada.
+      expect(linea).toMatch(/gustos parecidos/i);
+      for (let i = 0; i < MIN_CANDIDATES; i++) {
+        expect(linea).toContain(`Candidata ${i}`);
+      }
+    });
+
+    it('con menos de MIN_CANDIDATES, la línea no las menciona en absoluto', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+      const { u: kei } = await sembrarGusto('kei', 'Berserk');
+      await sembrarCandidatas(kei, MIN_CANDIDATES - 1);
+
+      const linea = await service.build('Nico', 'hola');
+
+      // Por debajo del umbral, ni la etiqueta de la sección ni ninguna
+      // candidata puntual aparecen -- "le gustó a alguien más" apoyado en
+      // una sola coincidencia no es una señal de comunidad real.
+      expect(linea).not.toMatch(/gustos parecidos/i);
+      for (let i = 0; i < MIN_CANDIDATES - 1; i++) {
+        expect(linea).not.toContain(`Candidata ${i}`);
+      }
+    });
   });
 
   it('devuelve cadena vacía cuando el grafo falla, sin lanzar', async () => {

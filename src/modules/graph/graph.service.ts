@@ -30,6 +30,38 @@ export interface UpsertEdgeInput {
   source: EdgeSource;
 }
 
+/**
+ * Una obra que le gustó a gente con gustos parecidos al usuario, dentro de
+ * esta comunidad — el resultado de `GraphService.collaborative`. `key` es la
+ * identidad real del nodo (no el `label`), para que el llamador pueda
+ * resolver el nodo destino y marcarlo con `recommended_to` sin otra consulta
+ * de por medio que el propio `key`. `score` es la suma de pesos de las
+ * aristas `likes` de quienes comparten el gusto — no un conteo de personas.
+ */
+export interface Candidate {
+  key: string;
+  label: string;
+  score: number;
+}
+
+/**
+ * Candidatas mínimas para que `GraphContextService` considere confiable la
+ * recomendación colaborativa y la mencione en la línea de contexto. Con menos
+ * de esto, el bot estaría diciendo "le gustó a alguien más" apoyado en una
+ * sola coincidencia — ruido, no señal de comunidad. No gatilla nada en
+ * `GraphService.collaborative` en sí (que puede devolver 1 o 2 candidatas sin
+ * problema): el umbral es sólo para decidir si vale la pena MOSTRARLAS.
+ */
+export const MIN_CANDIDATES = 3;
+
+/**
+ * Tope de candidatas que `collaborative` devuelve, sea cual sea el tamaño
+ * real de la comunidad que las comparte. Lo usan tanto `GraphContextService`
+ * (para no inflar la línea de contexto) como `BotService` (para no marcar más
+ * de las que se llegaron a mencionar en el prompt).
+ */
+export const MAX_CANDIDATES = 5;
+
 export interface TopEdge {
   type: EdgeType;
   weight: number;
@@ -416,5 +448,119 @@ export class GraphService {
       .exec();
 
     return rows as TopEdge[];
+  }
+
+  /**
+   * Recomendación colaborativa: qué le gustó a gente con gustos parecidos al
+   * usuario, DENTRO de esta comunidad. Es la razón de ser de todo el grafo —
+   * el modelo ya recomienda lo que recomienda internet; esto recomienda lo
+   * que le gustó a quien está en esta sala, algo que ninguna otra parte del
+   * sistema puede ofrecer.
+   *
+   * El recorrido: `(usuario)-[likes]->(obra)<-[likes]-(otros)-[likes]->(candidatas)`.
+   *
+   * Deliberadamente partido en pasos con nombre (obras propias → pares →
+   * exclusiones → candidatas) en vez de una única agregación con varios
+   * `$lookup` encadenados: esto lo va a mantener alguien más, y una sola
+   * consulta gigante es más difícil de auditar que cuatro consultas chicas
+   * que se leen en el orden del diagrama de arriba.
+   *
+   * La garantía que más importa: el recorrido SÓLO puede llegar a nodos
+   * `type: 'work'`. Un `likes` puede apuntar a un nodo `topic` suelto — un
+   * hecho de texto libre que no resolvió contra `work`/`genre`/`artist` (ver
+   * `GraphIngestService.ingestFact`), con una etiqueta como "tiene 25 años".
+   * Sin filtrar por tipo tanto en el ancla (paso 1) como en las candidatas
+   * (paso 4), el bot terminaría "recomendando" eso.
+   */
+  async collaborative(userId: Types.ObjectId, limit: number): Promise<Candidate[]> {
+    if (limit <= 0) return [];
+
+    try {
+      // 1. Qué obras (sólo `type: 'work'`) le gustan al usuario — el ancla.
+      const myWorkIds = await this.likedWorkIds(userId);
+      if (myWorkIds.length === 0) return [];
+
+      // 2. Quién más le puso `likes` a esas mismas obras. Se excluye al
+      //    propio usuario explícitamente: por definición ya le gustan esas
+      //    obras (son el ancla), así que no cuenta como "otro" que comparte
+      //    el gusto.
+      const peerIds = await this.edgeModel
+        .distinct('from', { to: { $in: myWorkIds }, type: 'likes', from: { $ne: userId } })
+        .exec();
+      if (peerIds.length === 0) return [];
+
+      // 3. Qué ya tiene el usuario — le gusta o ya se le recomendó — para
+      //    excluirlo de las candidatas. Sin esto se repetiría lo obvio (algo
+      //    que ya le gusta) o lo ya ofrecido (algo ya recomendado).
+      const alreadyHas = await this.edgeModel
+        .distinct('to', { from: userId, type: { $in: ['likes', 'recommended_to'] } })
+        .exec();
+
+      // 4. Qué le gusta a esos pares: se suma el peso cuando varias personas
+      //    coinciden en la misma candidata (más gente reforzando la misma
+      //    obra = señal más fuerte), y se filtra OTRA VEZ a `type: 'work'` —
+      //    un par puede tener `likes` hacia un `topic` igual que el usuario
+      //    original.
+      const rows = await this.edgeModel
+        .aggregate([
+          { $match: { from: { $in: peerIds }, type: 'likes', to: { $nin: alreadyHas } } },
+          { $group: { _id: '$to', score: { $sum: '$weight' } } },
+          {
+            $lookup: {
+              from: 'bot_nodes',
+              localField: '_id',
+              foreignField: '_id',
+              as: 'node',
+            },
+          },
+          { $unwind: '$node' },
+          { $match: { 'node.type': 'work' } },
+          { $sort: { score: -1 } },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 0,
+              key: '$node.key',
+              label: '$node.label',
+              score: 1,
+            },
+          },
+        ])
+        .exec();
+
+      return rows as Candidate[];
+    } catch (err) {
+      // Es de sólo lectura y alimenta un contexto opcional del prompt — un
+      // fallo acá nunca debe tumbar la respuesta del bot, sólo dejarlo sin
+      // esta sugerencia puntual.
+      return [];
+    }
+  }
+
+  /**
+   * IDs de nodos `type: 'work'` a los que el usuario le puso `likes` — el
+   * ancla de `collaborative`. Separado en su propio método porque es el
+   * primer punto donde se aplica el filtro "sólo `work`", y nombrarlo deja
+   * claro qué garantiza sin tener que leer la agregación entera.
+   */
+  private async likedWorkIds(userId: Types.ObjectId): Promise<Types.ObjectId[]> {
+    const rows = await this.edgeModel
+      .aggregate([
+        { $match: { from: userId, type: 'likes' } },
+        {
+          $lookup: {
+            from: 'bot_nodes',
+            localField: 'to',
+            foreignField: '_id',
+            as: 'node',
+          },
+        },
+        { $unwind: '$node' },
+        { $match: { 'node.type': 'work' } },
+        { $project: { _id: 0, to: 1 } },
+      ])
+      .exec();
+
+    return rows.map((r) => r.to as Types.ObjectId);
   }
 }
