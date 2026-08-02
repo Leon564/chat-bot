@@ -8,6 +8,7 @@ import { UtilsModule } from '../../common/utils/utils.module';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
+import { GraphUserKeyMigrationService } from './graph-user-key-migration.service';
 import { GraphCacheService } from './graph-cache.service';
 import { GraphContextService } from './graph-context.service';
 import { GraphUserService } from './graph-user.service';
@@ -36,6 +37,7 @@ import { GraphUserService } from './graph-user.service';
     GraphService,
     GraphIngestService,
     GraphMigrationService,
+    GraphUserKeyMigrationService,
     GraphCacheService,
     GraphContextService,
     GraphUserService,

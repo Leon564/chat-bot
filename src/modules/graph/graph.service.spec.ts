@@ -55,6 +55,73 @@ describe('GraphService — nodos', () => {
     });
   });
 
+  describe('normalizeUserKey (Important #1 — identidad de usuario, separada de normalizeKey)', () => {
+    it('pasa a minúsculas', () => {
+      expect(service.normalizeUserKey('NICO')).toBe('nico');
+    });
+
+    it('recorta espacios en los bordes, pero NO colapsa espacios internos', () => {
+      expect(service.normalizeUserKey('  Nico Bot  ')).toBe('nico bot');
+      expect(service.normalizeUserKey('Nico  Bot')).toBe('nico  bot');
+    });
+
+    it('NO quita acentos — a diferencia de normalizeKey', () => {
+      expect(service.normalizeUserKey('José')).toBe('josé');
+      expect(service.normalizeUserKey('Jose')).toBe('jose');
+      expect(service.normalizeUserKey('José')).not.toBe(service.normalizeUserKey('Jose'));
+    });
+
+    it('devuelve cadena vacía para entrada inválida', () => {
+      expect(service.normalizeUserKey('')).toBe('');
+      expect(service.normalizeUserKey(null as never)).toBe('');
+    });
+  });
+
+  describe('identidad de nodos user vs. otros tipos (Important #1)', () => {
+    it('upsertNode: "José" y "Jose" son nodos user DISTINTOS', async () => {
+      const jose1 = await service.upsertNode({ type: 'user', key: 'José', label: 'José' });
+      const jose2 = await service.upsertNode({ type: 'user', key: 'Jose', label: 'Jose' });
+
+      expect(jose1!._id.toString()).not.toBe(jose2!._id.toString());
+      const total = await connection.collection('bot_nodes').countDocuments({ type: 'user' });
+      expect(total).toBe(2);
+    });
+
+    it('upsertNode: "Nico  Bot" (doble espacio) y "Nico Bot" son nodos user DISTINTOS', async () => {
+      const a = await service.upsertNode({ type: 'user', key: 'Nico  Bot', label: 'Nico  Bot' });
+      const b = await service.upsertNode({ type: 'user', key: 'Nico Bot', label: 'Nico Bot' });
+
+      expect(a!._id.toString()).not.toBe(b!._id.toString());
+    });
+
+    it('upsertNode: "nico" y "NICO" siguen resolviendo al mismo nodo user', async () => {
+      const a = await service.upsertNode({ type: 'user', key: 'nico', label: 'nico' });
+      const b = await service.upsertNode({ type: 'user', key: 'NICO', label: 'NICO' });
+
+      expect(a!._id.toString()).toBe(b!._id.toString());
+    });
+
+    it('findNode: resuelve un usuario por identidad exacta de acentos/espacios, no por normalizeKey', async () => {
+      await service.upsertNode({ type: 'user', key: 'José', label: 'José' });
+      await service.upsertNode({ type: 'user', key: 'Jose', label: 'Jose' });
+
+      const conAcento = await service.findNode('user', 'José');
+      const sinAcento = await service.findNode('user', 'Jose');
+
+      expect(conAcento).not.toBeNull();
+      expect(sinAcento).not.toBeNull();
+      expect(conAcento!._id.toString()).not.toBe(sinAcento!._id.toString());
+    });
+
+    it('para tipos que no son user, sigue valiendo la insensibilidad a acentos de normalizeKey', async () => {
+      const conAcento = await service.upsertNode({ type: 'work', key: 'Canción', label: 'Canción' });
+      const sinAcento = await service.upsertNode({ type: 'work', key: 'Cancion', label: 'Cancion' });
+
+      // Misma key normalizada ('cancion'): es el mismo nodo, no dos.
+      expect(conAcento!._id.toString()).toBe(sinAcento!._id.toString());
+    });
+  });
+
   describe('upsertNode', () => {
     it('crea el nodo la primera vez con weight 1 al bumpear', async () => {
       const node = await service.upsertNode({

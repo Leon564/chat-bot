@@ -65,6 +65,8 @@ export class GraphService {
    * Identidad canónica de un nodo: minúsculas, sin acentos, espacios
    * colapsados. Se aplica a `key` y a cada alias para que "Canción De Amor" y
    * "cancion de amor" resuelvan al mismo nodo.
+   *
+   * NO usar esto para nodos `type: 'user'` -- ver `normalizeUserKey`.
    */
   normalizeKey(raw: string): string {
     if (!raw || typeof raw !== 'string') return '';
@@ -77,17 +79,54 @@ export class GraphService {
   }
 
   /**
+   * Identidad de un nodo `user`: sólo trim de los bordes + minúsculas — a
+   * propósito SIN quitar acentos y SIN colapsar espacios internos, a
+   * diferencia de `normalizeKey`. Para una obra "cancion" y "canción" son la
+   * misma obra, y colapsar "Tower  of God" (doble espacio) a "tower of god"
+   * es deseable; para una persona ninguna de las dos cosas es cierta:
+   * `UsersService.findByUsername` (backend) resuelve la identidad de un
+   * usuario registrado con `new RegExp('^' + username + '$', 'i')` sobre un
+   * campo `trim: true` — insensible a mayúsculas, pero exacto (sensible a
+   * acentos y a cada espacio interno) en todo lo demás. "José" y "Jose" son
+   * —y el backend las trata como— dos cuentas distintas, cada una con su
+   * propia contraseña; "Nico Bot" y "Nico  Bot" (doble espacio) también lo
+   * son, por la misma razón. Si el grafo colapsara cualquiera de las dos
+   * diferencias (que es lo que hacía usar `normalizeKey` acá, antes de este
+   * fix, con acentos Y con espacios), cuentas reales distintas colapsan en
+   * una sola identidad — y con el borrado que agregó esta fase
+   * (`GraphUserService.forgetAll`/`forget`), una persona puede terminar
+   * borrando los datos de otra sin saberlo.
+   *
+   * Esta regla DEBE seguir a la del backend, no a la conveniencia del grafo:
+   * si `findByUsername` cambiara de criterio (por ejemplo, para colapsar
+   * espacios en el registro), esta función tiene que cambiar con él para
+   * seguir resolviendo a la misma identidad que usa el login.
+   */
+  normalizeUserKey(raw: string): string {
+    if (!raw || typeof raw !== 'string') return '';
+    return raw.trim().toLowerCase();
+  }
+
+  /** `type: 'user'` se identifica con `normalizeUserKey`; cualquier otro tipo con `normalizeKey`. */
+  private keyNormalizerFor(type: NodeType): (raw: string) => string {
+    return type === 'user'
+      ? (raw: string) => this.normalizeUserKey(raw)
+      : (raw: string) => this.normalizeKey(raw);
+  }
+
+  /**
    * Crea o actualiza un nodo. Idempotente por el índice único {type, key}:
    * llamarlo dos veces con la misma key no duplica, solo fusiona alias y
    * props y (opcionalmente) sube el peso.
    */
   async upsertNode(input: UpsertNodeInput): Promise<GraphNodeDocument | null> {
-    const key = this.normalizeKey(input.key);
+    const normalize = this.keyNormalizerFor(input.type);
+    const key = normalize(input.key);
     if (!key) return null;
 
     const label = (input.label ?? '').trim() || key;
     const aliases = (input.aliases ?? [])
-      .map((a) => this.normalizeKey(a))
+      .map((a) => normalize(a))
       .filter((a) => a.length > 0);
 
     // Las props se escriben con rutas punteadas para FUSIONAR en vez de
@@ -116,7 +155,7 @@ export class GraphService {
   }
 
   async findNode(type: NodeType, key: string): Promise<GraphNodeDocument | null> {
-    const normalized = this.normalizeKey(key);
+    const normalized = this.keyNormalizerFor(type)(key);
     if (!normalized) return null;
     return this.nodeModel.findOne({ type, key: normalized }).exec();
   }
