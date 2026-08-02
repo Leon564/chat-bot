@@ -548,3 +548,177 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
     expect(chat.chat).not.toHaveBeenCalled();
   });
 });
+
+describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
+  let service: BotService;
+  let chat: { chat: jest.Mock };
+  let graphUser: {
+    describe: jest.Mock;
+    findForgettable: jest.Mock;
+    forget: jest.Mock;
+    forgetAll: jest.Mock;
+    countForgettableAll: jest.Mock;
+  };
+  let ingest: { ingestSocial: jest.Mock };
+  let logging: { saveLog: jest.Mock };
+  let socket: {
+    onMessage: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    getOnlineUsers: jest.Mock;
+    username: string;
+  };
+  let utils: { sleep: jest.Mock; splitMessageIntoParts: jest.Mock };
+
+  beforeEach(async () => {
+    chat = { chat: jest.fn().mockResolvedValue('esto NO debería enviarse jamás') };
+    graphUser = {
+      describe: jest.fn().mockResolvedValue([]),
+      findForgettable: jest.fn(),
+      forget: jest.fn(),
+      forgetAll: jest.fn(),
+      countForgettableAll: jest.fn(),
+    };
+    ingest = { ingestSocial: jest.fn().mockResolvedValue(undefined) };
+    logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
+    socket = {
+      onMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+      deleteMessage: jest.fn(),
+      getOnlineUsers: jest.fn().mockResolvedValue([]),
+      username: 'Aria',
+    };
+    utils = {
+      sleep: jest.fn().mockResolvedValue(undefined),
+      splitMessageIntoParts: jest.fn((text: string) => [text]),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: {} },
+        { provide: AniListService, useValue: {} },
+        { provide: UtilsService, useValue: utils },
+        { provide: LoggingService, useValue: logging },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: ingest },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: GraphUserService, useValue: graphUser },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    }).compile();
+
+    // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  const mensaje = (content: string, authorUsername: string): ChatMessage => ({
+    _id: '1',
+    content,
+    authorUsername,
+    authorRole: 'user',
+    type: 'text',
+    createdAt: new Date().toISOString(),
+  });
+
+  const invocar = (content: string, authorUsername: string) =>
+    (service as unknown as BotServiceConDispatcher).handleNewChatMessage(mensaje(content, authorUsername));
+
+  /** La ingesta al grafo (ingestSocial) es fire-and-forget. */
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('"!olvida berserk" borra y confirma cuántas cosas borró', async () => {
+    graphUser.findForgettable.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 3 }]);
+    graphUser.forget.mockResolvedValue(1);
+
+    await invocar('!olvida berserk', 'Nico');
+    await dejarCorrer();
+
+    expect(graphUser.findForgettable).toHaveBeenCalledWith('Nico', 'berserk');
+    expect(graphUser.forget).toHaveBeenCalledWith('Nico', 'berserk');
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Berserk'));
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringMatching(/borr[eé] 1/i));
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!olvida" sin término responde el uso, sin borrar', async () => {
+    await invocar('!olvida', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Uso:'));
+    expect(graphUser.findForgettable).not.toHaveBeenCalled();
+    expect(graphUser.forget).not.toHaveBeenCalled();
+    expect(graphUser.forgetAll).not.toHaveBeenCalled();
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!olvida algo que no existe" responde que no encontró nada, sin borrar', async () => {
+    graphUser.findForgettable.mockResolvedValue([]);
+
+    await invocar('!olvida algoqueNoExiste', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('No encontré'));
+    // El camino de "no encontré nada" nunca debe llamar a forget: si
+    // findForgettable no matcheó nada, no hay nada que ejecutar.
+    expect(graphUser.forget).not.toHaveBeenCalled();
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('un término de menos de 3 caracteres se rechaza sin consultar el grafo', async () => {
+    await invocar('!olvida ab', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('corto'));
+    expect(graphUser.findForgettable).not.toHaveBeenCalled();
+    expect(graphUser.forget).not.toHaveBeenCalled();
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!olvida todo" NO borra: pide confirmación, y las aristas siguen existiendo', async () => {
+    graphUser.countForgettableAll.mockResolvedValue(5);
+
+    await invocar('!olvida todo', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('5'));
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('!olvida todo si'));
+    // Esta es la aserción que importa de verdad: un test que sólo mirara el
+    // mensaje de confirmación pasaría igual si el comando además hubiera
+    // borrado. `forgetAll` es el único camino que borra algo en este
+    // servicio — que nunca se haya llamado es la prueba de que las aristas
+    // siguen existiendo, no sólo que se pidió confirmación.
+    expect(graphUser.forgetAll).not.toHaveBeenCalled();
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('"!olvida todo si" sí borra', async () => {
+    graphUser.forgetAll.mockResolvedValue(5);
+
+    await invocar('!olvida todo si', 'Nico');
+    await dejarCorrer();
+
+    expect(graphUser.forgetAll).toHaveBeenCalledWith('Nico');
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringMatching(/borr[eé] 5/i));
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('el comando corta el dispatcher: no se procesa como mensaje normal', async () => {
+    // Mismo razonamiento que el test equivalente de !quesabes: "olvida"
+    // no contiene la palabra "bot", así que agregamos el nombre del bot al
+    // mensaje para que, si el dispatcher NO cortara acá, siguiera de largo
+    // hasta el filtro de menciones y terminara llamando a chatService.chat.
+    graphUser.findForgettable.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 1 }]);
+    graphUser.forget.mockResolvedValue(1);
+
+    await invocar('!olvida berserk Aria', 'Nico');
+    await dejarCorrer();
+
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+});

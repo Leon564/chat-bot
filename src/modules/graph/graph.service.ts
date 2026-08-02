@@ -261,6 +261,69 @@ export class GraphService {
   }
 
   /**
+   * Todas las aristas SALIENTES de un nodo, crudas (sin resolver el destino,
+   * sin límite). A diferencia de `topEdges` (pensado para mostrar top-N con
+   * el label ya resuelto y descartando el `_id` de la arista en el
+   * `$project`), esto expone el documento completo — incluido `_id` — para
+   * que el llamador pueda borrar por identidad exacta en vez de por un
+   * filtro amplio. Usado por `GraphUserService` para `!olvida`: nunca se
+   * borra con `deleteMany({from, ...algo})`, sino por los `_id` exactos que
+   * esta consulta identificó.
+   */
+  async edgesFrom(from: Types.ObjectId): Promise<GraphEdgeDocument[]> {
+    return this.edgeModel.find({ from }).exec();
+  }
+
+  /**
+   * Nodos por `_id` en batch — evita N consultas cuando el llamador necesita
+   * resolver el destino de varias aristas a la vez (p. ej. `GraphUserService`
+   * resolviendo el label/alias de cada destino de `edgesFrom`).
+   */
+  async findNodesByIds(ids: Types.ObjectId[]): Promise<GraphNodeDocument[]> {
+    if (!ids.length) return [];
+    return this.nodeModel.find({ _id: { $in: ids } }).exec();
+  }
+
+  /**
+   * Cuenta las aristas salientes de un nodo sin traerlas ni borrar nada.
+   * Usado para mostrarle a quien pide `!olvida todo` cuántas cosas se
+   * borrarían ANTES de que confirme — el conteo sale de la misma condición
+   * (`from: nodeId`) que después ejecuta `deleteEdgesFrom`, así que el número
+   * mostrado y lo efectivamente borrado nunca pueden divergir.
+   */
+  async countEdgesFrom(from: Types.ObjectId): Promise<number> {
+    return this.edgeModel.countDocuments({ from }).exec();
+  }
+
+  /**
+   * Borra aristas por `_id` exacto. Deliberadamente NO acepta un filtro más
+   * amplio (tipo `{from, type}`): el llamador debe haber resuelto ya,
+   * puntualmente, cuáles aristas quiere borrar — esta función sólo ejecuta
+   * esa lista. Pensado para `GraphUserService.forget`, donde borrar de más
+   * (por ejemplo la arista de otro usuario hacia el mismo destino) sería un
+   * bug de privacidad, no un detalle de implementación.
+   */
+  async deleteEdgesByIds(ids: Types.ObjectId[]): Promise<number> {
+    if (!ids.length) return 0;
+    const result = await this.edgeModel.deleteMany({ _id: { $in: ids } }).exec();
+    return result.deletedCount ?? 0;
+  }
+
+  /**
+   * Borra TODAS las aristas SALIENTES de un nodo (`from: nodeId`). A
+   * diferencia de `deleteEdgesByIds`, éste sí es un filtro amplio — pero
+   * deliberadamente sólo sobre `from`, nunca sobre `to`: borrar por `from`
+   * es exactamente "todo lo que este nodo dijo/hizo hacia otros", nunca toca
+   * lo que otros nodos guardan HACIA éste. Ver el comentario en
+   * `GraphUserService.forgetAll` sobre por qué eso importa para
+   * `interacts_with`, que es bidireccional.
+   */
+  async deleteEdgesFrom(from: Types.ObjectId): Promise<number> {
+    const result = await this.edgeModel.deleteMany({ from }).exec();
+    return result.deletedCount ?? 0;
+  }
+
+  /**
    * Las relaciones más RECIENTES de un nodo, dentro de una ventana de
    * `sinceMs` milisegundos hacia atrás desde ahora — a diferencia de
    * `topEdges` (que ordena por `weight`), acá se ordena por `lastSeenAt`.

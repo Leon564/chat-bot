@@ -9,7 +9,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
-import { GraphUserService, UserFact } from '../graph/graph-user.service';
+import { GraphUserService, UserFact, MIN_FORGET_TERM_LENGTH } from '../graph/graph-user.service';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 
@@ -103,6 +103,12 @@ export class BotService implements OnModuleInit {
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
     if (await this.handleMemoryCommand(content, authorUsername)) return;
+
+    // "olvidate de X"/"olvidate de todo": borra del grafo. Mismo motivo que
+    // arriba para ir antes del filtro de menciones — y por ser la más
+    // delicada de las tres (borra datos), no debe depender de que el
+    // dispatcher la deje pasar por casualidad.
+    if (await this.handleForgetCommand(content, authorUsername)) return;
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -790,6 +796,102 @@ export class BotService implements OnModuleInit {
     }
 
     return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
+  }
+
+  // ─── Forget command (!olvida) ──────────────────────────────────────────────
+
+  /**
+   * Recognize and execute `!olvida`: borra del grafo lo que el bot tiene
+   * guardado sobre quien lo escribe. Devuelve `true` cuando el mensaje fue
+   * este comando (atendido de cualquier forma) para que el llamador corte el
+   * resto del dispatcher — mismo patrón que `handlePersonalityCommand` y
+   * `handleMemoryCommand`. Cero llamadas al modelo.
+   *
+   * Es la tarea más delicada de las tres: borra datos. El principio no
+   * negociable es que sólo se tocan las aristas SALIENTES de quien escribe
+   * el comando — nunca nodos, nunca aristas de otra persona, nunca más de lo
+   * que se pidió. Toda la resolución real vive en `GraphUserService`
+   * (`findForgettable`/`forget`/`forgetAll`); acá sólo se decide QUÉ pedirle
+   * y cómo confirmarlo.
+   *
+   * Privacidad: igual que `!quesabes`, el comando SIEMPRE opera sobre quien
+   * lo escribe. No existe (ni debe existir) una forma de que alguien borre
+   * lo que el bot sabe de otra persona.
+   *
+   * Formas soportadas:
+   * - `!olvida` (sin término): responde el uso, no borra nada.
+   * - `!olvida todo`: NO borra — responde cuántas cosas borraría y pide
+   *   `!olvida todo si` para confirmar. Requerir una confirmación explícita
+   *   para el borrado total (y sólo para ese caso) es a propósito: es el
+   *   único camino que puede vaciar TODO lo guardado sobre una persona de un
+   *   solo golpe.
+   * - `!olvida todo si`: confirma y borra todo lo saliente.
+   * - `!olvida <término>`: borra lo que matchee `término` (por etiqueta o
+   *   alias del destino) y confirma cuánto borró. No pide confirmación —el
+   *   usuario ya nombró el destino, así que la lista que se muestra es
+   *   informativa, no una pregunta. Se rechaza si el término tiene menos de
+   *   `MIN_FORGET_TERM_LENGTH` caracteres: es demasiado ambiguo para borrar
+   *   a ciegas.
+   */
+  private async handleForgetCommand(content: string, authorUsername: string): Promise<boolean> {
+    const match = content.trim().match(/^!olvida(?:\s+(.+))?$/is);
+    if (!match) return false;
+
+    const rawArg = (match[1] ?? '').trim();
+
+    if (!rawArg) {
+      this.sendBotMessage(
+        `@${authorUsername} Uso: !olvida <término> (p. ej. "!olvida berserk") | !olvida todo`,
+      );
+      return true;
+    }
+
+    const lower = rawArg.toLowerCase();
+
+    if (lower === 'todo') {
+      const count = await this.graphUserService.countForgettableAll(authorUsername);
+      if (count === 0) {
+        this.sendBotMessage(`@${authorUsername} 🤷 Ya no tengo nada guardado sobre vos.`);
+        return true;
+      }
+      this.sendBotMessage(
+        `@${authorUsername} ⚠️ Esto borraría ${count} cosa${count !== 1 ? 's' : ''} que tengo guardadas sobre vos. Escribí "!olvida todo si" para confirmar.`,
+      );
+      return true;
+    }
+
+    if (/^todo\s+si$/i.test(lower)) {
+      const deleted = await this.graphUserService.forgetAll(authorUsername);
+      if (deleted === 0) {
+        this.sendBotMessage(`@${authorUsername} 🤷 Ya no tenía nada guardado sobre vos.`);
+        return true;
+      }
+      this.sendBotMessage(
+        `@${authorUsername} 🗑️ Listo, borré ${deleted} cosa${deleted !== 1 ? 's' : ''} que tenía guardadas sobre vos.`,
+      );
+      return true;
+    }
+
+    if (rawArg.length < MIN_FORGET_TERM_LENGTH) {
+      this.sendBotMessage(
+        `@${authorUsername} 🤔 "${rawArg}" es muy corto — necesito al menos ${MIN_FORGET_TERM_LENGTH} caracteres para no borrar a ciegas.`,
+      );
+      return true;
+    }
+
+    const matches = await this.graphUserService.findForgettable(authorUsername, rawArg);
+    if (matches.length === 0) {
+      this.sendBotMessage(`@${authorUsername} 🤷 No encontré nada guardado sobre "${rawArg}" para olvidar.`);
+      return true;
+    }
+
+    const deleted = await this.graphUserService.forget(authorUsername, rawArg);
+    const distinctLabels = Array.from(new Set(matches.map((m) => m.label)));
+    const detail = distinctLabels.length > 1 ? `: ${distinctLabels.join(', ')}` : ` sobre "${distinctLabels[0]}"`;
+    this.sendBotMessage(
+      `@${authorUsername} 🗑️ Borré ${deleted} cosa${deleted !== 1 ? 's' : ''}${detail}.`,
+    );
+    return true;
   }
 
   /**
