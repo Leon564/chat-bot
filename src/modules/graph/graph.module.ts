@@ -7,6 +7,7 @@ import { Memory, MemorySchema } from '../../common/schemas/memory.schema';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
+import { GraphCacheService } from './graph-cache.service';
 
 /**
  * Módulo autónomo del grafo. No importa ningún otro módulo del bot a
@@ -22,7 +23,7 @@ import { GraphMigrationService } from './graph-migration.service';
       { name: Memory.name, schema: MemorySchema },
     ]),
   ],
-  providers: [GraphService, GraphIngestService, GraphMigrationService],
-  exports: [GraphService, GraphIngestService, MongooseModule],
+  providers: [GraphService, GraphIngestService, GraphMigrationService, GraphCacheService],
+  exports: [GraphService, GraphIngestService, GraphCacheService, MongooseModule],
 })
 export class GraphModule {}
