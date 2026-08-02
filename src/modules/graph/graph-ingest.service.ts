@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GraphService } from './graph.service';
-import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
+import { GraphNodeDocument, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType, EdgeSource } from '../../common/schemas/graph-edge.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 import { AniListResult } from '../anilist/anilist.service';
@@ -82,6 +82,29 @@ export class GraphIngestService {
       label: clean,
       props: { lastMessageAt: new Date() },
       bumpWeight: true,
+    });
+  }
+
+  /**
+   * Registra `props.lastNode` en el nodo del usuario: la última entidad que
+   * consultó, con marca de tiempo. `GraphContextService` la lee (con una
+   * ventana de 30 minutos) para que el modelo pueda resolver "¿y el segundo
+   * tomo?" contra lo que se acaba de mirar.
+   *
+   * Sólo la llaman `ingestAniList`/`ingestTrack` — nunca `ingestSocial`: que
+   * te mencionen en un mensaje no es "lo último que miraste", y mezclar
+   * ambas señales haría que el bot resuelva un pronombre contra alguien de
+   * quien sólo se habló, no contra una obra/pista real.
+   */
+  private async touchLastNode(
+    username: string,
+    entity: { key: string; type: NodeType; label: string },
+  ): Promise<void> {
+    await this.graph.upsertNode({
+      type: 'user',
+      key: username,
+      label: username,
+      props: { lastNode: { ...entity, at: new Date() } },
     });
   }
 
@@ -205,6 +228,8 @@ export class GraphIngestService {
         source: 'signal',
       });
 
+      await this.touchLastNode(username, { key: work.key, type: 'work', label: work.label });
+
       for (const genre of result.genres) {
         const node = await this.graph.upsertNode({
           type: 'genre',
@@ -263,6 +288,8 @@ export class GraphIngestService {
         type: 'requested',
         source: 'signal',
       });
+
+      await this.touchLastNode(username, { key: node.key, type: 'track', label: node.label });
 
       if (track.artist && track.artist.trim()) {
         const artist = await this.graph.upsertNode({

@@ -152,6 +152,38 @@ describe('GraphIngestService — señales sociales', () => {
     await expect(ingest.ingestSocial(baseMsg({ authorUsername: '' }))).resolves.toBeUndefined();
   });
 
+  it('NO toca lastNode (una mención no es "lo último que miró")', async () => {
+    // Primero deja un lastNode real (AniList). Si `ingestSocial` lo tocara
+    // -por ejemplo, si alguien agregara por error una llamada a
+    // `touchLastNode` con el usuario mencionado- este lastNode pasaría a ser
+    // `{ type: 'user', label: 'kei' }`, y la aserción de abajo fallaría.
+    const anilistResult = {
+      id: 1,
+      url: 'https://anilist.co/manga/1',
+      kind: 'manhwa' as const,
+      titleRomaji: 'Berserk',
+      titleEnglish: 'Berserk',
+      coverImage: 'https://img/cover.jpg',
+      bannerImage: null,
+      score: 90,
+      status: 'RELEASING',
+      chapters: null,
+      volumes: null,
+      episodes: null,
+      genres: [],
+      description: '...',
+      startYear: 1989,
+    };
+    await ingest.ingestAniList('Nico', anilistResult, 'berserk');
+
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'ey <@kei> mirá esto' }));
+
+    const nico = await graph.findNode('user', 'nico');
+    const lastNode = nico!.props.lastNode as { type: string; label: string };
+    expect(lastNode.type).toBe('work');
+    expect(lastNode.label).toBe('Berserk');
+  });
+
   it('sanitiza el nombre mencionado antes de persistirlo (revisión final, Important #4)', async () => {
     // `MENTION_RE` acepta cualquier cosa hasta el '>' — sin sanitizar, un
     // token {{...}} incrustado en la mención sobrevivía tal cual en el label
@@ -212,6 +244,17 @@ describe('GraphIngestService — señales sociales', () => {
       expect(node!.aliases).toContain('solo leveling');
       expect(node!.aliases).toContain('na honjaman level up');
       expect(node!.aliases).toContain('el manhwa del cazador debil');
+    });
+
+    it('guarda la obra como lastNode del usuario, con su clave, tipo y etiqueta', async () => {
+      await ingest.ingestAniList('Nico', result, 'x');
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { key: string; type: string; label: string; at: Date };
+      expect(lastNode.key).toBe('anilist:105398');
+      expect(lastNode.type).toBe('work');
+      expect(lastNode.label).toBe('Solo Leveling');
+      expect(lastNode.at).toBeDefined();
     });
 
     it('crea la arista asked_about desde el usuario', async () => {
@@ -352,6 +395,46 @@ describe('GraphIngestService — señales sociales', () => {
       await ingest.ingestTrack('Nico', 'q', { ...track, uploadService: 'litterbox' });
       const node = await graph.findNode('track', 'q');
       expect(node!.props.uploadPermanent).toBe(false);
+    });
+
+    it('guarda la pista como lastNode del usuario', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { key: string; type: string; label: string; at: Date };
+      expect(lastNode.type).toBe('track');
+      expect(lastNode.label).toBe('Say It Ain\'t So');
+      expect(lastNode.at).toBeDefined();
+    });
+
+    it('una segunda consulta (de otro tipo) reemplaza el lastNode anterior', async () => {
+      const anilistResult = {
+        id: 105398,
+        url: 'https://anilist.co/manga/105398',
+        kind: 'manhwa' as const,
+        titleRomaji: 'Na Honjaman Level Up',
+        titleEnglish: 'Solo Leveling',
+        coverImage: 'https://img/cover.jpg',
+        bannerImage: null,
+        score: 84,
+        status: 'FINISHED',
+        chapters: 179,
+        volumes: null,
+        episodes: null,
+        genres: [] as string[],
+        description: '...',
+        startYear: 2018,
+      };
+      await ingest.ingestAniList('Nico', anilistResult, 'solo leveling');
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { type: string; label: string };
+      // Si la escritura reemplazara mal (o `upsertNode` pisara props en vez
+      // de fusionar), esto podría quedar en 'work'/'Solo Leveling' en vez de
+      // reflejar la consulta más reciente.
+      expect(lastNode.type).toBe('track');
+      expect(lastNode.label).toBe('Say It Ain\'t So');
     });
 
     it('crea la arista requested del usuario al track', async () => {

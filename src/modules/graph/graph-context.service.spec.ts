@@ -9,7 +9,7 @@ import {
 import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
-import { GraphContextService, MAX_EDGES, MAX_CHARS } from './graph-context.service';
+import { GraphContextService, MAX_EDGES, MAX_CHARS, LAST_NODE_WINDOW_MS } from './graph-context.service';
 
 describe('GraphContextService', () => {
   let connection: Connection;
@@ -50,6 +50,16 @@ describe('GraphContextService', () => {
       await graph.upsertEdge({ from: u!._id, to: w!._id, type: 'likes', source: 'fact' });
     }
     return { u: u!, w: w! };
+  };
+
+  /** Escribe `props.lastNode` directamente, como haría `GraphIngestService.touchLastNode`. */
+  const sembrarLastNode = async (user: string, label: string, at: Date = new Date()) => {
+    return graph.upsertNode({
+      type: 'user',
+      key: user,
+      label: user,
+      props: { lastNode: { key: `work:${label}`, type: 'work', label, at } },
+    });
   };
 
   it('devuelve cadena vacía para un usuario sin nada en el grafo', async () => {
@@ -116,6 +126,58 @@ describe('GraphContextService', () => {
     // marcador de recomendaciones, y esta línea fallaría.
     expect(orvIdx).toBeGreaterThan(recomendIdx);
     expect(lower.slice(recomendIdx)).not.toContain('berserk');
+  });
+
+  describe('lastNode — continuidad conversacional (Fase 5b, Task 2)', () => {
+    it('menciona lo último que miró el usuario, señalándolo como tal', async () => {
+      await sembrarLastNode('Nico', 'Berserk');
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toMatch(/lo último que miró fue Berserk/i);
+    });
+
+    it('si no hay lastNode, la línea no inventa nada ni deja texto suelto', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+
+      const linea = await service.build('Nico', 'hola');
+
+      // Comparación exacta, no sólo `not.toContain`: prueba que no se coló
+      // ningún conector o fragmento extra (p. ej. "; lo último que miró fue")
+      // cuando no hay lastNode que mostrar.
+      expect(linea).toBe('Sobre Nico: le gusta Berserk.');
+    });
+
+    it('un lastNode de hace más de 30 minutos no se menciona (dejó de ser "lo último")', async () => {
+      const haceRato = new Date(Date.now() - (LAST_NODE_WINDOW_MS + 60_000));
+      await sembrarLastNode('Nico', 'Berserk', haceRato);
+      await sembrarGusto('Nico', 'Vinland Saga');
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toContain('Vinland Saga');
+      expect(linea).not.toMatch(/último que miró/i);
+      expect(linea).not.toContain('Berserk');
+    });
+
+    it('un lastNode de hace menos de 30 minutos sí se menciona (control positivo de la ventana)', async () => {
+      const haceUnRato = new Date(Date.now() - (LAST_NODE_WINDOW_MS - 60_000));
+      await sembrarLastNode('Nico', 'Berserk', haceUnRato);
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toMatch(/último que miró fue Berserk/i);
+    });
+
+    it('el lastNode del usuario A no aparece en la línea del usuario B', async () => {
+      await sembrarLastNode('kei', 'Vagabond');
+      await sembrarGusto('Nico', 'Berserk');
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toContain('Berserk');
+      expect(linea).not.toContain('Vagabond');
+    });
   });
 
   it('destaca la obra que la pregunta menciona, si el usuario tiene relación con ella', async () => {
@@ -190,6 +252,21 @@ describe('GraphContextService', () => {
     // una palabra partida a mitad de camino.
     const ultimoToken = linea.trim().split(' ').pop()!;
     expect(ultimoToken).toMatch(/^palabra\d+$/);
+  });
+
+  it('si el recorte cae justo en el verbo de "lo último que miró", no lo deja colgando sin objeto', async () => {
+    // Una sola palabra sin espacios de sobra: el único espacio disponible
+    // para el recorte por límite de palabra es el que separa "fue" del
+    // label, así que el corte cae justo ahí — el caso que el guard de
+    // `truncate()` existe para evitar.
+    const labelGigante = 'x'.repeat(400);
+    await sembrarLastNode('Nico', labelGigante);
+
+    const linea = await service.build('Nico', 'hola');
+
+    expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+    expect(linea.endsWith('fue')).toBe(false);
+    expect(linea).not.toMatch(/miró fue$/);
   });
 
   it('no incluye más de MAX_EDGES relaciones', async () => {
