@@ -30,6 +30,6 @@ import { GraphModule } from '../graph/graph.module';
     GraphModule,
   ],
   providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, UtilsService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
-  exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, MongooseModule],
+  exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, UsageService, MongooseModule],
 })
 export class ChatModule {}

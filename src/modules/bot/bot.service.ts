@@ -9,6 +9,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { UsageService } from '../chat/usage.service';
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -23,6 +24,7 @@ export class BotService implements OnModuleInit {
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
+    private readonly usageService: UsageService,
   ) {}
 
   async onModuleInit() {
@@ -173,7 +175,11 @@ export class BotService implements OnModuleInit {
     }
 
     try {
-      const result = await this.aniListService.search(kind, title);
+      // El caché evita el POST a AniList y, si la sinopsis ya se tradujo, una
+      // llamada al modelo de varios cientos de tokens.
+      const cached = await this.graphCacheService.findWork(kind, title).catch(() => null);
+
+      const result = cached ? cached.result : await this.aniListService.search(kind, title);
       if (!result) {
         this.sendBotMessage(
           `@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`,
@@ -183,20 +189,41 @@ export class BotService implements OnModuleInit {
 
       // Fire-and-forget: la ingesta es best-effort y no debe ni demorar el
       // armado de la tarjeta ni poder disparar el catch de abajo (que le
-      // habla al usuario) si el grafo falla.
+      // habla al usuario) si el grafo falla. Se hace SIEMPRE, incluso con
+      // acierto de caché: es un upsert idempotente cuyo efecto valioso es la
+      // arista `asked_about`, que registra que este usuario preguntó por esta
+      // obra — sin eso el grafo perdería señal de interés justo para las
+      // obras más populares, que son las que más aciertan en el caché.
       void this.graphIngestService.ingestAniList(authorUsername, result, title).catch(() => {});
 
-      // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
-      // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
-      // cae al texto original para no romper la tarjeta.
-      const translatedDescription = result.description
-        ? await this.chatService.translateToSpanish(result.description, authorUsername)
-        : null;
+      let translatedDescription: string | null;
 
-      // La traducción cuesta una llamada al modelo por ficha. Persistirla en
-      // el nodo hace que la próxima consulta de esta obra no la pague.
-      if (translatedDescription) {
-        void this.graphCacheService.saveTranslation(result.id, translatedDescription).catch(() => {});
+      if (cached && cached.sinopsisEs) {
+        // Ya se tradujo antes: nos ahorramos la llamada al modelo y dejamos
+        // registro del ahorro para poder medir la tasa de acierto real.
+        translatedDescription = cached.sinopsisEs;
+        void this.usageService
+          .record({
+            kind: 'translate',
+            user: authorUsername,
+            promptTokens: 0,
+            completionTokens: 0,
+            cacheHit: true,
+          })
+          .catch(() => {});
+      } else {
+        // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
+        // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
+        // cae al texto original para no romper la tarjeta.
+        translatedDescription = result.description
+          ? await this.chatService.translateToSpanish(result.description, authorUsername)
+          : null;
+
+        // La traducción cuesta una llamada al modelo por ficha. Persistirla en
+        // el nodo hace que la próxima consulta de esta obra no la pague.
+        if (translatedDescription) {
+          void this.graphCacheService.saveTranslation(result.id, translatedDescription).catch(() => {});
+        }
       }
 
       const localized: AniListResult = { ...result, description: translatedDescription };
