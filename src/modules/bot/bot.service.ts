@@ -9,6 +9,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphService, Candidate, MAX_CANDIDATES, MIN_CANDIDATES } from '../graph/graph.service';
 import {
   GraphUserService,
   UserFact,
@@ -70,6 +71,7 @@ export class BotService implements OnModuleInit {
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
+    private readonly graphService: GraphService,
     private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
     private readonly rateLimitService: RateLimitService,
@@ -199,6 +201,136 @@ export class BotService implements OnModuleInit {
     if (!response) return;
 
     await this.handleChatResponse(response, authorUsername);
+
+    // Fire-and-forget, con su propio catch, como el resto de la ingesta al
+    // grafo: marca qué candidatas de la recomendación colaborativa (Task 3,
+    // fase 5b) terminaron de verdad mencionadas en la respuesta del modelo.
+    // SÓLO se marcan esas — marcar de más significa no volver a ofrecer algo
+    // bueno; marcar de menos significa repetirse.
+    void this.markCollaborativeRecommendations(authorUsername, response).catch(() => {});
+  }
+
+  // ─── Recomendación colaborativa (Task 3, fase 5b) ──────────────────────────
+
+  /**
+   * Tras responder, revisa cuáles de las candidatas de
+   * `GraphService.collaborative` aparecen mencionadas en el TEXTO que el
+   * modelo generó (la misma respuesta que ya se envió) y las marca con
+   * `recommended_to` — es lo único que evita que el bot vuelva a sugerir lo
+   * mismo la próxima vez (`collaborative` excluye lo ya marcado).
+   *
+   * Deliberadamente vuelve a consultar `collaborative` en vez de reutilizar
+   * las candidatas que `GraphContextService.build` ya calculó para el mismo
+   * turno: encadenar ese valor implicaría cambiar el tipo de retorno de
+   * `ChatService.chat()` (hoy `Promise<string>`) y el de
+   * `GraphContextService.build()` (hoy también `Promise<string>`) — no sólo
+   * en su único llamador productivo de cada uno, sino en sus specs (~13
+   * sitios en `chat.service.spec.ts` y ~20 en `graph-context.service.spec.ts`
+   * leen el resultado como texto plano). Se evaluó ese cambio y se decidió
+   * NO forzarlo por ese costo — ver el reporte de la Task 3 (ronda de
+   * corrección 1) para el detalle. La segunda lectura a Mongo es el precio
+   * de mantener esas firmas intactas.
+   *
+   * Esto sí tiene una consecuencia real, no sólo de costo: entre la lectura
+   * que ve `GraphContextService.build` y esta hay un `await` a la llamada al
+   * modelo (puede tardar varios segundos), y en ese hueco otro mensaje del
+   * mismo usuario podría escribir en `bot_edges` (un `likes` nuevo, otra
+   * recomendación ya marcada). La lista que ve esta función puede entonces
+   * diferir levemente de la que vio el modelo — no hay ninguna garantía de
+   * "misma lista" acá. Es inofensivo de todos modos: en el peor caso se
+   * marca (o se deja de marcar) una candidata puntual con ese desfasaje de
+   * por medio, nunca se corrompe nada, porque `findNode`/`upsertEdge` siguen
+   * resolviendo contra el estado real del grafo en el momento en que corren.
+   *
+   * La comparación es por `label` normalizado (minúsculas, sin acentos, vía
+   * `GraphService.normalizeKey`) contra el texto de la respuesta, exigiendo
+   * un límite de palabra real (ver `mentionedCandidates`) — no hace falta
+   * resolver alias: el label es tal como se lo mostramos al modelo en la
+   * línea de contexto, así que si lo menciona, lo hace con ese mismo texto
+   * (o una variación de mayúsculas/acentos que la normalización ya cubre).
+   */
+  private async markCollaborativeRecommendations(
+    authorUsername: string,
+    response: string,
+  ): Promise<void> {
+    const userNode = await this.graphService.findNode('user', authorUsername);
+    if (!userNode) return;
+
+    const candidates = await this.graphService.collaborative(userNode._id, MAX_CANDIDATES);
+    // Mismo umbral que decide si `GraphContextService.render` las muestra en
+    // la línea de contexto (`MIN_CANDIDATES`) — no un tope propio. Si
+    // divergieran, con menos candidatas que ese umbral el modelo nunca las
+    // vio en el prompt, y cualquier mención incidental (una pregunta factual
+    // sobre esa obra, no una recomendación) marcaría recommended_to para
+    // siempre algo que nadie llegó a ofrecer de verdad.
+    if (candidates.length < MIN_CANDIDATES) return;
+
+    const mentioned = this.mentionedCandidates(response, candidates);
+
+    for (const candidate of mentioned) {
+      const node = await this.graphService.findNode('work', candidate.key);
+      if (!node) continue;
+      await this.graphService.upsertEdge({
+        from: userNode._id,
+        to: node._id,
+        type: 'recommended_to',
+        source: 'signal',
+      });
+    }
+  }
+
+  /**
+   * De las candidatas de `collaborative`, cuáles aparecen de verdad en el
+   * texto de la respuesta — exigiendo que la coincidencia caiga en un límite
+   * de palabra real, no una subcadena cualquiera. `includes()` a secas marca
+   * de más, y marcar de más es el error más caro de los dos (significa no
+   * volver a ofrecer una buena recomendación, en silencio y para siempre):
+   *
+   * - "Air" es prefijo de "aire": sin límite de palabra, cualquier respuesta
+   *   que use la palabra "aire" marcaría la candidata "Air" (anime real de
+   *   Key) sin que el modelo la haya mencionado.
+   * - "Fate" es subcadena de "Fate/Zero" — y acá el límite de palabra NO
+   *   alcanza por sí solo: "/" también cuenta como límite de palabra para
+   *   una regex `\b`-like, así que "fate" matchea igual dentro de
+   *   "fate/zero". Por eso las candidatas se evalúan de la más larga a la
+   *   más corta, y el texto que ya matcheó una candidata larga se CONSUME
+   *   (se reemplaza por un espacio) antes de probar las más cortas: si el
+   *   modelo sólo escribió "Fate/Zero", esa aparición deja de estar
+   *   disponible para que "Fate" la vuelva a matchear por su cuenta. Si
+   *   "Fate" aparece en OTRO lugar del texto, separado de esa aparición,
+   *   sigue contando — sólo se consume la porción exacta ya atribuida a la
+   *   candidata más larga, no todas las apariciones de la palabra.
+   */
+  private mentionedCandidates(response: string, candidates: Candidate[]): Candidate[] {
+    const byLabelLengthDesc = [...candidates].sort(
+      (a, b) =>
+        this.graphService.normalizeKey(b.label).length - this.graphService.normalizeKey(a.label).length,
+    );
+
+    let remaining = this.graphService.normalizeKey(response);
+    const mentioned: Candidate[] = [];
+
+    for (const candidate of byLabelLengthDesc) {
+      const needle = this.graphService.normalizeKey(candidate.label);
+      if (!needle) continue;
+
+      // Mismo escape que ya usa `containsExactBotName` más arriba en este
+      // archivo, para el mismo propósito: el label puede traer caracteres
+      // especiales de regex (p. ej. el "/" de "Fate/Zero").
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Límite de palabra manual con lookbehind/lookahead Unicode en vez de
+      // `\b`: el comportamiento es el mismo para este alfabeto (ya pasado
+      // por `normalizeKey`), pero deja explícito qué cuenta como "letra u
+      // dígito" sin depender de la definición ASCII de `\w`.
+      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u');
+      const match = pattern.exec(remaining);
+      if (!match) continue;
+
+      mentioned.push(candidate);
+      remaining = remaining.slice(0, match.index) + ' ' + remaining.slice(match.index + match[0].length);
+    }
+
+    return mentioned;
   }
 
   // ─── Music ─────────────────────────────────────────────────────────────────

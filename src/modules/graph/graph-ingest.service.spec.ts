@@ -113,6 +113,34 @@ describe('GraphIngestService — señales sociales', () => {
     expect(total).toBe(0);
   });
 
+  it('trata a dos usuarios que difieren en acentos como personas distintas', async () => {
+    // El backend los considera cuentas distintas, así que el grafo también
+    // debe hacerlo. Antes esta mención se descartaba como auto-mención.
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Jose', content: 'ey <@José> mirá' }));
+
+    const jose = await graph.findNode('user', 'Jose');
+    const joseConTilde = await graph.findNode('user', 'José');
+
+    expect(jose).not.toBeNull();
+    expect(joseConTilde).not.toBeNull();
+    expect(jose!._id.toString()).not.toBe(joseConTilde!._id.toString());
+
+    const aristas = await graph.topEdges(jose!._id, ['interacts_with'], 10);
+    expect(aristas.map((a) => a.label)).toContain('José');
+  });
+
+  it('sigue descartando la auto-mención real', async () => {
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'yo <@Nico> soy' }));
+    expect(await connection.collection('bot_edges').countDocuments({})).toBe(0);
+  });
+
+  it('sigue descartando la auto-mención con distinta capitalización', async () => {
+    // El backend es insensible a mayúsculas, así que "NICO" y "Nico" SÍ son
+    // la misma persona y esto sí es una auto-mención.
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'yo <@NICO> soy' }));
+    expect(await connection.collection('bot_edges').countDocuments({})).toBe(0);
+  });
+
   it('ignora mensajes de stickers para las menciones', async () => {
     await ingest.ingestSocial(baseMsg({ type: 'sticker', content: '<@kei>' }));
 
@@ -122,6 +150,38 @@ describe('GraphIngestService — señales sociales', () => {
 
   it('no lanza cuando el autor viene vacío', async () => {
     await expect(ingest.ingestSocial(baseMsg({ authorUsername: '' }))).resolves.toBeUndefined();
+  });
+
+  it('NO toca lastNode (una mención no es "lo último que miró")', async () => {
+    // Primero deja un lastNode real (AniList). Si `ingestSocial` lo tocara
+    // -por ejemplo, si alguien agregara por error una llamada a
+    // `touchLastNode` con el usuario mencionado- este lastNode pasaría a ser
+    // `{ type: 'user', label: 'kei' }`, y la aserción de abajo fallaría.
+    const anilistResult = {
+      id: 1,
+      url: 'https://anilist.co/manga/1',
+      kind: 'manhwa' as const,
+      titleRomaji: 'Berserk',
+      titleEnglish: 'Berserk',
+      coverImage: 'https://img/cover.jpg',
+      bannerImage: null,
+      score: 90,
+      status: 'RELEASING',
+      chapters: null,
+      volumes: null,
+      episodes: null,
+      genres: [],
+      description: '...',
+      startYear: 1989,
+    };
+    await ingest.ingestAniList('Nico', anilistResult, 'berserk');
+
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'ey <@kei> mirá esto' }));
+
+    const nico = await graph.findNode('user', 'nico');
+    const lastNode = nico!.props.lastNode as { type: string; label: string };
+    expect(lastNode.type).toBe('work');
+    expect(lastNode.label).toBe('Berserk');
   });
 
   it('sanitiza el nombre mencionado antes de persistirlo (revisión final, Important #4)', async () => {
@@ -184,6 +244,17 @@ describe('GraphIngestService — señales sociales', () => {
       expect(node!.aliases).toContain('solo leveling');
       expect(node!.aliases).toContain('na honjaman level up');
       expect(node!.aliases).toContain('el manhwa del cazador debil');
+    });
+
+    it('guarda la obra como lastNode del usuario, con su clave, tipo y etiqueta', async () => {
+      await ingest.ingestAniList('Nico', result, 'x');
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { key: string; type: string; label: string; at: Date };
+      expect(lastNode.key).toBe('anilist:105398');
+      expect(lastNode.type).toBe('work');
+      expect(lastNode.label).toBe('Solo Leveling');
+      expect(lastNode.at).toBeDefined();
     });
 
     it('crea la arista asked_about desde el usuario', async () => {
@@ -324,6 +395,46 @@ describe('GraphIngestService — señales sociales', () => {
       await ingest.ingestTrack('Nico', 'q', { ...track, uploadService: 'litterbox' });
       const node = await graph.findNode('track', 'q');
       expect(node!.props.uploadPermanent).toBe(false);
+    });
+
+    it('guarda la pista como lastNode del usuario', async () => {
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { key: string; type: string; label: string; at: Date };
+      expect(lastNode.type).toBe('track');
+      expect(lastNode.label).toBe('Say It Ain\'t So');
+      expect(lastNode.at).toBeDefined();
+    });
+
+    it('una segunda consulta (de otro tipo) reemplaza el lastNode anterior', async () => {
+      const anilistResult = {
+        id: 105398,
+        url: 'https://anilist.co/manga/105398',
+        kind: 'manhwa' as const,
+        titleRomaji: 'Na Honjaman Level Up',
+        titleEnglish: 'Solo Leveling',
+        coverImage: 'https://img/cover.jpg',
+        bannerImage: null,
+        score: 84,
+        status: 'FINISHED',
+        chapters: 179,
+        volumes: null,
+        episodes: null,
+        genres: [] as string[],
+        description: '...',
+        startYear: 2018,
+      };
+      await ingest.ingestAniList('Nico', anilistResult, 'solo leveling');
+      await ingest.ingestTrack('Nico', 'q', track);
+
+      const nico = await graph.findNode('user', 'nico');
+      const lastNode = nico!.props.lastNode as { type: string; label: string };
+      // Si la escritura reemplazara mal (o `upsertNode` pisara props en vez
+      // de fusionar), esto podría quedar en 'work'/'Solo Leveling' en vez de
+      // reflejar la consulta más reciente.
+      expect(lastNode.type).toBe('track');
+      expect(lastNode.label).toBe('Say It Ain\'t So');
     });
 
     it('crea la arista requested del usuario al track', async () => {
@@ -482,6 +593,68 @@ describe('GraphIngestService — señales sociales', () => {
         const edge = await connection.collection('bot_edges').findOne({ type: 'likes' });
         expect(edge?.source).toBe('batch');
       });
+    });
+  });
+
+  describe('previousMessageAt (Task 4, fase 5b — reconocimiento de regreso)', () => {
+    it('en el primer mensaje de alguien, previousMessageAt queda sin definir', async () => {
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      expect(nico!.props.previousMessageAt).toBeUndefined();
+      // lastMessageAt sí queda escrito -- lo único que falta es "el anterior".
+      expect(nico!.props.lastMessageAt).toBeDefined();
+    });
+
+    it('touchUser guarda en previousMessageAt el lastMessageAt ANTERIOR, no el que acaba de escribir', async () => {
+      await ingest.touchUser('Nico');
+
+      // Retrasa el lastMessageAt sembrado por el primer touch, para poder
+      // distinguirlo sin ambigüedad del "ahora" del segundo touch.
+      const hace20Dias = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+      await connection.collection('bot_nodes').updateOne(
+        { type: 'user', key: 'nico' },
+        { $set: { 'props.lastMessageAt': hace20Dias } },
+      );
+
+      const antes = Date.now();
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      const previousMessageAt = new Date(nico!.props.previousMessageAt as string | Date);
+      const lastMessageAt = new Date(nico!.props.lastMessageAt as string | Date);
+
+      // Si `touchUser` tomara el valor del documento POSTERIOR (el de ESTE
+      // segundo touch, "ahora") en vez del anterior -- exactamente el bug de
+      // orden invertido que esta tarea existe para evitar --
+      // `previousMessageAt` caería a milisegundos de `antes`, no a los 20
+      // días sembrados. Esta aserción distingue ambos casos sin ambigüedad.
+      expect(previousMessageAt.getTime()).toBe(hace20Dias.getTime());
+      // Y lastMessageAt sí se refrescó a "ahora" -- el dato viejo no se perdió,
+      // se movió a previousMessageAt.
+      expect(lastMessageAt.getTime()).toBeGreaterThanOrEqual(antes);
+    });
+
+    it('dos mensajes seguidos (sin tiempo real entre medio) dejan previousMessageAt cerca de ahora, no de la nada', async () => {
+      await ingest.touchUser('Nico');
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      const previousMessageAt = new Date(nico!.props.previousMessageAt as string | Date);
+
+      expect(Date.now() - previousMessageAt.getTime()).toBeLessThan(5000);
+    });
+
+    it('touchUser sigue devolviendo un documento no nulo con _id resoluble, incluso en el primer mensaje de alguien', async () => {
+      // Los llamadores (ingestSocial/ingestAniList/ingestTrack/ingestFact)
+      // usan `author._id` de inmediato -- si touchUser devolviera el
+      // documento ANTERIOR (null en el primer mensaje) en vez del posterior,
+      // esto rompería la ingesta completa para cualquier usuario nuevo.
+      const author = await ingest.touchUser('Nico Nuevo');
+
+      expect(author).not.toBeNull();
+      expect(author!._id).toBeDefined();
+      expect(author!.key).toBe('nico nuevo');
     });
   });
 });

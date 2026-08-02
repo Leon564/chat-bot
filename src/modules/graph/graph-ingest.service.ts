@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GraphService } from './graph.service';
-import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
+import { GraphNodeDocument, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType, EdgeSource } from '../../common/schemas/graph-edge.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 import { AniListResult } from '../anilist/anilist.service';
@@ -71,17 +71,80 @@ export class GraphIngestService {
     private readonly utilsService: UtilsService,
   ) {}
 
-  /** Crea o refresca el nodo de un usuario. */
+  /**
+   * Crea o refresca el nodo de un usuario, y de paso deja registrado hace
+   * cuánto no escribía (Task 4, fase 5b — reconocimiento de regreso).
+   *
+   * `lastMessageAt` se pisa con "ahora" en TODOS los mensajes, así que para
+   * cuando `GraphContextService` construye la línea de contexto ya vale
+   * "ahora" — no sirve para saber cuánto tiempo pasó desde el mensaje
+   * anterior. La solución: `upsertNodeReturningPrevious` devuelve el
+   * documento tal como estaba ANTES de esta escritura (con el
+   * `lastMessageAt` viejo, o `undefined` si es el primer mensaje de esta
+   * persona) en la MISMA escritura que ya iba a hacer falta — sin una
+   * lectura previa aparte.
+   *
+   * Ese valor viejo es justo lo que hay que guardar en `previousMessageAt`.
+   * **El orden importa**: tiene que ser el valor de ANTES de esta escritura,
+   * nunca el de después — si se tomara del documento posterior, quedaría
+   * "ahora" y la nota de regreso no se dispararía nunca, en silencio (ver
+   * los tests de `graph-ingest.service.spec.ts` que retrasan el
+   * `lastMessageAt` sembrado para distinguir ambos casos sin ambigüedad).
+   *
+   * Como `upsertNodeReturningPrevious` devuelve el documento ANTERIOR (que
+   * es `null` en el primer mensaje de alguien), no sirve para el valor que
+   * este método le da a sus llamadores (`ingestSocial`/`ingestAniList`/
+   * `ingestTrack`/`ingestFact` usan `author._id` de inmediato) — devolver
+   * `null` en el primer mensaje de cada persona rompería la ingesta de
+   * cualquier usuario nuevo. Por eso hace falta una segunda escritura
+   * (barata: sin bump de peso, sin alias) que persista `previousMessageAt`
+   * y devuelva el documento POSTERIOR de siempre.
+   */
   async touchUser(username: string): Promise<GraphNodeDocument | null> {
     const clean = (username ?? '').trim();
     if (!clean) return null;
 
-    return this.graph.upsertNode({
+    const previous = await this.graph.upsertNodeReturningPrevious({
       type: 'user',
       key: clean,
       label: clean,
       props: { lastMessageAt: new Date() },
       bumpWeight: true,
+    });
+
+    const previousMessageAt = (previous?.props as Record<string, unknown> | undefined)?.lastMessageAt as
+      | Date
+      | string
+      | undefined;
+
+    return this.graph.upsertNode({
+      type: 'user',
+      key: clean,
+      label: clean,
+      props: previousMessageAt ? { previousMessageAt } : {},
+    });
+  }
+
+  /**
+   * Registra `props.lastNode` en el nodo del usuario: la última entidad que
+   * consultó, con marca de tiempo. `GraphContextService` la lee (con una
+   * ventana de 30 minutos) para que el modelo pueda resolver "¿y el segundo
+   * tomo?" contra lo que se acaba de mirar.
+   *
+   * Sólo la llaman `ingestAniList`/`ingestTrack` — nunca `ingestSocial`: que
+   * te mencionen en un mensaje no es "lo último que miraste", y mezclar
+   * ambas señales haría que el bot resuelva un pronombre contra alguien de
+   * quien sólo se habló, no contra una obra/pista real.
+   */
+  private async touchLastNode(
+    username: string,
+    entity: { key: string; type: NodeType; label: string },
+  ): Promise<void> {
+    await this.graph.upsertNode({
+      type: 'user',
+      key: username,
+      label: username,
+      props: { lastNode: { ...entity, at: new Date() } },
     });
   }
 
@@ -118,10 +181,15 @@ export class GraphIngestService {
       // sanitizarlo de nuevo acá.
       if (msg.replyTo?.authorUsername) targets.add(msg.replyTo.authorUsername.trim());
 
-      const authorKey = this.graph.normalizeKey(msg.authorUsername);
+      // `normalizeUserKey`, no `normalizeKey`: el objetivo mencionado es una
+      // persona, y la identidad de personas sigue la regla del backend
+      // (sensible a acentos), no la de obras/temas (insensible). Con
+      // `normalizeKey` acá, "Jose" y "José" -dos cuentas distintas para el
+      // backend- se trataban como auto-mención y se perdía la arista social.
+      const authorKey = this.graph.normalizeUserKey(msg.authorUsername);
 
       for (const target of targets) {
-        if (this.graph.normalizeKey(target) === authorKey) continue;
+        if (this.graph.normalizeUserKey(target) === authorKey) continue;
 
         const node = await this.graph.upsertNode({ type: 'user', key: target, label: target });
         if (!node) continue;
@@ -200,6 +268,8 @@ export class GraphIngestService {
         source: 'signal',
       });
 
+      await this.touchLastNode(username, { key: work.key, type: 'work', label: work.label });
+
       for (const genre of result.genres) {
         const node = await this.graph.upsertNode({
           type: 'genre',
@@ -258,6 +328,8 @@ export class GraphIngestService {
         type: 'requested',
         source: 'signal',
       });
+
+      await this.touchLastNode(username, { key: node.key, type: 'track', label: node.label });
 
       if (track.artist && track.artist.trim()) {
         const artist = await this.graph.upsertNode({

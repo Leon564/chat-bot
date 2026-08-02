@@ -10,9 +10,23 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphService, Candidate } from '../graph/graph.service';
 import { GraphUserService, MAX_FACTS_SHOWN } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
+
+/**
+ * Stub de `GraphService` para los describes que no ejercitan la
+ * recomendación colaborativa (Task 3, fase 5b): `findNode` resuelve `null`,
+ * así que `markCollaborativeRecommendations` corta apenas empieza y el resto
+ * de esos tests queda exactamente igual que antes de agregar la dependencia.
+ */
+const noopGraphService = {
+  findNode: jest.fn().mockResolvedValue(null),
+  collaborative: jest.fn().mockResolvedValue([]),
+  normalizeKey: jest.fn((s: string) => (s ?? '').toString().toLowerCase()),
+  upsertEdge: jest.fn().mockResolvedValue(undefined),
+};
 
 /**
  * `handleAniListRequest` es privado — se accede con un cast puntual, como se
@@ -97,6 +111,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: cache },
+        { provide: GraphService, useValue: noopGraphService },
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: usage },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
@@ -313,6 +328,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: noopGraphService },
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
@@ -466,6 +482,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: noopGraphService },
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
@@ -666,6 +683,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: noopGraphService },
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
@@ -845,6 +863,7 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: noopGraphService },
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: rateLimit },
@@ -927,5 +946,280 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
 
     expect(chat.chat).toHaveBeenCalledWith('bot decime algo', 'Aria', 'Nico');
     expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('respuesta del modelo'));
+  });
+});
+
+describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b)', () => {
+  let service: BotService;
+  let chat: { chat: jest.Mock };
+  let graph: {
+    findNode: jest.Mock;
+    collaborative: jest.Mock;
+    normalizeKey: jest.Mock;
+    upsertEdge: jest.Mock;
+  };
+  let socket: {
+    onMessage: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    getOnlineUsers: jest.Mock;
+    username: string;
+  };
+
+  /** Misma normalización que `GraphService.normalizeKey` (minúsculas, sin acentos, espacios colapsados). */
+  const normalize = (s: string) =>
+    (s ?? '')
+      .toString()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ');
+
+  // Tres candidatas, no dos: MIN_CANDIDATES (3) es el mismo umbral que usa
+  // GraphContextService.render para decidir si las muestra en la línea de
+  // contexto (B2, ronda de corrección final) -- fixtures de 2 nunca superan
+  // ese umbral, así que markCollaborativeRecommendations corta antes de
+  // llegar al filtro de mención y los tests de acá abajo dejarían de
+  // ejercitarlo sin que nadie lo notara.
+  const CANDIDATOS: Candidate[] = [
+    { key: 'vinland-saga', label: 'Vinland Saga', score: 5 },
+    { key: 'berserk', label: 'Berserk', score: 3 },
+    { key: 'orv', label: 'ORV', score: 2 },
+  ];
+
+  beforeEach(async () => {
+    chat = { chat: jest.fn().mockResolvedValue('respuesta del modelo') };
+    graph = {
+      // Resuelve el nodo `user` de quien escribió, y el nodo `work` de cada
+      // candidata por su `key` — el mismo par de llamadas que hace
+      // `markCollaborativeRecommendations`.
+      findNode: jest.fn((type: string, key: string) => {
+        if (type === 'user' && key === 'Nico') return Promise.resolve({ _id: 'nico-id' });
+        if (type === 'work' && key === 'vinland-saga') return Promise.resolve({ _id: 'vinland-id' });
+        if (type === 'work' && key === 'berserk') return Promise.resolve({ _id: 'berserk-id' });
+        if (type === 'work' && key === 'orv') return Promise.resolve({ _id: 'orv-id' });
+        if (type === 'work' && key === 'air') return Promise.resolve({ _id: 'air-id' });
+        if (type === 'work' && key === 'fate') return Promise.resolve({ _id: 'fate-id' });
+        if (type === 'work' && key === 'fate-zero') return Promise.resolve({ _id: 'fate-zero-id' });
+        return Promise.resolve(null);
+      }),
+      collaborative: jest.fn().mockResolvedValue(CANDIDATOS),
+      normalizeKey: jest.fn(normalize),
+      upsertEdge: jest.fn().mockResolvedValue(undefined),
+    };
+    socket = {
+      onMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+      deleteMessage: jest.fn(),
+      getOnlineUsers: jest.fn().mockResolvedValue([]),
+      username: 'Aria',
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: {} },
+        { provide: AniListService, useValue: {} },
+        {
+          provide: UtilsService,
+          useValue: {
+            sleep: jest.fn().mockResolvedValue(undefined),
+            splitMessageIntoParts: jest.fn((text: string) => [text]),
+          },
+        },
+        { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: graph },
+        { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: RateLimitService,
+          useValue: { check: jest.fn().mockReturnValue(true), shouldNotifyRejection: jest.fn().mockReturnValue(true) },
+        },
+      ],
+    }).compile();
+
+    // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  const mensaje = (content: string, authorUsername: string): ChatMessage => ({
+    _id: '1',
+    content,
+    authorUsername,
+    authorRole: 'user',
+    type: 'text',
+    createdAt: new Date().toISOString(),
+  });
+
+  const invocar = (content: string, authorUsername: string) =>
+    (service as unknown as BotServiceConDispatcher).handleNewChatMessage(mensaje(content, authorUsername));
+
+  /** El marcado es fire-and-forget, después de enviar la respuesta: hay que dejar correr la microtask. */
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('tras responder, marca como recommended_to SÓLO la candidata que aparece en la respuesta', async () => {
+    chat.chat.mockResolvedValue('Deberías probar Vinland Saga, seguro te gusta.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(graph.upsertEdge).toHaveBeenCalledTimes(1);
+    expect(graph.upsertEdge).toHaveBeenCalledWith({
+      from: 'nico-id',
+      to: 'vinland-id',
+      type: 'recommended_to',
+      source: 'signal',
+    });
+    // Berserk y ORV estaban entre las candidatas que devolvió collaborative,
+    // pero el modelo no las mencionó: no se marcan. Marcar de más significaría
+    // no volver a ofrecerlas más adelante, aunque nunca se hayan sugerido de
+    // verdad.
+    expect(graph.upsertEdge).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'berserk-id' }),
+    );
+    expect(graph.upsertEdge).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'orv-id' }),
+    );
+  });
+
+  it('una candidata que el modelo no mencionó NO se marca', async () => {
+    // Ninguna de las tres etiquetas aparece en el texto.
+    chat.chat.mockResolvedValue('Qué buena pregunta, no tengo nada puntual para recomendarte hoy.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    // Si el marcado ignorara el filtro por mención (marcara toda candidata
+    // que devuelve collaborative, se haya dicho o no), esta aserción fallaría.
+    expect(graph.upsertEdge).not.toHaveBeenCalled();
+  });
+
+  it('si el modelo menciona dos de las tres candidatas, se marcan esas dos (y no la tercera)', async () => {
+    chat.chat.mockResolvedValue('Te recomiendo Vinland Saga y también Berserk, ambas te van a encantar.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(graph.upsertEdge).toHaveBeenCalledTimes(2);
+    expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'vinland-id' }));
+    expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'berserk-id' }));
+    // ORV también estaba entre las candidatas (llegan las 3 al umbral de
+    // MIN_CANDIDATES), pero el modelo no la mencionó.
+    expect(graph.upsertEdge).not.toHaveBeenCalledWith(expect.objectContaining({ to: 'orv-id' }));
+  });
+
+  it('sin candidatas de collaborative, no marca nada', async () => {
+    graph.collaborative.mockResolvedValue([]);
+    chat.chat.mockResolvedValue('Vinland Saga es genial.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(graph.upsertEdge).not.toHaveBeenCalled();
+  });
+
+  it('con menos de MIN_CANDIDATES no marca aunque el modelo mencione una candidata (B2, ronda de corrección final)', async () => {
+    // Sólo 2 candidatas -- por debajo de MIN_CANDIDATES (3), el umbral que
+    // usa GraphContextService.render para decidir si las muestra en la línea
+    // de contexto. Con 2, el modelo nunca las vio como sugerencia: que
+    // mencione "Vinland Saga" acá es casualidad (p. ej. una pregunta factual
+    // sobre la obra), no una recomendación cumplida. Sin este mismo umbral en
+    // el marcado, quedaría etiquetada recommended_to para siempre -- una
+    // buena recomendación futura perdida en silencio, sin que nadie la haya
+    // visto de verdad.
+    graph.collaborative.mockResolvedValue([
+      { key: 'vinland-saga', label: 'Vinland Saga', score: 5 },
+      { key: 'berserk', label: 'Berserk', score: 3 },
+    ]);
+    chat.chat.mockResolvedValue('Deberías probar Vinland Saga, seguro te gusta.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(graph.upsertEdge).not.toHaveBeenCalled();
+  });
+
+  it('un fallo del grafo al marcar no afecta la respuesta ya enviada (fire-and-forget con catch propio)', async () => {
+    graph.collaborative.mockRejectedValue(new Error('mongo caído'));
+    chat.chat.mockResolvedValue('Vinland Saga es genial.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Vinland Saga'));
+  });
+
+  describe('límite de palabra en el marcado (ronda de corrección 1)', () => {
+    it('"Air" NO se marca cuando el texto sólo dice "aire" — includes() sin límite de palabra marcaría de más', async () => {
+      // Dos candidatas de relleno (no mencionadas) sólo para llegar a
+      // MIN_CANDIDATES -- por debajo de eso, markCollaborativeRecommendations
+      // corta antes de llegar al filtro de mención que este test ejercita.
+      graph.collaborative.mockResolvedValue([
+        { key: 'air', label: 'Air', score: 4 },
+        { key: 'vinland-saga', label: 'Vinland Saga', score: 2 },
+        { key: 'orv', label: 'ORV', score: 1 },
+      ]);
+      chat.chat.mockResolvedValue('Che, hoy hace un aire fresco buenísimo para salir a caminar.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      // "air" es prefijo de "aire": sin exigir un límite de palabra real,
+      // esta aserción fallaría porque la candidata se marcaría igual.
+      expect(graph.upsertEdge).not.toHaveBeenCalled();
+    });
+
+    it('"Fate" NO se marca cuando sólo se mencionó "Fate/Zero" (candidata contenida en otra)', async () => {
+      // Tercera candidata de relleno (no mencionada) sólo para llegar a
+      // MIN_CANDIDATES -- ver comentario del test de "Air" arriba.
+      graph.collaborative.mockResolvedValue([
+        { key: 'fate', label: 'Fate', score: 3 },
+        { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+        { key: 'orv', label: 'ORV', score: 1 },
+      ]);
+      chat.chat.mockResolvedValue('Deberías ver Fate/Zero, es un clásico.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      expect(graph.upsertEdge).toHaveBeenCalledTimes(1);
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-zero-id' }));
+      // "Fate" es subcadena de "Fate/Zero" -- un límite de palabra tipo `\b`
+      // igual matchearía "fate" ahí adentro, porque "/" también cuenta como
+      // límite de palabra. Sin consumir el texto que ya matcheó la
+      // candidata más larga, esta aserción fallaría.
+      expect(graph.upsertEdge).not.toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-id' }));
+    });
+
+    it('si "Fate" aparece POR SEPARADO de "Fate/Zero" en el mismo texto, también se marca', async () => {
+      // Tercera candidata de relleno (no mencionada) sólo para llegar a
+      // MIN_CANDIDATES -- ver comentario del test de "Air" arriba.
+      graph.collaborative.mockResolvedValue([
+        { key: 'fate', label: 'Fate', score: 3 },
+        { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+        { key: 'orv', label: 'ORV', score: 1 },
+      ]);
+      chat.chat.mockResolvedValue('Te recomiendo Fate/Zero, y si te gusta, después mirá Fate a secas.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      // Acá "Fate" SÍ aparece mencionada por su cuenta, en otro lugar del
+      // texto -- consumir SIEMPRE toda ocurrencia de la palabra corta (en
+      // vez de sólo la porción atribuida a la candidata larga) marcaría de
+      // menos y esta aserción fallaría.
+      expect(graph.upsertEdge).toHaveBeenCalledTimes(2);
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-zero-id' }));
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-id' }));
+    });
   });
 });

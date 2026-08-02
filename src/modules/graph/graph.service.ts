@@ -30,6 +30,61 @@ export interface UpsertEdgeInput {
   source: EdgeSource;
 }
 
+/**
+ * Una obra que le gustó a gente con gustos parecidos al usuario, dentro de
+ * esta comunidad — el resultado de `GraphService.collaborative`. `key` es la
+ * identidad real del nodo (no el `label`), para que el llamador pueda
+ * resolver el nodo destino y marcarlo con `recommended_to` sin otra consulta
+ * de por medio que el propio `key`. `score` es la suma de pesos de las
+ * aristas `likes` de quienes comparten el gusto — no un conteo de personas.
+ */
+export interface Candidate {
+  key: string;
+  label: string;
+  score: number;
+}
+
+/**
+ * Candidatas mínimas para que `GraphContextService` considere confiable la
+ * recomendación colaborativa y la mencione en la línea de contexto. Con menos
+ * de esto, el bot estaría diciendo "le gustó a alguien más" apoyado en una
+ * sola coincidencia — ruido, no señal de comunidad. No gatilla nada en
+ * `GraphService.collaborative` en sí (que puede devolver 1 o 2 candidatas sin
+ * problema): el umbral cumple DOS funciones río abajo, y las dos leen este
+ * mismo valor porque tienen que coincidir: decidir si vale la pena MOSTRARLAS
+ * en la línea de contexto (`GraphContextService`) y decidir si vale la pena
+ * MARCARLAS como `recommended_to` después de la respuesta (`BotService`,
+ * fix B2). Si los dos umbrales llegaran a divergir, se volvería a marcar
+ * como recomendado algo que el modelo nunca llegó a ver mencionado en el
+ * prompt.
+ */
+export const MIN_CANDIDATES = 3;
+
+/**
+ * Tope de candidatas que `collaborative` devuelve, sea cual sea el tamaño
+ * real de la comunidad que las comparte. Lo usan tanto `GraphContextService`
+ * (para no inflar la línea de contexto) como `BotService` (para no marcar más
+ * de las que se llegaron a mencionar en el prompt).
+ */
+export const MAX_CANDIDATES = 5;
+
+/**
+ * Tope de "pares" (otros usuarios que comparten al menos un gusto con quien
+ * pregunta) que entran al paso 4 de `collaborative`. Sin esto, un ancla muy
+ * popular — una obra que cientos de personas marcaron con `likes` — puede
+ * llevar `peerIds` a un tamaño sin cota antes de llegar al `$group`/`$sort`/
+ * `$limit` que arma las candidatas: los índices de `bot_edges` evitan el
+ * collscan, pero no acotan cuántos documentos procesa el pipeline. 200 es un
+ * número elegido para que la comunidad muestreada siga siendo representativa
+ * (mucho más que el puñado de coincidencias que hace falta para superar
+ * `MIN_CANDIDATES`) sin dejar que una obra masiva dispare el volumen. No es
+ * un corte arbitrario de los primeros 200 que aparezcan: se prioriza a los
+ * pares cuyo propio `likes` hacia el ancla tiene más peso (`$sort` antes del
+ * `$limit`), así que si hay que recortar, se recorta por los que menos
+ * fuerte comparten el gusto, no al azar.
+ */
+export const MAX_PEERS = 200;
+
 export interface TopEdge {
   type: EdgeType;
   weight: number;
@@ -120,6 +175,33 @@ export class GraphService {
    * props y (opcionalmente) sube el peso.
    */
   async upsertNode(input: UpsertNodeInput): Promise<GraphNodeDocument | null> {
+    return this.upsertNodeWithReturn(input, 'after');
+  }
+
+  /**
+   * Igual que `upsertNode` en todo (misma normalización de key, misma fusión
+   * de aliases/props, mismo `$inc` de peso), salvo que devuelve el documento
+   * tal como estaba ANTES de esta escritura -- `null` si el nodo se crea
+   * recién ahora, porque entonces no había "antes" -- en vez del resultante.
+   *
+   * Existe para `GraphIngestService.touchUser` (Task 4, fase 5b —
+   * reconocimiento de regreso): para saber cuánto tiempo pasó desde el
+   * último mensaje de alguien hace falta el valor de `lastMessageAt` de
+   * ANTES de pisarlo con "ahora", y `findOneAndUpdate` con
+   * `returnDocument: 'before'` lo da en la misma escritura, sin una lectura
+   * previa aparte.
+   *
+   * `upsertNode` (arriba) NO cambia: sigue devolviendo 'after' para todos sus
+   * llamadores existentes, sin ninguna diferencia de comportamiento.
+   */
+  async upsertNodeReturningPrevious(input: UpsertNodeInput): Promise<GraphNodeDocument | null> {
+    return this.upsertNodeWithReturn(input, 'before');
+  }
+
+  private async upsertNodeWithReturn(
+    input: UpsertNodeInput,
+    returnDocument: 'before' | 'after',
+  ): Promise<GraphNodeDocument | null> {
     const normalize = this.keyNormalizerFor(input.type);
     const key = normalize(input.key);
     if (!key) return null;
@@ -149,7 +231,7 @@ export class GraphService {
     return this.nodeModel
       .findOneAndUpdate({ type: input.type, key }, update, {
         upsert: true,
-        returnDocument: 'after',
+        returnDocument,
       })
       .exec();
   }
@@ -416,5 +498,145 @@ export class GraphService {
       .exec();
 
     return rows as TopEdge[];
+  }
+
+  /**
+   * Recomendación colaborativa: qué le gustó a gente con gustos parecidos al
+   * usuario, DENTRO de esta comunidad. Es la razón de ser de todo el grafo —
+   * el modelo ya recomienda lo que recomienda internet; esto recomienda lo
+   * que le gustó a quien está en esta sala, algo que ninguna otra parte del
+   * sistema puede ofrecer.
+   *
+   * El recorrido: `(usuario)-[likes]->(obra)<-[likes]-(otros)-[likes]->(candidatas)`.
+   *
+   * Deliberadamente partido en pasos con nombre (obras propias → pares →
+   * exclusiones → candidatas) en vez de una única agregación con varios
+   * `$lookup` encadenados: esto lo va a mantener alguien más, y una sola
+   * consulta gigante es más difícil de auditar que cuatro consultas chicas
+   * que se leen en el orden del diagrama de arriba.
+   *
+   * La garantía que más importa: el recorrido SÓLO puede llegar a nodos
+   * `type: 'work'`. Un `likes` puede apuntar a un nodo `topic` suelto — un
+   * hecho de texto libre que no resolvió contra `work`/`genre`/`artist` (ver
+   * `GraphIngestService.ingestFact`), con una etiqueta como "tiene 25 años".
+   * Sin filtrar por tipo tanto en el ancla (paso 1) como en las candidatas
+   * (paso 4), el bot terminaría "recomendando" eso.
+   *
+   * El paso 2 (pares) está acotado por `MAX_PEERS` — ver su comentario para
+   * el porqué del número y del criterio de prioridad usado al recortar.
+   */
+  async collaborative(userId: Types.ObjectId, limit: number): Promise<Candidate[]> {
+    if (limit <= 0) return [];
+
+    try {
+      // 1. Qué obras (sólo `type: 'work'`) le gustan al usuario — el ancla.
+      const myWorkIds = await this.likedWorkIds(userId);
+      if (myWorkIds.length === 0) return [];
+
+      // 2. Quién más le puso `likes` a esas mismas obras. Se excluye al
+      //    propio usuario explícitamente: por definición ya le gustan esas
+      //    obras (son el ancla), así que no cuenta como "otro" que comparte
+      //    el gusto. Acotado a `MAX_PEERS`, priorizando (vía `$sort` antes
+      //    del `$limit`) a quienes más fuerte comparten el gusto — ver el
+      //    comentario de `MAX_PEERS` sobre por qué hace falta este tope.
+      const peerRows = await this.edgeModel
+        .aggregate([
+          { $match: { to: { $in: myWorkIds }, type: 'likes', from: { $ne: userId } } },
+          { $group: { _id: '$from', peerWeight: { $max: '$weight' } } },
+          { $sort: { peerWeight: -1 } },
+          { $limit: MAX_PEERS },
+        ])
+        .exec();
+      const peerIds = peerRows.map((r) => r._id as Types.ObjectId);
+      if (peerIds.length === 0) return [];
+
+      // 3. Qué excluir de las candidatas — cuatro razones, no dos:
+      //    - `likes`: ya le gusta, repetirlo sería obvio.
+      //    - `recommended_to`: ya se le ofreció.
+      //    - `dislikes`: LA QUE IMPORTA DE VERDAD. `SAVE_FACT` crea estas
+      //      aristas desde la Fase 4b; sin excluirla acá, el paso 4 puede
+      //      levantarla si a un par le gusta, y el bot terminaría
+      //      recomendando exactamente lo que la persona dijo que no le
+      //      gusta — peor que no recomendar nada. No la saques de esta
+      //      lista aunque el nombre `excludeIds` no la mencione: es la más
+      //      fácil de dar por "fuera de lugar" en una limpieza futura.
+      //    - `asked_about`: no es un defecto de corrección (nadie recibe
+      //      algo que rechazó), sino redundancia — la obra ya aparece en la
+      //      línea vía `lastNode`/`highlight`, así que listarla de nuevo acá
+      //      gasta presupuesto de la línea repitiendo lo que el modelo ya
+      //      tiene.
+      const excludeIds = await this.edgeModel
+        .distinct('to', {
+          from: userId,
+          type: { $in: ['likes', 'recommended_to', 'dislikes', 'asked_about'] },
+        })
+        .exec();
+
+      // 4. Qué le gusta a esos pares: se suma el peso cuando varias personas
+      //    coinciden en la misma candidata (más gente reforzando la misma
+      //    obra = señal más fuerte), y se filtra OTRA VEZ a `type: 'work'` —
+      //    un par puede tener `likes` hacia un `topic` igual que el usuario
+      //    original.
+      const rows = await this.edgeModel
+        .aggregate([
+          { $match: { from: { $in: peerIds }, type: 'likes', to: { $nin: excludeIds } } },
+          { $group: { _id: '$to', score: { $sum: '$weight' } } },
+          {
+            $lookup: {
+              from: 'bot_nodes',
+              localField: '_id',
+              foreignField: '_id',
+              as: 'node',
+            },
+          },
+          { $unwind: '$node' },
+          { $match: { 'node.type': 'work' } },
+          { $sort: { score: -1 } },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 0,
+              key: '$node.key',
+              label: '$node.label',
+              score: 1,
+            },
+          },
+        ])
+        .exec();
+
+      return rows as Candidate[];
+    } catch (err) {
+      // Es de sólo lectura y alimenta un contexto opcional del prompt — un
+      // fallo acá nunca debe tumbar la respuesta del bot, sólo dejarlo sin
+      // esta sugerencia puntual.
+      return [];
+    }
+  }
+
+  /**
+   * IDs de nodos `type: 'work'` a los que el usuario le puso `likes` — el
+   * ancla de `collaborative`. Separado en su propio método porque es el
+   * primer punto donde se aplica el filtro "sólo `work`", y nombrarlo deja
+   * claro qué garantiza sin tener que leer la agregación entera.
+   */
+  private async likedWorkIds(userId: Types.ObjectId): Promise<Types.ObjectId[]> {
+    const rows = await this.edgeModel
+      .aggregate([
+        { $match: { from: userId, type: 'likes' } },
+        {
+          $lookup: {
+            from: 'bot_nodes',
+            localField: 'to',
+            foreignField: '_id',
+            as: 'node',
+          },
+        },
+        { $unwind: '$node' },
+        { $match: { 'node.type': 'work' } },
+        { $project: { _id: 0, to: 1 } },
+      ])
+      .exec();
+
+    return rows.map((r) => r.to as Types.ObjectId);
   }
 }

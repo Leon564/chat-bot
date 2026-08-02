@@ -1,18 +1,19 @@
 import { Test } from '@nestjs/testing';
-import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
-import { Connection } from 'mongoose';
+import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import {
   rootMongooseTestModule,
   closeMongoConnection,
   syncAllIndexes,
 } from '../../common/testing/mongo-test.helper';
 import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
-import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
-import { GraphService } from './graph.service';
+import { GraphEdge, GraphEdgeSchema, GraphEdgeDocument } from '../../common/schemas/graph-edge.schema';
+import { GraphService, MAX_PEERS } from './graph.service';
 
 describe('GraphService — nodos', () => {
   let connection: Connection;
   let service: GraphService;
+  let edgeModel: Model<GraphEdgeDocument>;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -28,6 +29,7 @@ describe('GraphService — nodos', () => {
 
     connection = moduleRef.get<Connection>(getConnectionToken());
     service = moduleRef.get<GraphService>(GraphService);
+    edgeModel = moduleRef.get<Model<GraphEdgeDocument>>(getModelToken(GraphEdge.name));
     await syncAllIndexes(connection);
   });
 
@@ -405,6 +407,319 @@ describe('GraphService — nodos', () => {
       const nico = await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico' });
       expect(await service.recentEdges(nico!._id, [], 60_000, 10)).toEqual([]);
       expect(await service.recentEdges(nico!._id, ['asked_about'], 60_000, 0)).toEqual([]);
+    });
+  });
+
+  describe('collaborative (Task 3, fase 5b — recomendación colaborativa)', () => {
+    /** Le pone `likes` de `user` hacia un nodo `label` (`work` por default), sembrando ambos nodos. */
+    const gusta = async (user: string, label: string, type: 'work' | 'topic' | 'genre' | 'artist' = 'work') => {
+      const u = await service.upsertNode({ type: 'user', key: user, label: user });
+      const w = await service.upsertNode({ type, key: label, label });
+      await service.upsertEdge({ from: u!._id, to: w!._id, type: 'likes', source: 'fact' });
+      return { u: u!, w: w! };
+    };
+
+    it('devuelve vacío cuando el usuario no tiene gustos', async () => {
+      const nico = await service.upsertNode({ type: 'user', key: 'Nico', label: 'Nico' });
+      expect(await service.collaborative(nico!._id, 5)).toEqual([]);
+    });
+
+    it('devuelve vacío cuando nadie más comparte sus gustos', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      // Kei existe en el grafo, pero le gusta algo sin ninguna superposición con Nico.
+      await gusta('Kei', 'One Piece');
+
+      expect(await service.collaborative(u._id, 5)).toEqual([]);
+    });
+
+    it('encuentra lo que le gusta a quienes comparten un gusto con él', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ key: 'orv', label: 'ORV', score: 1 });
+    });
+
+    it('NO devuelve obras que al usuario ya le gustan', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await service.upsertEdge({ from: u._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      // ORV es justo lo que Nico y Kei tienen en común -- ya le gusta a Nico,
+      // así que no tiene sentido "recomendársela" de vuelta.
+      expect(result.find((c) => c.key === 'orv')).toBeUndefined();
+    });
+
+    it('NO devuelve obras que ya se le recomendaron', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await service.upsertEdge({ from: u._id, to: orv!._id, type: 'recommended_to', source: 'signal' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      expect(result.find((c) => c.key === 'orv')).toBeUndefined();
+    });
+
+    it('NO devuelve obras que al usuario le disgustan (B1, ronda de corrección final)', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const naruto = await service.upsertNode({ type: 'work', key: 'Naruto', label: 'Naruto' });
+      await service.upsertEdge({ from: u._id, to: naruto!._id, type: 'dislikes', source: 'fact' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: naruto!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      // Naruto es justo lo que Nico dijo que le disgusta -- recomendárselo
+      // porque a Kei (un par) le gusta es peor que no recomendar nada.
+      expect(result.find((c) => c.key === 'naruto')).toBeUndefined();
+    });
+
+    it('NO devuelve obras por las que el usuario ya preguntó (B1, ronda de corrección final)', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await service.upsertEdge({ from: u._id, to: orv!._id, type: 'asked_about', source: 'signal' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      // ORV ya aparece en la línea de contexto vía lastNode/highlight --
+      // repetirla acá como "a otros también les gustó" es redundante, no un
+      // defecto de corrección, pero igual desperdicia presupuesto de la línea.
+      expect(result.find((c) => c.key === 'orv')).toBeUndefined();
+    });
+
+    it('NO devuelve nodos que no sean de tipo work (ni topic, ni genre, ni artist)', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const { u: kei } = await gusta('Kei', 'Berserk');
+
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      // Un `likes` a un `topic` es exactamente lo que deja un hecho de texto
+      // libre sin resolver (ver `GraphIngestService.ingestFact`) -- p. ej.
+      // "tiene 25 años". Si el recorrido lo alcanzara, el bot lo "recomendaría".
+      const topic = await service.upsertNode({ type: 'topic', key: 'tiene 25 años', label: 'tiene 25 años' });
+      const genre = await service.upsertNode({ type: 'genre', key: 'accion', label: 'Acción' });
+      const artist = await service.upsertNode({ type: 'artist', key: 'hiroya oku', label: 'Hiroya Oku' });
+
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: kei._id, to: topic!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: kei._id, to: genre!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: kei._id, to: artist!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 10);
+
+      // La única obra real (`type: 'work'`) que Kei comparte además de
+      // Berserk es ORV -- es lo único que debería aparecer.
+      expect(result).toHaveLength(1);
+      expect(result[0].key).toBe('orv');
+      // Esta es la aserción que detecta que el filtro por tipo se sacó de la
+      // agregación: sin él, cualquiera de estos tres aparecería también.
+      expect(result.some((c) => c.label === topic!.label)).toBe(false);
+      expect(result.some((c) => c.label === genre!.label)).toBe(false);
+      expect(result.some((c) => c.label === artist!.label)).toBe(false);
+    });
+
+    it('suma el peso cuando varias personas coinciden, y ordena por eso', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const popular = await service.upsertNode({ type: 'work', key: 'Popular', label: 'Candidata Popular' });
+      const solitaria = await service.upsertNode({ type: 'work', key: 'Solitaria', label: 'Candidata Solitaria' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      const { u: rin } = await gusta('Rin', 'Berserk');
+      const { u: mel } = await gusta('Mel', 'Berserk');
+
+      await service.upsertEdge({ from: kei._id, to: popular!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: rin._id, to: popular!._id, type: 'likes', source: 'fact' });
+      await service.upsertEdge({ from: mel._id, to: solitaria!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      expect(result[0].key).toBe('popular');
+      expect(result[0].score).toBe(2);
+      expect(result[1].key).toBe('solitaria');
+      expect(result[1].score).toBe(1);
+    });
+
+    it('respeta el límite', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      for (let i = 0; i < 8; i++) {
+        const w = await service.upsertNode({ type: 'work', key: `w${i}`, label: `Obra ${i}` });
+        await service.upsertEdge({ from: kei._id, to: w!._id, type: 'likes', source: 'fact' });
+      }
+
+      expect(await service.collaborative(u._id, 3)).toHaveLength(3);
+    });
+
+    it('acota los pares a MAX_PEERS, priorizando a quienes más fuerte comparten el gusto (ronda de corrección 1)', async () => {
+      // Sembrado por escritura directa a la colección (no vía upsertNode/
+      // upsertEdge, uno por uno) porque son cientos de documentos -- lo que
+      // importa acá es el volumen y los pesos exactos, no ejercitar el
+      // upsert en sí (ya cubierto por otros tests de este archivo).
+      const nico = await service.upsertNode({ type: 'user', key: 'Nico', label: 'Nico' });
+      const berserk = await service.upsertNode({ type: 'work', key: 'Berserk', label: 'Berserk' });
+      await service.upsertEdge({ from: nico!._id, to: berserk!._id, type: 'likes', source: 'fact' });
+
+      const total = MAX_PEERS + 20;
+      const now = new Date();
+      const peerNodes = Array.from({ length: total }, (_, i) => ({
+        _id: new Types.ObjectId(),
+        type: 'user',
+        key: `peer${i}`,
+        label: `peer${i}`,
+        aliases: [],
+        props: {},
+        weight: 0,
+        lastSeenAt: now,
+      }));
+      const candNodes = Array.from({ length: total }, (_, i) => ({
+        _id: new Types.ObjectId(),
+        type: 'work',
+        key: `cand${i}`,
+        label: `Candidata ${i}`,
+        aliases: [],
+        props: {},
+        weight: 0,
+        lastSeenAt: now,
+      }));
+      await connection.collection('bot_nodes').insertMany([...peerNodes, ...candNodes]);
+
+      // El peer `i` comparte el gusto por Berserk con un peso creciente
+      // (i + 1): el último peer (índice `total - 1`) es el que MÁS fuerte
+      // lo comparte, y por eso debería sobrevivir al tope.
+      const anchorEdges = peerNodes.map((p, i) => ({
+        from: p._id,
+        to: berserk!._id,
+        type: 'likes',
+        weight: i + 1,
+        source: 'fact',
+        lastSeenAt: now,
+      }));
+      // Cada peer recomienda una candidata propia y distinta -- así el
+      // conteo final de candidatas devueltas mide directamente cuántos
+      // pares sobrevivieron al tope.
+      const candidateEdges = peerNodes.map((p, i) => ({
+        from: p._id,
+        to: candNodes[i]._id,
+        type: 'likes',
+        weight: 1,
+        source: 'fact',
+        lastSeenAt: now,
+      }));
+      await connection.collection('bot_edges').insertMany([...anchorEdges, ...candidateEdges]);
+
+      const result = await service.collaborative(nico!._id, total);
+
+      // El tope de MAX_PEERS pares termina limitando, en los hechos, a
+      // MAX_PEERS candidatas -- aunque el `limit` pedido (total) sea mucho
+      // mayor y daría lugar a más si no hubiera tope de pares.
+      expect(result).toHaveLength(MAX_PEERS);
+      // Los peers de MENOS peso (índices bajos) quedaron afuera del tope...
+      expect(result.find((c) => c.key === 'cand0')).toBeUndefined();
+      expect(result.find((c) => c.key === 'cand19')).toBeUndefined();
+      // ...los de MÁS peso (índices altos) sí entraron: el recorte prioriza,
+      // no es un corte arbitrario de los primeros que aparezcan.
+      expect(result.find((c) => c.key === `cand${total - 1}`)).toBeDefined();
+      expect(result.find((c) => c.key === 'cand20')).toBeDefined();
+    }, 20000);
+
+    it('no cuenta al propio usuario como "otro"', async () => {
+      // Nico es el ÚNICO conectado a Berserk -- nadie más comparte el gusto.
+      // Si el propio usuario se contara como "otro" que comparte el gusto,
+      // el recorrido seguiría con los `likes` DEL PROPIO NICO como si
+      // vinieran de un tercero -- pero esos mismos `likes` son justo lo que
+      // la regla "no devuelve obras que ya le gustan" excluye de las
+      // candidatas, así que el resultado queda vacío en ambos casos. El
+      // test documenta la garantía igual: protege contra una regresión que
+      // rompa esa otra regla al mismo tiempo (ver el reporte de esta tarea
+      // para la comprobación de reversión de este caso puntual).
+      const { u } = await gusta('Nico', 'Berserk');
+      const otraObra = await service.upsertNode({ type: 'work', key: 'Vinland Saga', label: 'Vinland Saga' });
+      await service.upsertEdge({ from: u._id, to: otraObra!._id, type: 'likes', source: 'fact' });
+
+      expect(await service.collaborative(u._id, 5)).toEqual([]);
+    });
+
+    it('no lanza cuando el grafo falla', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      jest
+        .spyOn(edgeModel, 'aggregate')
+        .mockReturnValueOnce({ exec: () => Promise.reject(new Error('mongo caído')) } as never);
+
+      await expect(service.collaborative(u._id, 5)).resolves.toEqual([]);
+    });
+  });
+
+  describe('upsertNodeReturningPrevious (Task 4, fase 5b — reconocimiento de regreso)', () => {
+    it('entrega null la primera vez (no había ningún documento antes)', async () => {
+      const result = await service.upsertNodeReturningPrevious({
+        type: 'user',
+        key: 'nico',
+        label: 'Nico',
+        props: { marca: 'primera' },
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('en la segunda llamada entrega el documento tal como estaba ANTES de esta escritura, no el resultante', async () => {
+      await service.upsertNodeReturningPrevious({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'primera' },
+      });
+      const previous = await service.upsertNodeReturningPrevious({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'segunda' },
+      });
+
+      // Si se devolviera el documento POSTERIOR (bug de orden invertido —
+      // exactamente el que esta tarea existe para evitar), esta aserción
+      // vería 'segunda' en vez de 'primera' y fallaría.
+      expect(previous).not.toBeNull();
+      expect(previous!.props.marca).toBe('primera');
+
+      // Y la escritura sí ocurrió -- leyendo aparte, ya quedó en 'segunda'.
+      const actual = await service.findNode('user', 'nico');
+      expect(actual!.props.marca).toBe('segunda');
+    });
+
+    it('también hace el upsert normal: crea, fusiona props y bumpea peso igual que upsertNode', async () => {
+      await service.upsertNodeReturningPrevious({
+        type: 'work', key: 'anilist:1', label: 'Obra', bumpWeight: true,
+      });
+      await service.upsertNodeReturningPrevious({
+        type: 'work', key: 'anilist:1', label: 'Obra', bumpWeight: true,
+      });
+
+      const actual = await service.findNode('work', 'anilist:1');
+      expect(actual!.weight).toBe(2);
+
+      const total = await connection.collection('bot_nodes').countDocuments({ type: 'work' });
+      expect(total).toBe(1);
+    });
+
+    it('el upsertNode existente sigue devolviendo el documento POSTERIOR (sin regresión)', async () => {
+      await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico', props: { marca: 'primera' } });
+      const after = await service.upsertNode({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'segunda' },
+      });
+
+      // Si alguien accidentalmente cambiara upsertNode a 'before', este test
+      // vería 'primera' en vez de 'segunda' y fallaría -- es la comprobación
+      // de que la variante nueva no tocó al llamador existente.
+      expect(after!.props.marca).toBe('segunda');
     });
   });
 });

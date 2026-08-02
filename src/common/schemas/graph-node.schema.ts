@@ -13,6 +13,22 @@ export type NodeType = 'user' | 'work' | 'genre' | 'track' | 'artist' | 'topic';
 export const NODE_TYPES: NodeType[] = ['user', 'work', 'genre', 'track', 'artist', 'topic'];
 
 /**
+ * `props.lastNode` de un nodo `user`: la última entidad (work/track/…) que
+ * esa persona consultó, para que `GraphContextService` pueda resolver
+ * referencias ambiguas del turno siguiente ("¿y el segundo tomo?"). `key` y
+ * `type` son la identidad real del nodo (no el label), igual que `TopEdge.key`
+ * en `graph.service.ts`. Lo escriben `GraphIngestService.ingestAniList` e
+ * `ingestTrack` — nunca `ingestSocial` (ver comentario ahí: una mención no es
+ * "lo último que miró").
+ */
+export interface LastNodeProp {
+  key: string;
+  type: NodeType;
+  label: string;
+  at: Date;
+}
+
+/**
  * Un nodo del grafo de conocimiento. `key` es la identidad normalizada y es
  * única por tipo — 'anilist:105398' para obras, el username normalizado para
  * usuarios. `label` es el nombre para mostrar y puede cambiar; `key` no.
