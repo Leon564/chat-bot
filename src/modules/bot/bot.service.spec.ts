@@ -12,6 +12,7 @@ import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
 import { GraphUserService } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
+import { RateLimitService } from './rate-limit.service';
 
 /**
  * `handleAniListRequest` es privado — se accede con un cast puntual, como se
@@ -98,6 +99,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: GraphCacheService, useValue: cache },
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: usage },
+        { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
       ],
     }).compile();
 
@@ -313,6 +315,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: GraphCacheService, useValue: {} },
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
       ],
     }).compile();
 
@@ -465,6 +468,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: GraphCacheService, useValue: {} },
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
       ],
     }).compile();
 
@@ -610,6 +614,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: GraphCacheService, useValue: {} },
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
       ],
     }).compile();
 
@@ -720,5 +725,121 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
     await dejarCorrer();
 
     expect(chat.chat).not.toHaveBeenCalled();
+  });
+});
+
+describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
+  let service: BotService;
+  let chat: { chat: jest.Mock };
+  let rateLimit: { check: jest.Mock };
+  let ingest: { ingestSocial: jest.Mock };
+  let logging: { saveLog: jest.Mock };
+  let socket: {
+    onMessage: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    getOnlineUsers: jest.Mock;
+    username: string;
+  };
+  let utils: { sleep: jest.Mock; splitMessageIntoParts: jest.Mock };
+
+  beforeEach(async () => {
+    chat = { chat: jest.fn().mockResolvedValue('respuesta del modelo') };
+    rateLimit = { check: jest.fn() };
+    ingest = { ingestSocial: jest.fn().mockResolvedValue(undefined) };
+    logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
+    socket = {
+      onMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+      deleteMessage: jest.fn(),
+      getOnlineUsers: jest.fn().mockResolvedValue([]),
+      username: 'Aria',
+    };
+    utils = {
+      sleep: jest.fn().mockResolvedValue(undefined),
+      splitMessageIntoParts: jest.fn((text: string) => [text]),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: {} },
+        { provide: AniListService, useValue: {} },
+        { provide: UtilsService, useValue: utils },
+        { provide: LoggingService, useValue: logging },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: ingest },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: RateLimitService, useValue: rateLimit },
+      ],
+    }).compile();
+
+    // No se llama a onModuleInit, mismo motivo que en los otros describes.
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  const mensaje = (content: string, authorUsername: string, authorRole?: string): ChatMessage => ({
+    _id: '1',
+    content,
+    authorUsername,
+    authorRole,
+    type: 'text',
+    createdAt: new Date().toISOString(),
+  });
+
+  const invocar = (content: string, authorUsername: string, authorRole?: string) =>
+    (service as unknown as BotServiceConDispatcher).handleNewChatMessage(
+      mensaje(content, authorUsername, authorRole),
+    );
+
+  /** La ingesta al grafo (ingestSocial) es fire-and-forget. */
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('superado el tope, se responde un mensaje fijo y NO se llama al modelo', async () => {
+    rateLimit.check.mockReturnValue(false);
+
+    await invocar('bot decime algo', 'Nico', 'user');
+    await dejarCorrer();
+
+    // La aserción que importa: el modelo NO se llamó. No alcanza con "se
+    // mandó algún mensaje" — eso también sería cierto si el guard fallara y
+    // el mensaje enviado fuera la respuesta real del modelo.
+    expect(chat.chat).not.toHaveBeenCalled();
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Nico'));
+    expect(socket.sendMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining('respuesta del modelo'),
+    );
+    expect(rateLimit.check).toHaveBeenCalledWith('Nico', 'user');
+  });
+
+  it('superado el tope, un admin sí llega al modelo', async () => {
+    // El propio RateLimitService ya exime a admin/superAdmin, pero el mock
+    // de este describe no reimplementa esa lógica — lo que se prueba acá es
+    // que BotService le pasa el rol al guard y respeta lo que responda.
+    rateLimit.check.mockReturnValue(true);
+
+    await invocar('bot decime algo', 'Nico', 'admin');
+    await dejarCorrer();
+
+    expect(rateLimit.check).toHaveBeenCalledWith('Nico', 'admin');
+    expect(chat.chat).toHaveBeenCalled();
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('respuesta del modelo'));
+  });
+
+  it('por debajo del tope, todo funciona igual que antes', async () => {
+    rateLimit.check.mockReturnValue(true);
+
+    await invocar('bot decime algo', 'Nico', 'user');
+    await dejarCorrer();
+
+    expect(chat.chat).toHaveBeenCalledWith('bot decime algo', 'Aria', 'Nico');
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('respuesta del modelo'));
   });
 });

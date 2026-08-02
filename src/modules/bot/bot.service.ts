@@ -12,6 +12,14 @@ import { GraphCacheService } from '../graph/graph-cache.service';
 import { GraphUserService, UserFact, MIN_FORGET_TERM_LENGTH } from '../graph/graph-user.service';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
+import { RateLimitService } from './rate-limit.service';
+
+/**
+ * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
+ * estático a propósito: no llama al modelo para generarlo (eso sería pagar
+ * tokens justo para avisar que no hay más tokens para esa persona).
+ */
+const RATE_LIMITED_MESSAGE = '⏳ Estás mandando mensajes muy seguido. Esperá un poco antes de volver a escribirme.';
 
 /**
  * Etiquetas legibles en segunda persona para cada tipo de arista que puede
@@ -59,6 +67,7 @@ export class BotService implements OnModuleInit {
     private readonly graphCacheService: GraphCacheService,
     private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
+    private readonly rateLimitService: RateLimitService,
   ) {}
 
   async onModuleInit() {
@@ -158,6 +167,17 @@ export class BotService implements OnModuleInit {
     if (authorUsername === 'Sleepy Ash' && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
       this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
+      return;
+    }
+
+    // Guard de costo por usuario (Task 4, fase 5a): va acá, INMEDIATAMENTE
+    // antes de la única llamada al modelo del dispatcher normal — no al
+    // principio del método. Los fast-paths de arriba (música, video, usuarios
+    // online) y los tres comandos (!personality, !quesabes, !olvida) ya
+    // cortaron antes si aplicaban, y ninguno de ellos cuesta tokens: limitarlos
+    // sería peor que no limitar nada.
+    if (!this.rateLimitService.check(authorUsername, authorRole)) {
+      this.sendBotMessage(`@${authorUsername} ${RATE_LIMITED_MESSAGE}`);
       return;
     }
 

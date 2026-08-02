@@ -22,6 +22,13 @@ export default () => ({
     // guardrails irrompibles (sin hate speech a grupos, amenazas, menores,
     // doxxing — ver chat.service.ts).
     personality: (process.env.BOT_PERSONALITY === 'unfiltered' ? 'unfiltered' : 'default') as 'default' | 'unfiltered',
+    // Tope de llamadas al modelo por usuario y por hora (ventana móvil,
+    // ver RateLimitService). No limita los fast-paths deterministas
+    // (música, video, usuarios online) ni los comandos !personality/
+    // !quesabes/!olvida — ninguno de esos cuesta tokens. admin/superAdmin
+    // nunca se limitan. RATE_LIMIT_PER_HOUR=0 desactiva el límite por
+    // completo (todos pasan) — interruptor de emergencia sin tocar código.
+    rateLimitPerHour: parseInt(process.env.RATE_LIMIT_PER_HOUR || '20', 10),
   },
 
   // Music Configuration
