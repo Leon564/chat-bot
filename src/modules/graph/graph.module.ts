@@ -8,6 +8,7 @@ import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
 import { GraphCacheService } from './graph-cache.service';
+import { GraphContextService } from './graph-context.service';
 
 /**
  * Módulo autónomo del grafo. No importa ningún otro módulo del bot a
@@ -23,7 +24,7 @@ import { GraphCacheService } from './graph-cache.service';
       { name: Memory.name, schema: MemorySchema },
     ]),
   ],
-  providers: [GraphService, GraphIngestService, GraphMigrationService, GraphCacheService],
-  exports: [GraphService, GraphIngestService, GraphCacheService, MongooseModule],
+  providers: [GraphService, GraphIngestService, GraphMigrationService, GraphCacheService, GraphContextService],
+  exports: [GraphService, GraphIngestService, GraphCacheService, GraphContextService, MongooseModule],
 })
 export class GraphModule {}
