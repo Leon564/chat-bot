@@ -42,6 +42,16 @@ export interface TopEdge {
    * leen `label`/`weight`/`type`/`nodeType`.
    */
   lastSeenAt: Date;
+  /**
+   * Identidad canónica del nodo destino (`GraphNode.key`), no su `label`.
+   * Se agrega en la fase 4 (`graph-context.service.ts`) para poder comparar
+   * "¿esta arista apunta al mismo nodo que resolvió la pregunta?" por
+   * identidad real — comparar por `label` normalizado se rompe apenas un
+   * nodo tiene `key` e_id distintos de su label (p. ej. las obras de AniList,
+   * cuyo `key` es `anilist:<id>` y el `label` es el título). No rompe a los
+   * llamadores existentes, que no leen este campo.
+   */
+  key: string;
 }
 
 @Injectable()
@@ -241,6 +251,7 @@ export class GraphService {
             lastSeenAt: 1,
             label: '$node.label',
             nodeType: '$node.type',
+            key: '$node.key',
           },
         },
       ])
@@ -296,6 +307,7 @@ export class GraphService {
             lastSeenAt: 1,
             label: '$node.label',
             nodeType: '$node.type',
+            key: '$node.key',
           },
         },
       ])

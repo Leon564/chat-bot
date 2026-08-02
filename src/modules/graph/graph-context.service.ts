@@ -61,9 +61,9 @@ export class GraphContextService {
 
       const edges = await this.graph.topEdges(userNode._id, CONTEXT_EDGE_TYPES, MAX_EDGES);
 
-      const highlight = await this.resolveHighlight(message, edges);
+      if (edges.length === 0) return '';
 
-      if (edges.length === 0 && !highlight) return '';
+      const highlight = await this.resolveHighlight(message, edges);
 
       const line = this.render(userNode.label || username, edges, highlight);
       return this.truncate(line);
@@ -79,17 +79,22 @@ export class GraphContextService {
    * arista — para señalarlo explícitamente en la línea. `null` si no hay
    * match, o si el match no tiene ninguna arista real del usuario (no se
    * inventa relevancia sobre un nodo que el usuario nunca tocó).
+   *
+   * La comparación es por `key` (identidad real del nodo, vía `TopEdge.key`),
+   * no por `label` normalizado: un nodo `work` ingresado desde AniList tiene
+   * `key = 'anilist:<id>'` y `label` = título mostrable — son distintos a
+   * propósito (ver `GraphIngestService.ingestAniList`), así que comparar por
+   * label calzaría sólo por coincidencia en fixtures donde ambos son iguales,
+   * y fallaría en silencio para esas obras en producción.
    */
   private async resolveHighlight(message: string, edges: TopEdge[]): Promise<string | null> {
-    if (edges.length === 0) return null;
-
     const candidates = this.extractCandidates(message);
     if (candidates.length === 0) return null;
 
     const node = await this.graph.resolveAnyAlias(candidates, MENTIONABLE_NODE_TYPES);
     if (!node) return null;
 
-    const matchedEdge = edges.find((e) => this.graph.normalizeKey(e.label) === node.key);
+    const matchedEdge = edges.find((e) => e.key === node.key);
     return matchedEdge ? matchedEdge.label : null;
   }
 

@@ -89,18 +89,33 @@ describe('GraphContextService', () => {
     expect(linea.indexOf('Mucho')).toBeLessThan(linea.indexOf('Poco'));
   });
 
-  it('distingue lo que le gusta de lo que ya se le recomendó', async () => {
+  it('distingue lo que le gusta de lo que ya se le recomendó — por estructura, no sólo presencia', async () => {
     const { u } = await sembrarGusto('Nico', 'Berserk');
     const rec = await graph.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
     await graph.upsertEdge({ from: u._id, to: rec!._id, type: 'recommended_to', source: 'signal' });
 
     const linea = await service.build('Nico', 'hola');
+    const lower = linea.toLowerCase();
 
-    // Las dos aparecen, pero en secciones distintas — el prompt tiene que
-    // poder distinguir "le gusta" de "ya se lo recomendé".
-    expect(linea).toContain('Berserk');
-    expect(linea).toContain('ORV');
-    expect(linea.toLowerCase()).toContain('recomend');
+    const gustaIdx = lower.indexOf('gusta');
+    const recomendIdx = lower.indexOf('recomend');
+    const berserkIdx = lower.indexOf('berserk');
+    const orvIdx = lower.indexOf('orv');
+
+    expect(gustaIdx).toBeGreaterThanOrEqual(0);
+    expect(recomendIdx).toBeGreaterThan(gustaIdx);
+
+    // Berserk cuelga de la sección "le gusta": aparece entre su marcador y el
+    // de recomendaciones, nunca después.
+    expect(berserkIdx).toBeGreaterThan(gustaIdx);
+    expect(berserkIdx).toBeLessThan(recomendIdx);
+
+    // ORV cuelga de la sección de recomendaciones. Esta aserción es la que
+    // detectaría un bug que junta todo en un solo balde (p. ej. renderizar
+    // "ya le recomendé ORV, Berserk"): ahí Berserk reaparecería después del
+    // marcador de recomendaciones, y esta línea fallaría.
+    expect(orvIdx).toBeGreaterThan(recomendIdx);
+    expect(lower.slice(recomendIdx)).not.toContain('berserk');
   });
 
   it('destaca la obra que la pregunta menciona, si el usuario tiene relación con ella', async () => {
@@ -109,11 +124,17 @@ describe('GraphContextService', () => {
 
     const linea = await service.build('Nico', 'bot qué opinás de berserk?');
 
-    // Berserk es lo que se preguntó: tiene que estar, y el test verifica que
-    // la línea lo señala explícitamente, no que aparezca por casualidad al
-    // estar entre los gustos.
-    expect(linea.toLowerCase()).toContain('berserk');
-    expect(linea.toLowerCase()).toMatch(/pregunt|sobre esto|justo/);
+    // No alcanza con que "Berserk" esté en algún lado (ya está entre los
+    // gustos) ni con que exista ALGÚN resaltado: hay que atar el resaltado
+    // al label concreto que se preguntó.
+    expect(linea).toMatch(/preguntó por berserk/i);
+
+    // Caso negativo: si `resolveHighlight` matcheara el nodo equivocado,
+    // el resaltado señalaría la otra obra que el usuario también tiene entre
+    // sus gustos — esta aserción lo detectaría.
+    const resaltado = linea.match(/preguntó por ([^.;]+)/i);
+    expect(resaltado).not.toBeNull();
+    expect(resaltado![1].toLowerCase()).not.toContain('vinland');
   });
 
   it('respeta el tope de caracteres', async () => {
@@ -124,6 +145,28 @@ describe('GraphContextService', () => {
     const linea = await service.build('Nico', 'hola');
 
     expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+  });
+
+  it('trunca en un límite de palabra completo cuando una sola arista ya supera el tope', async () => {
+    // Con MAX_EDGES=6 acotando la consulta, 40 obras cortas nunca fuerzan la
+    // rama de recorte de `truncate()` (ver reporte de la ronda anterior).
+    // Este test siembra UNA sola arista cuyo label ya es más largo que
+    // MAX_CHARS por sí solo, para forzar el recorte de forma determinística.
+    const tituloLargo = Array.from({ length: 60 }, (_, i) => `palabra${i}`).join(' ');
+    await sembrarGusto('Nico', tituloLargo);
+
+    const linea = await service.build('Nico', 'hola');
+    const sinTruncar = `Sobre Nico: le gusta ${tituloLargo}.`;
+
+    // Realmente entró a la rama de truncado, no es casualidad que ya calzara.
+    expect(sinTruncar.length).toBeGreaterThan(MAX_CHARS);
+    expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+    expect(linea.length).toBeLessThan(sinTruncar.length);
+
+    // El corte cae en un límite de palabra completo: el último token no es
+    // una palabra partida a mitad de camino.
+    const ultimoToken = linea.trim().split(' ').pop()!;
+    expect(ultimoToken).toMatch(/^palabra\d+$/);
   });
 
   it('no incluye más de MAX_EDGES relaciones', async () => {
