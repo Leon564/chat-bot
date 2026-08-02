@@ -201,7 +201,18 @@ export class ChatService {
       // SAVE_MEMORY de texto libre (Task 4, fase 4b): el sujeto siempre es
       // `username` (nunca se lee del texto del modelo), y la relación tiene
       // que caer en el enum cerrado que valida `GraphIngestService.ingestFact`.
-      if (useMemory && content.includes('SAVE_FACT(')) {
+      //
+      // Revisión final (Important #1): la guarda ANTES comparaba con un
+      // `content.includes('SAVE_FACT(')` literal (mayúsculas exactas, sin
+      // espacio) mientras que el regex de limpieza (abajo, en
+      // `extractFactsFromResponse`) sí toleraba espacio y mayúsculas — un
+      // `SAVE_FACT (likes, Berserk)` o `save_fact(likes, Berserk)` pasaban
+      // esta guarda cerrada en falso y el texto crudo llegaba al chat sin
+      // limpiar NI ingerir. `hasSaveFact` ahora corre el mismo regex que
+      // hace la extracción (una sola fuente de verdad, ver
+      // `createSaveFactRegex`), así que cualquier variante que el regex
+      // reconozca también dispara la limpieza.
+      if (useMemory && ChatService.hasSaveFact(content)) {
         const factResults = this.extractFactsFromResponse(content);
         content = factResults.cleanContent;
 
@@ -220,10 +231,18 @@ export class ChatService {
         // Ingestar todos los hechos extraídos. Sin username no hay sujeto al
         // que atribuírselos — `ingestFact` además revalida relación y objeto,
         // esto es sólo la guarda de "no hay usuario".
+        //
+        // Revisión final (Minor #5): `ingestFact` ya no lanza (todo su cuerpo
+        // está en un try/catch interno que sólo loguea), así que esperarlo
+        // acá sólo sumaba latencia visible a la respuesta sin ganar nada —
+        // son 3-4 viajes a Mongo (touchUser, resolveByAlias, upsertNode,
+        // upsertEdge) por cada hecho. Fire-and-forget, mismo patrón que los
+        // otros cuatro sitios de ingesta del proyecto (todos con su propio
+        // `.catch(() => {})`, ver `bot.service.ts`).
         if (username) {
           for (const fact of factResults.facts) {
-            await this.graphIngest.ingestFact(username, fact.relation, fact.object);
-            console.log(`💾 Hecho ingresado para ${username}: SAVE_FACT(${fact.relation}, ${fact.object})`);
+            void this.graphIngest.ingestFact(username, fact.relation, fact.object).catch(() => {});
+            console.log(`💾 Hecho enviado a ingestar para ${username}: SAVE_FACT(${fact.relation}, ${fact.object})`);
           }
         }
       }
@@ -535,6 +554,58 @@ escribas nada después del delimitador.`
   }
 
   /**
+   * Fuente única para reconocer un `SAVE_FACT(relación, objeto)` en la
+   * respuesta del modelo (revisión final, Important #1). Es una fábrica, no
+   * una regex compartida: al llevar la bandera `g`, el objeto `RegExp` tiene
+   * estado (`lastIndex`) entre llamadas — usar la misma instancia para la
+   * guarda (`test`) y para la extracción (`exec` en bucle) haría que una
+   * pisara el cursor de la otra. Una instancia nueva por uso es más simple
+   * que andar reseteando `lastIndex` a mano.
+   *
+   * Antes de esta ronda, la guarda de `chat()` era un
+   * `content.includes('SAVE_FACT(')` literal — sensible a mayúsculas y sin
+   * tolerancia a espacios — mientras que el regex de limpieza sí toleraba
+   * ambas cosas. La brecha entre los dos criterios dejaba pasar texto crudo
+   * al chat sin ingerir en varios casos reales; ahora la guarda (`hasSaveFact`
+   * más abajo) corre exactamente este mismo regex.
+   *
+   * Reconoce, además del caso feliz `SAVE_FACT(likes, Berserk)`:
+   *   - Espacio entre `SAVE_FACT` y `(`, y cualquier combinación de
+   *     mayúsculas/minúsculas (case-insensitive vía `i`, más `\s*` antes del
+   *     paréntesis).
+   *   - Un objeto con paréntesis internos, p. ej.
+   *     `SAVE_FACT(likes, Attack on Titan (2013))`. La captura del objeto es
+   *     perezosa (`[\s\S]+?`) pero el `)` que la cierra sólo cuenta como
+   *     cierre de la LLAMADA si lo sigue el fin de la respuesta o el
+   *     comienzo de otro `SAVE_FACT(` — así el primer `)` que aparece DENTRO
+   *     del objeto (el de "(2013)") no corta la captura antes de tiempo: el
+   *     motor retrocede y sigue buscando hasta el `)` que de verdad cierra,
+   *     dejando el objeto completo ("Attack on Titan (2013)") y sin un `)`
+   *     suelto en el texto limpio. La alternativa más simple —excluir `)`
+   *     del objeto con `[^)]+`— es la que tenía el bug: corta en el primer
+   *     `)` sin importar si es el de cierre o uno anidado.
+   *   - La llamada truncada a mitad por el tope de `maxLengthResponse`
+   *     (`SAVE_FACT(likes, Berserk`, sin `)` final — el caso más probable,
+   *     no el más raro, porque el prompt pide emitir el `SAVE_FACT` al final
+   *     de la respuesta): si nunca aparece un `)` que satisfaga la condición
+   *     de arriba, se acepta el fin de la cadena como cierre implícito.
+   */
+  private static createSaveFactRegex(): RegExp {
+    return /SAVE_FACT\s*\(\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT\s*\(|$))|$)/gi;
+  }
+
+  /**
+   * Guarda que decide si `content` amerita correr la extracción/limpieza de
+   * SAVE_FACT. Deriva del mismo regex que hace la extracción (`.test()` sobre
+   * una instancia fresca de `createSaveFactRegex()`) para que guarda y regex
+   * nunca puedan volver a desincronizarse como pasaba con el
+   * `.includes('SAVE_FACT(')` literal que reemplaza.
+   */
+  private static hasSaveFact(content: string): boolean {
+    return ChatService.createSaveFactRegex().test(content);
+  }
+
+  /**
    * Extrae los pares (relación, objeto) de todas las llamadas
    * `SAVE_FACT(relación, objeto)` presentes en la respuesta del modelo y
    * devuelve el texto limpio de esas llamadas. Reemplaza a
@@ -557,7 +628,7 @@ escribas nada después del delimitador.`
   } {
     const facts: Array<{ relation: string; object: string }> = [];
 
-    const factRegex = /SAVE_FACT\s*\(\s*([a-z_]+)\s*,\s*([^)]+)\)/gi;
+    const factRegex = ChatService.createSaveFactRegex();
     let match: RegExpExecArray | null;
 
     while ((match = factRegex.exec(content)) !== null) {
@@ -566,12 +637,18 @@ escribas nada después del delimitador.`
       if (relation && object) {
         facts.push({ relation, object });
       }
+
+      // El regex puede "matchear vacío" en el borde final de una llamada
+      // truncada sin objeto (`SAVE_FACT(likes,` sin nada después): sin
+      // avanzar el cursor a mano, `exec` repetiría la misma posición para
+      // siempre. Sólo hace falta cuando el match consumió cero caracteres.
+      if (match.index === factRegex.lastIndex) factRegex.lastIndex++;
     }
 
     // Limpiar el contenido removiendo todas las llamadas SAVE_FACT.
     // CRÍTICO: Preservar {{resumen}} si existe.
     const hasResumenToken = content.includes('{{resumen}}');
-    let cleanContent = content.replace(factRegex, '').trim();
+    let cleanContent = content.replace(ChatService.createSaveFactRegex(), '').trim();
 
     // Restaurar {{resumen}} si se perdió durante la limpieza.
     if (hasResumenToken && !cleanContent.includes('{{resumen}}')) {

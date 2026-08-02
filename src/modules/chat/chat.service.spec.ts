@@ -321,6 +321,59 @@ describe('ChatService — instrumentación de tokens', () => {
       expect(salida).toContain('{{resumen}}');
       expect(salida).not.toContain('SAVE_FACT');
     });
+
+    describe('Revisión final (Important #1) — guarda y regex desincronizados dejaban pasar texto crudo', () => {
+      it('con un espacio entre SAVE_FACT y el paréntesis, igual limpia y extrae', async () => {
+        crearMock.mockResolvedValue(respuesta('¡Anotado! SAVE_FACT (likes, Berserk)'));
+
+        const salida = await service.chat('me gusta berserk', 'Aria', 'Nico');
+
+        // Antes: la guarda literal `.includes('SAVE_FACT(')` no reconocía el
+        // espacio y esta respuesta pasaba cruda al chat sin ingerir nada.
+        expect(salida).not.toContain('SAVE_FACT');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith('Nico', 'likes', 'Berserk');
+      });
+
+      it('con SAVE_FACT en minúsculas, igual limpia y extrae', async () => {
+        crearMock.mockResolvedValue(respuesta('¡Anotado! save_fact(likes, Berserk)'));
+
+        const salida = await service.chat('me gusta berserk', 'Aria', 'Nico');
+
+        expect(salida).not.toContain('save_fact');
+        expect(salida).not.toContain('SAVE_FACT');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith('Nico', 'likes', 'Berserk');
+      });
+
+      it('con la llamada truncada por el tope de maxLengthResponse (sin paréntesis de cierre), igual limpia y extrae', async () => {
+        // El caso más probable, no el más raro: el prompt pide emitir el
+        // SAVE_FACT al final de la respuesta, así que cortar a mitad es lo
+        // esperado cuando la respuesta se acerca al tope de caracteres.
+        crearMock.mockResolvedValue(respuesta('¡Anotado! SAVE_FACT(likes, Berserk'));
+
+        const salida = await service.chat('me gusta berserk', 'Aria', 'Nico');
+
+        expect(salida).not.toContain('SAVE_FACT');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith('Nico', 'likes', 'Berserk');
+      });
+
+      it('con un paréntesis interno en el objeto, extrae el objeto completo y no deja un ")" suelto', async () => {
+        crearMock.mockResolvedValue(
+          respuesta('¡Anotado! SAVE_FACT(likes, Attack on Titan (2013))'),
+        );
+
+        const salida = await service.chat('me gusta AoT', 'Aria', 'Nico');
+
+        expect(salida).not.toContain('SAVE_FACT');
+        // Distingue del bug de `[^)]+`: ese patrón corta en el primer ')'
+        // (el de "(2013)") y deja el ')' externo suelto en el texto visible.
+        expect(salida).not.toContain(')');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith(
+          'Nico',
+          'likes',
+          'Attack on Titan (2013)',
+        );
+      });
+    });
   });
 
   describe('generateSummary — extracción de hechos en lote (Task 5, fase 4b)', () => {
