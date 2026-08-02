@@ -9,7 +9,7 @@ export type PromptBlock =
   | 'IDENTIDAD'
   | 'RESUMEN'
   | 'ONLINE'
-  | 'SAVE_MEMORY';
+  | 'SAVE_FACT';
 
 export const ALL_BLOCKS: PromptBlock[] = [
   'PERSONA',
@@ -19,7 +19,7 @@ export const ALL_BLOCKS: PromptBlock[] = [
   'IDENTIDAD',
   'RESUMEN',
   'ONLINE',
-  'SAVE_MEMORY',
+  'SAVE_FACT',
 ];
 
 export interface PromptInput {
@@ -56,8 +56,8 @@ export class PromptBuilderService {
     if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(input));
 
     const critico = this.buildCritico(input.blocks);
-    const saveMemory = input.blocks.includes('SAVE_MEMORY') ? this.blockSaveMemory(input) : '';
-    const criticoSection = [critico, saveMemory].filter((s) => s.length > 0).join('\n\n');
+    const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(input) : '';
+    const criticoSection = [critico, saveFact].filter((s) => s.length > 0).join('\n\n');
     if (criticoSection.length > 0) sections.push(criticoSection);
 
     sections.push(this.closingLine(input));
@@ -154,32 +154,25 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 - "¿dónde anda kei?" → idem`;
   }
 
-  private blockSaveMemory(input: PromptInput): string {
+  private blockSaveFact(input: PromptInput): string {
     if (!input.useMemory) return '';
-    const memoryInstructions = `SISTEMA DE MEMORIA:
-Si quieres guardar información importante sobre ${input.username}, usa esta función exacta al final de tu respuesta:
-SAVE_MEMORY("información específica y valiosa")
+    return `SISTEMA DE MEMORIA:
+Si ${input.username} revela algo sobre sus gustos, agregá al final de tu respuesta:
+SAVE_FACT(relación, objeto)
 
-Guarda solo:
-- Preferencias del usuario (gustos, géneros favoritos)
-- Recomendaciones específicas hechas
-- Información personal relevante del usuario
-- Datos únicos de la conversación
+Relaciones válidas, sólo estas tres:
+- likes — algo que le gusta
+- dislikes — algo que no le gusta
+- asked_about — algo por lo que preguntó con interés
 
-NO uses SAVE_MEMORY para información genérica o repetitiva.
-La función debe estar en una línea separada al final de tu respuesta.`;
-    const examples = `EJEMPLOS DE USO DE MEMORIA:
-Correcto:
-Usuario: "Me gusta mucho Attack on Titan"
-Respuesta: "¡Excelente elección! Attack on Titan es increíble. SAVE_MEMORY("${input.username} le gusta Attack on Titan")"
+El sujeto siempre es ${input.username}: no lo repitas.
+El objeto es una obra, un género o un tema concreto, sin adjetivos.
 
-Usuario: "Tengo 25 años"
-Respuesta: "Perfecto, a los 25 tienes mucha experiencia con anime 😊 SAVE_MEMORY("${input.username} tiene 25 años")"
+Ejemplos:
+"Me encanta Attack on Titan" → SAVE_FACT(likes, Attack on Titan)
+"No soporto el ecchi" → SAVE_FACT(dislikes, ecchi)
 
-Incorrecto:
-SAVE_MEMORY("El usuario preguntó algo") ❌
-SAVE_MEMORY("Información general") ❌`;
-    return `${memoryInstructions}\n\n${examples}`;
+NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.`;
   }
 
   /**

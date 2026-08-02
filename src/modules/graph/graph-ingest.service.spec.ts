@@ -10,6 +10,7 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
+import { UtilsService } from '../../common/utils/utils.service';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 
 const baseMsg = (over: Partial<ChatMessage> = {}): ChatMessage => ({
@@ -35,7 +36,7 @@ describe('GraphIngestService — señales sociales', () => {
           { name: GraphEdge.name, schema: GraphEdgeSchema },
         ]),
       ],
-      providers: [GraphService, GraphIngestService],
+      providers: [GraphService, GraphIngestService, UtilsService],
     }).compile();
 
     connection = moduleRef.get<Connection>(getConnectionToken());
@@ -340,6 +341,116 @@ describe('GraphIngestService — señales sociales', () => {
       const nico = await graph.findNode('user', 'nico');
       const top = await graph.topEdges(nico!._id, ['requested'], 10);
       expect(top[0].weight).toBe(2);
+    });
+  });
+
+  describe('ingesta de hechos (SAVE_FACT — Task 4, fase 4b)', () => {
+    it('crea la arista likes hacia un nodo topic cuando el objeto no resuelve a nada existente', async () => {
+      await ingest.ingestFact('Nico', 'likes', 'Attack on Titan');
+
+      const topic = await graph.findNode('topic', 'attack on titan');
+      expect(topic).not.toBeNull();
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['likes'], 10);
+      expect(top).toHaveLength(1);
+      expect(top[0].label).toBe('Attack on Titan');
+      expect(top[0].nodeType).toBe('topic');
+    });
+
+    it('enlaza contra un nodo work existente cuando el objeto resuelve por alias, sin crear un topic aparte', async () => {
+      await graph.upsertNode({
+        type: 'work',
+        key: 'anilist:105398',
+        label: 'Solo Leveling',
+        aliases: ['solo leveling'],
+      });
+
+      await ingest.ingestFact('Nico', 'likes', 'Solo Leveling');
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['likes'], 10);
+      expect(top).toHaveLength(1);
+      // La arista apunta al nodo `work` ya existente (identidad por `key`),
+      // no a un `topic` nuevo con el mismo label — si resolviera mal, esta
+      // aserción pasaría igual con un topic llamado "Solo Leveling"; el
+      // conteo de abajo es lo que distingue ambos caminos.
+      expect(top[0].key).toBe('anilist:105398');
+
+      const topics = await connection.collection('bot_nodes').countDocuments({ type: 'topic' });
+      expect(topics).toBe(0);
+    });
+
+    it('acepta dislikes y asked_about, no sólo likes', async () => {
+      await ingest.ingestFact('Nico', 'dislikes', 'el ecchi');
+      await ingest.ingestFact('Nico', 'asked_about', 'Bleach');
+
+      const nico = await graph.findNode('user', 'nico');
+      const dislikes = await graph.topEdges(nico!._id, ['dislikes'], 10);
+      const askedAbout = await graph.topEdges(nico!._id, ['asked_about'], 10);
+      expect(dislikes).toHaveLength(1);
+      expect(dislikes[0].label).toBe('el ecchi');
+      expect(askedAbout).toHaveLength(1);
+      expect(askedAbout[0].label).toBe('Bleach');
+    });
+
+    it('descarta una relación fuera del enum cerrado, sin crear ningún nodo ni arista', async () => {
+      await ingest.ingestFact('Nico', 'hates', 'el ecchi');
+
+      // Ni siquiera el nodo `user` se crea: la validación de relación corta
+      // antes de tocar el grafo. Si tocara el grafo primero, este conteo
+      // sería 1 (el nodo user) aunque la relación inválida se rechazara bien.
+      const nodos = await connection.collection('bot_nodes').countDocuments({});
+      const aristas = await connection.collection('bot_edges').countDocuments({});
+      expect(nodos).toBe(0);
+      expect(aristas).toBe(0);
+    });
+
+    it('descarta un objeto vacío o de menos de 3 caracteres', async () => {
+      await ingest.ingestFact('Nico', 'likes', '');
+      await ingest.ingestFact('Nico', 'likes', 'ok');
+
+      const aristas = await connection.collection('bot_edges').countDocuments({ type: 'likes' });
+      expect(aristas).toBe(0);
+    });
+
+    it('sanitiza el objeto (tokens {{...}}, BBCode, prefijo de color) antes de guardarlo', async () => {
+      await ingest.ingestFact(
+        'Nico',
+        'likes',
+        '^#ff0000 [img]http://x/y.png[/img]Attack on Titan {{resumen}}',
+      );
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['likes'], 10);
+      expect(top).toHaveLength(1);
+      // Si la sanitización no corriera, el label conservaría el prefijo de
+      // color, el BBCode o el token — cualquiera de esos sería visible acá.
+      expect(top[0].label).toBe('Attack on Titan');
+    });
+
+    it('es idempotente: guardar el mismo hecho dos veces sube el peso de la arista a 2, no la duplica', async () => {
+      await ingest.ingestFact('Nico', 'likes', 'Attack on Titan');
+      await ingest.ingestFact('Nico', 'likes', 'Attack on Titan');
+
+      const nico = await graph.findNode('user', 'nico');
+      const top = await graph.topEdges(nico!._id, ['likes'], 10);
+      expect(top).toHaveLength(1);
+      expect(top[0].weight).toBe(2);
+    });
+
+    it('no lanza cuando el grafo falla', async () => {
+      jest.spyOn(graph, 'upsertNode').mockRejectedValueOnce(new Error('mongo caído'));
+
+      await expect(
+        ingest.ingestFact('Nico', 'likes', 'Attack on Titan'),
+      ).resolves.toBeUndefined();
+
+      // La falla ocurrió dentro de touchUser (el primer upsertNode de la
+      // llamada) — sin el try/catch, este await hubiera rechazado en vez de
+      // resolver undefined.
+      const total = await connection.collection('bot_edges').countDocuments({});
+      expect(total).toBe(0);
     });
   });
 });

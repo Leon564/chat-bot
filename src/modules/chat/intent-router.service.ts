@@ -56,9 +56,13 @@ export class IntentRouterService {
   private static readonly IDENTIDAD_RE =
     /\b(creador|padre|madre|hermano|hermana|quien te|quien sos|reglas|discord|proposito|para que servis|para que sirves)\b/;
 
-  // SAVE_MEMORY: primera persona con verbo de gusto o de estado, o una
+  // SAVE_FACT: primera persona con verbo de gusto o de estado, o una
   // afirmación sobre el usuario. Sólo se evalúa si opts.useMemory === true.
-  private static readonly SAVE_MEMORY_RE =
+  // La heurística de cuándo incluir el bloque no cambió con el paso de
+  // SAVE_MEMORY a SAVE_FACT (Task 4 de la fase 4b) — sigue siendo "el
+  // mensaje trae un hecho y useMemory está activo"; lo que cambió es sólo el
+  // nombre del bloque y la forma en que el modelo lo emite.
+  private static readonly SAVE_FACT_RE =
     /\b(me gusta|me encanta|odio|prefiero|soy|tengo|vivo en|estudio|trabajo)\b/;
 
   // ANILIST — condición 1: vocabulario de media concreto.
@@ -225,8 +229,8 @@ export class IntentRouterService {
       included.add('ONLINE');
     }
 
-    if (opts.useMemory && IntentRouterService.SAVE_MEMORY_RE.test(normalized)) {
-      included.add('SAVE_MEMORY');
+    if (opts.useMemory && IntentRouterService.SAVE_FACT_RE.test(normalized)) {
+      included.add('SAVE_FACT');
     }
 
     return ALL_BLOCKS.filter((block) => included.has(block));

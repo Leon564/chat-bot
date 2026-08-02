@@ -12,11 +12,11 @@ import { ConfigService } from '@nestjs/config';
 import { ChatService } from './chat.service';
 import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
+import { GraphIngestService } from '../graph/graph-ingest.service';
 
 const respuesta = (content: string, prompt = 100, completion = 20) => ({
   choices: [{ message: { content } }],
@@ -30,6 +30,8 @@ describe('ChatService — instrumentación de tokens', () => {
   let builder: { build: jest.Mock };
   let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
   let graphContext: { build: jest.Mock };
+  let graphIngest: { ingestFact: jest.Mock };
+  let configValues: Record<string, unknown>;
 
   beforeEach(async () => {
     crearMock.mockReset();
@@ -44,19 +46,21 @@ describe('ChatService — instrumentación de tokens', () => {
       isSimpleGreeting: jest.fn().mockReturnValue(false),
     };
     graphContext = { build: jest.fn().mockResolvedValue('') };
+    graphIngest = { ingestFact: jest.fn().mockResolvedValue(undefined) };
 
+    // Expuesto como variable de nivel de describe (en vez de local a este
+    // beforeEach) para que los tests de SAVE_FACT puedan pisar
+    // 'bot.useMemory' a true sin duplicar todo el objeto de config.
+    configValues = {
+      'bot.useMemory': false,
+      'bot.maxLengthResponse': 200,
+      'bot.personality': 'default',
+      'openai.model': 'modelo-de-prueba',
+      'openai.apiKey': 'k',
+      'openai.baseURL': 'http://localhost',
+    };
     const config = {
-      get: jest.fn((clave: string) => {
-        const valores: Record<string, unknown> = {
-          'bot.useMemory': false,
-          'bot.maxLengthResponse': 200,
-          'bot.personality': 'default',
-          'openai.model': 'modelo-de-prueba',
-          'openai.apiKey': 'k',
-          'openai.baseURL': 'http://localhost',
-        };
-        return valores[clave];
-      }),
+      get: jest.fn((clave: string) => configValues[clave]),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -65,11 +69,11 @@ describe('ChatService — instrumentación de tokens', () => {
         { provide: ConfigService, useValue: config },
         { provide: ContextService, useValue: context },
         { provide: UsageService, useValue: usage },
-        { provide: MemoryService, useValue: { getMemory: jest.fn().mockResolvedValue([]), saveMemory: jest.fn() } },
         { provide: LoggingService, useValue: { getLastMessages: jest.fn().mockResolvedValue([{ user: 'Nico', message: 'hola' }]) } },
         { provide: PromptBuilderService, useValue: builder },
         { provide: IntentRouterService, useValue: router },
         { provide: GraphContextService, useValue: graphContext },
+        { provide: GraphIngestService, useValue: graphIngest },
       ],
     }).compile();
 
@@ -263,5 +267,59 @@ describe('ChatService — instrumentación de tokens', () => {
     expect(salida).toContain('hola');
     expect(crearMock).toHaveBeenCalled();
     expect(usage.record.mock.calls[0][0].intents).not.toContain('graph');
+  });
+
+  describe('SAVE_FACT (Task 4, fase 4b — reemplaza al SAVE_MEMORY de texto libre)', () => {
+    beforeEach(() => {
+      configValues['bot.useMemory'] = true;
+    });
+
+    it('extrae un SAVE_FACT de la respuesta y lo saca del texto que ve el usuario', async () => {
+      crearMock.mockResolvedValue(respuesta('¡Genial elección! SAVE_FACT(likes, Attack on Titan)'));
+
+      const salida = await service.chat('me encanta attack on titan', 'Aria', 'Nico');
+
+      // Distingue de un bug que sólo ingiere sin limpiar el texto visible.
+      expect(salida).not.toContain('SAVE_FACT');
+      expect(salida).toContain('¡Genial elección!');
+      expect(graphIngest.ingestFact).toHaveBeenCalledWith('Nico', 'likes', 'Attack on Titan');
+    });
+
+    it('extrae varios SAVE_FACT de una misma respuesta', async () => {
+      crearMock.mockResolvedValue(
+        respuesta('¡Anotado! SAVE_FACT(likes, Attack on Titan) SAVE_FACT(dislikes, ecchi)'),
+      );
+
+      const salida = await service.chat('me gusta AoT pero odio el ecchi', 'Aria', 'Nico');
+
+      expect(salida).not.toContain('SAVE_FACT');
+      // Ambos hechos se ingieren, no sólo el primero (un bug que cortara en
+      // el primer match dejaría esta expectativa en 1 llamada).
+      expect(graphIngest.ingestFact).toHaveBeenCalledTimes(2);
+      expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(1, 'Nico', 'likes', 'Attack on Titan');
+      expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(2, 'Nico', 'dislikes', 'ecchi');
+    });
+
+    it('una respuesta sin SAVE_FACT no genera ingesta', async () => {
+      crearMock.mockResolvedValue(respuesta('sólo una respuesta normal, sin hechos que guardar'));
+
+      await service.chat('hola, qué tal', 'Aria', 'Nico');
+
+      expect(graphIngest.ingestFact).not.toHaveBeenCalled();
+    });
+
+    it('el token {{resumen}} sobrevive a la limpieza del SAVE_FACT', async () => {
+      crearMock.mockResolvedValue(
+        respuesta('¡Va el resumen! {{resumen}} SAVE_FACT(likes, Attack on Titan)'),
+      );
+
+      const salida = await service.chat('dame un resumen y también me gusta AoT', 'Aria', 'Nico');
+
+      // Si la limpieza de SAVE_FACT no tuviera la protección explícita del
+      // token, este `toContain` fallaría igual que fallaba antes de que
+      // `extractMemoryFromResponse` ganara la salvaguarda equivalente.
+      expect(salida).toContain('{{resumen}}');
+      expect(salida).not.toContain('SAVE_FACT');
+    });
   });
 });

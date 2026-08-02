@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
-import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
@@ -9,6 +8,7 @@ import { LlmKind } from '../../common/schemas/llm-usage.schema';
 import { PromptBuilderService, ALL_BLOCKS } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
+import { GraphIngestService } from '../graph/graph-ingest.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -33,13 +33,13 @@ export class ChatService {
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly memoryService: MemoryService,
     private readonly loggingService: LoggingService,
     private readonly contextService: ContextService,
     private readonly usageService: UsageService,
     private readonly promptBuilder: PromptBuilderService,
     private readonly intentRouter: IntentRouterService,
     private readonly graphContext: GraphContextService,
+    private readonly graphIngest: GraphIngestService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -196,12 +196,15 @@ export class ChatService {
         console.log(`📍 Posición del token en respuesta original: ${content.indexOf('{{resumen}}')}`);
       }
       
-      // Procesar función de memoria si está habilitada
-      if (useMemory && content.includes('SAVE_MEMORY(')) {
-        const memoryResults = this.extractMemoryFromResponse(content, username);
-        content = memoryResults.cleanContent;
-        
-        // Verificación adicional: el token debería estar preservado por extractMemoryFromResponse
+      // Procesar hechos SAVE_FACT si la memoria está habilitada. Reemplaza al
+      // SAVE_MEMORY de texto libre (Task 4, fase 4b): el sujeto siempre es
+      // `username` (nunca se lee del texto del modelo), y la relación tiene
+      // que caer en el enum cerrado que valida `GraphIngestService.ingestFact`.
+      if (useMemory && content.includes('SAVE_FACT(')) {
+        const factResults = this.extractFactsFromResponse(content);
+        content = factResults.cleanContent;
+
+        // Verificación adicional: el token debería estar preservado por extractFactsFromResponse
         const finalContainsResumenToken = content.includes('{{resumen}}');
         if (containsResumenToken && !finalContainsResumenToken) {
           console.log('⚠️ FALLO CRÍTICO: Token {{resumen}} se perdió a pesar de las protecciones, forzando restauración...');
@@ -212,12 +215,14 @@ export class ChatService {
             content += ' {{resumen}}';
           }
         }
-        
-        // Guardar todas las memorias extraídas
-        for (const memoryItem of memoryResults.memoriesToSave) {
-          if (this.isMemoryWorthSaving(memoryItem, username)) {
-            await this.memoryService.saveMemory(memoryItem, username);
-            console.log(`💾 Memoria guardada para ${username}: ${memoryItem}`);
+
+        // Ingestar todos los hechos extraídos. Sin username no hay sujeto al
+        // que atribuírselos — `ingestFact` además revalida relación y objeto,
+        // esto es sólo la guarda de "no hay usuario".
+        if (username) {
+          for (const fact of factResults.facts) {
+            await this.graphIngest.ingestFact(username, fact.relation, fact.object);
+            console.log(`💾 Hecho ingresado para ${username}: SAVE_FACT(${fact.relation}, ${fact.object})`);
           }
         }
       }
@@ -386,91 +391,55 @@ FORMATO SUGERIDO:
       .catch(() => {});
   }
 
-  private extractMemoryFromResponse(content: string, username?: string): { cleanContent: string; memoriesToSave: string[] } {
-    const memoriesToSave: string[] = [];
-    
-    // Buscar todas las instancias de SAVE_MEMORY usando regex más robusto
-    const memoryRegex = /SAVE_MEMORY\s*\(\s*['"](.*?)['"]\s*\)/g;
-    let match;
-    
-    while ((match = memoryRegex.exec(content)) !== null) {
-      const memoryContent = match[1].trim();
-      if (memoryContent && memoryContent.length > 5) {
-        memoriesToSave.push(memoryContent);
+  /**
+   * Extrae los pares (relación, objeto) de todas las llamadas
+   * `SAVE_FACT(relación, objeto)` presentes en la respuesta del modelo y
+   * devuelve el texto limpio de esas llamadas. Reemplaza a
+   * `extractMemoryFromResponse` (Task 4, fase 4b): antes se extraía una
+   * frase de texto libre que había que clasificar con heurísticas
+   * (`isMemoryWorthSaving`, ya eliminado); ahora la validez de cada hecho la
+   * da el enum cerrado de relaciones en `GraphIngestService.ingestFact`, no
+   * un conjunto de patrones acá.
+   *
+   * Conserva la misma protección explícita del token `{{resumen}}` que tenía
+   * `extractMemoryFromResponse`: si la respuesta traía el token antes de
+   * limpiar los SAVE_FACT y la limpieza (por la razón que sea) se lo llevó
+   * puesto, se restaura al final en vez de perderlo — un resumen pedido no
+   * puede volverse silenciosamente en un resumen que nunca se genera sólo
+   * porque el modelo también emitió un hecho en la misma respuesta.
+   */
+  private extractFactsFromResponse(content: string): {
+    cleanContent: string;
+    facts: Array<{ relation: string; object: string }>;
+  } {
+    const facts: Array<{ relation: string; object: string }> = [];
+
+    const factRegex = /SAVE_FACT\s*\(\s*([a-z_]+)\s*,\s*([^)]+)\)/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = factRegex.exec(content)) !== null) {
+      const relation = match[1].trim().toLowerCase();
+      const object = match[2].trim();
+      if (relation && object) {
+        facts.push({ relation, object });
       }
     }
-    
-    // Limpiar el contenido removiendo todas las llamadas SAVE_MEMORY
-    // CRÍTICO: Preservar {{resumen}} si existe
+
+    // Limpiar el contenido removiendo todas las llamadas SAVE_FACT.
+    // CRÍTICO: Preservar {{resumen}} si existe.
     const hasResumenToken = content.includes('{{resumen}}');
-    let cleanContent = content.replace(memoryRegex, '').trim();
-    
-    // Restaurar {{resumen}} si se perdió durante la limpieza
+    let cleanContent = content.replace(factRegex, '').trim();
+
+    // Restaurar {{resumen}} si se perdió durante la limpieza.
     if (hasResumenToken && !cleanContent.includes('{{resumen}}')) {
-      console.log('🔧 Restaurando token {{resumen}} después de limpiar memoria...');
+      console.log('🔧 Restaurando token {{resumen}} después de limpiar SAVE_FACT...');
       cleanContent += ' {{resumen}}';
     }
-    
-    // Limpiar líneas vacías múltiples
-    cleanContent = cleanContent.replace(/\n\s*\n\s*\n/g, '\n\n');
-    
-    return { cleanContent, memoriesToSave };
-  }
 
-  private isMemoryWorthSaving(memory: string, username?: string): boolean {
-    if (!memory || memory.trim().length < 10) return false;
-    
-    // Lista de patrones que NO valen la pena guardar
-    const unworthyPatterns = [
-      /información general/i,
-      /el usuario preguntó/i,
-      /usuario mencionó/i,
-      /conversación sobre/i,
-      /hablamos de/i,
-      /^(sí|si|no|ok|okay|bien|bueno|perfecto)$/i,
-      /^gracias/i,
-      /^hola/i,
-      /debo recordar/i,
-      /es importante/i,
-      /tomar nota/i
-    ];
-    
-    // Verificar si coincide con algún patrón no deseado
-    const isUnworthy = unworthyPatterns.some(pattern => pattern.test(memory));
-    if (isUnworthy) {
-      console.log(`🚫 Memoria descartada por ser genérica: "${memory}"`);
-      return false;
-    }
-    
-    // Patrones que SÍ valen la pena (información específica y útil)
-    const worthyPatterns = [
-      /le gusta|favorito|prefiere/i,
-      /años|edad/i,
-      /país|ciudad|lugar/i,
-      /anime:|manga:|manhwa:/i,
-      /recomendación/i,
-      /nombre.*es/i,
-      /trabaja|estudia|profesión/i
-    ];
-    
-    const isWorthy = worthyPatterns.some(pattern => pattern.test(memory));
-    if (isWorthy) {
-      console.log(`✅ Memoria aprobada por ser específica: "${memory}"`);
-      return true;
-    }
-    
-    // Si no coincide con ningún patrón, evaluar por longitud y contenido específico
-    const hasSpecificInfo = memory.includes(username || '') || 
-                           memory.length > 30 || 
-                           /[A-Z][a-z]+/.test(memory); // Contiene nombres propios
-    
-    if (hasSpecificInfo) {
-      console.log(`✅ Memoria aprobada por contenido específico: "${memory}"`);
-      return true;
-    }
-    
-    console.log(`🤔 Memoria descartada por falta de especificidad: "${memory}"`);
-    return false;
+    // Limpiar líneas vacías múltiples.
+    cleanContent = cleanContent.replace(/\n\s*\n\s*\n/g, '\n\n');
+
+    return { cleanContent, facts };
   }
 
   /**

@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GraphService } from './graph.service';
 import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
+import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 import { AniListResult } from '../anilist/anilist.service';
 import { TrackMeta } from '../../common/interfaces';
+import { UtilsService } from '../../common/utils/utils.service';
 
 /** Las menciones no vienen como campo: llegan inline dentro del contenido. */
 const MENTION_RE = /<@([^>\n\r]+)>/g;
@@ -39,6 +41,18 @@ const GENRE_ES: Record<string, string> = {
 const PERMANENT_UPLOADS = ['catbox', 'filegarden'];
 
 /**
+ * Enum cerrado de relaciones que un `SAVE_FACT` puede emitir (Task 4, fase
+ * 4b). Cualquier otro valor se descarta en `ingestFact` — es la defensa
+ * contra que un usuario plante una relación arbitraria en el grafo; no hay
+ * lista de strings que sanitizar porque no hay relación inventada que pase
+ * esta validación.
+ */
+const FACT_RELATIONS: EdgeType[] = ['likes', 'dislikes', 'asked_about'];
+
+/** Largo mínimo del objeto de un hecho ya sanitizado. Por debajo de esto no vale la pena persistirlo. */
+const FACT_OBJECT_MIN_LEN = 3;
+
+/**
  * Traduce eventos del bot a escrituras en el grafo. Todo es best-effort: una
  * falla acá se loguea y se sigue. Perder una arista nunca justifica perder
  * una respuesta al usuario.
@@ -47,7 +61,10 @@ const PERMANENT_UPLOADS = ['catbox', 'filegarden'];
 export class GraphIngestService {
   private readonly logger = new Logger(GraphIngestService.name);
 
-  constructor(private readonly graph: GraphService) {}
+  constructor(
+    private readonly graph: GraphService,
+    private readonly utilsService: UtilsService,
+  ) {}
 
   /** Crea o refresca el nodo de un usuario. */
   async touchUser(username: string): Promise<GraphNodeDocument | null> {
@@ -242,6 +259,58 @@ export class GraphIngestService {
       }
     } catch (err) {
       this.logger.warn(`Ingesta de música falló: ${(err as Error)?.message}`);
+    }
+  }
+
+  /**
+   * Persiste un hecho `SAVE_FACT(relación, objeto)` (Task 4, fase 4b). El
+   * sujeto siempre es `username` — nunca se lee del texto del modelo, así
+   * que no hay forma de que un usuario le haga escribir un hecho sobre otra
+   * persona.
+   *
+   * Dos validaciones cierran la puerta a que un usuario plante contenido
+   * arbitrario en el grafo:
+   *   - `relation` tiene que ser una de `FACT_RELATIONS` (enum cerrado, sin
+   *     lista de patrones que mantener).
+   *   - `object` pasa por `sanitizeMemoryContent` (misma limpieza que usaba
+   *     el memory.json legacy) y se descarta si queda vacío o demasiado
+   *     corto.
+   *
+   * El objeto se intenta resolver primero contra un nodo `work`/`genre`/
+   * `artist` ya conocido (vía alias) para no duplicar "Attack on Titan" como
+   * un `topic` suelto cuando ya existe como `work` desde AniList. Si no
+   * resuelve, se crea (o refuerza) un nodo `topic` con el texto tal cual.
+   */
+  async ingestFact(username: string, relation: string, object: string): Promise<void> {
+    try {
+      if (!FACT_RELATIONS.includes(relation as EdgeType)) return;
+
+      const cleanObject = this.utilsService.sanitizeMemoryContent(object, {
+        minLen: FACT_OBJECT_MIN_LEN,
+      });
+      if (!cleanObject || cleanObject.length < FACT_OBJECT_MIN_LEN) return;
+
+      const user = await this.touchUser(username);
+      if (!user) return;
+
+      const resolved = await this.graph.resolveByAlias(cleanObject, ['work', 'genre', 'artist']);
+      const target =
+        resolved ??
+        (await this.graph.upsertNode({
+          type: 'topic',
+          key: cleanObject,
+          label: cleanObject,
+        }));
+      if (!target) return;
+
+      await this.graph.upsertEdge({
+        from: user._id,
+        to: target._id,
+        type: relation as EdgeType,
+        source: 'fact',
+      });
+    } catch (err) {
+      this.logger.warn(`Ingesta de hecho falló: ${(err as Error)?.message}`);
     }
   }
 }

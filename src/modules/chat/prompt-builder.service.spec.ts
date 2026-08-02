@@ -91,4 +91,26 @@ describe('PromptBuilderService', () => {
       expect(salida).toContain('Navidad');
     });
   });
+
+  describe('bloque SAVE_FACT (Task 4, fase 4b — reemplaza a SAVE_MEMORY)', () => {
+    it('el bloque SAVE_MEMORY ya no menciona SAVE_MEMORY', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA', 'SAVE_FACT'], useMemory: true }));
+      expect(salida).not.toContain('SAVE_MEMORY');
+    });
+
+    it('menciona SAVE_FACT y las tres relaciones válidas', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA', 'SAVE_FACT'], useMemory: true }));
+      expect(salida).toContain('SAVE_FACT');
+      expect(salida).toContain('likes');
+      expect(salida).toContain('dislikes');
+      expect(salida).toContain('asked_about');
+    });
+
+    it('sigue sin aparecer cuando el bloque no está en `blocks`', () => {
+      const otros = ALL_BLOCKS.filter((b) => b !== 'SAVE_FACT');
+      const salida = service.build(baseInput({ blocks: otros, useMemory: true }));
+      expect(salida).not.toContain('SAVE_FACT');
+      expect(salida).not.toContain('SISTEMA DE MEMORIA');
+    });
+  });
 });

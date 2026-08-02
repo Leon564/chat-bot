@@ -217,18 +217,18 @@ describe('IntentRouterService', () => {
     });
   });
 
-  describe('SAVE_MEMORY', () => {
+  describe('SAVE_FACT (Task 4, fase 4b — antes SAVE_MEMORY; la heurística no cambió)', () => {
     it('se incluye cuando el mensaje trae un hecho y useMemory está activo', async () => {
-      expect(await rutear('bot me encanta attack on titan')).toContain('SAVE_MEMORY');
-      expect(await rutear('tengo 25 años')).toContain('SAVE_MEMORY');
+      expect(await rutear('bot me encanta attack on titan')).toContain('SAVE_FACT');
+      expect(await rutear('tengo 25 años')).toContain('SAVE_FACT');
     });
 
     it('nunca se incluye con useMemory desactivado', async () => {
-      expect(await rutear('me encanta attack on titan', false)).not.toContain('SAVE_MEMORY');
+      expect(await rutear('me encanta attack on titan', false)).not.toContain('SAVE_FACT');
     });
 
     it('se omite en un saludo simple', async () => {
-      expect(await rutear('hola')).not.toContain('SAVE_MEMORY');
+      expect(await rutear('hola')).not.toContain('SAVE_FACT');
     });
   });
 

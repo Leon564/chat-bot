@@ -38,7 +38,11 @@ export class UtilsService {
    * or (b) be rendered verbatim by the chat client and abuse other users:
    *   - HTML tags + entities (delegated to cleanHtmlFromMessage)
    *   - Bot intent tokens like {{resumen}} / {{usuarios_online}}
-   *   - SAVE_MEMORY()/LOAD_MEMORY() calls (defence against nested injection)
+   *   - SAVE_MEMORY()/LOAD_MEMORY() and SAVE_FACT()/LOAD_FACT() calls
+   *     (defence against nested injection — SAVE_FACT was added in Task 4 of
+   *     fase 4b, when it replaced SAVE_MEMORY as the memory-emitting token;
+   *     without stripping it too, a user could nest a SAVE_FACT(...) inside
+   *     the object of another fact and have it survive sanitisation)
    *   - BBCode media tags [img|image|audio|video]url[/...]
    *   - The leading ^#hex color prefix used by sendBotMessage
    *   - <@user> mentions (kept as @user so the recall reads naturally
@@ -58,7 +62,7 @@ export class UtilsService {
     if (!s) return '';
 
     s = s.replace(/\{\{[^}]*\}\}/g, '');
-    s = s.replace(/\b(SAVE|LOAD)_MEMORY\s*\([^)]*\)/gi, '');
+    s = s.replace(/\b(SAVE|LOAD)_(MEMORY|FACT)\s*\([^)]*\)/gi, '');
     s = s.replace(/\[(img|image|audio|video)(?:\s+[a-z]+="[^"]*")*\][^[\]]*\[\/\1\]/gi, '');
     s = s.replace(/^\s*\^#[0-9a-fA-F]{3,8}\s+/, '');
     s = s.replace(/[\x00-\x1f\x7f]+/g, ' ');
