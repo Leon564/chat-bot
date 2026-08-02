@@ -288,6 +288,48 @@ describe('GraphContextService', () => {
     expect(linea).not.toMatch(/miró fue$/);
   });
 
+  it('el recorte NUNCA deja un fragmento de un título real cruzando el límite (B3, ronda de corrección final)', async () => {
+    // Medido sobre la línea cargada real (hallazgo B3 de la revisión final):
+    // "Shingeki no Kyojin:" es una obra DISTINTA de "Shingeki no Kyojin: The
+    // Final Season". El guard de DANGLING_SUFFIXES sólo cubre el verbo
+    // colgando sin objeto -- no cubre que el recorte por límite de palabra
+    // caiga a mitad de un label real con espacios internos, dejando un
+    // prefijo que además resulta ser el nombre de otra obra real.
+    const target = 'Shingeki no Kyojin: The Final Season';
+    const prefix = 'Sobre Nico: le gusta ';
+
+    // Se arma el relleno para que el corte de MAX_CHARS caiga
+    // determinísticamente en el espacio que separa "Kyojin:" del resto del
+    // título real -- reproduce el caso medido, no uno construido a mano con
+    // números fijos que se desincronizarían si MAX_CHARS cambia.
+    const cutIndexInTarget = target.indexOf(': ') + 1; // el espacio justo después de "Kyojin:"
+    const totalBeforeTarget = MAX_CHARS - cutIndexInTarget - 1;
+    const fillerLen = totalBeforeTarget - prefix.length - ', '.length;
+    const filler = 'r'.repeat(fillerLen);
+
+    // El relleno pesa más que el título real -- así queda ANTES en la
+    // lista (topEdges ordena por peso descendente) y el título real, al
+    // final, es lo que efectivamente cruza el límite de MAX_CHARS.
+    await sembrarGusto('Nico', filler, 2);
+    await sembrarGusto('Nico', target, 1);
+
+    const linea = await service.build('Nico', 'hola');
+    const sinTruncar = `${prefix}${filler}, ${target}.`;
+
+    // Realmente entró a la rama de truncado, no es casualidad que ya calzara.
+    expect(sinTruncar.length).toBeGreaterThan(MAX_CHARS);
+    expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+
+    // El defecto exacto medido en la revisión: el resultado terminaba en
+    // "Shingeki no Kyojin:", el prefijo que además es otra obra real.
+    expect(linea.endsWith('Kyojin:')).toBe(false);
+    // Si el título real aparece mencionado, tiene que estar COMPLETO -- nunca
+    // un prefijo suyo.
+    if (linea.includes('Shingeki')) {
+      expect(linea).toContain(target);
+    }
+  });
+
   it('no incluye más de MAX_EDGES relaciones', async () => {
     for (let i = 0; i < 20; i++) await sembrarGusto('Nico', `Obra${i}`, i + 1);
 

@@ -275,11 +275,29 @@ export class GraphContextService {
 
   /**
    * Recorta al límite de palabra completo más cercano por debajo de
-   * `MAX_CHARS`. Además, si ese recorte deja colgando el verbo de una sección
-   * sin ningún objeto detrás (p. ej. "...lo último que miró fue" a secas),
-   * retrocede hasta el separador anterior — un verbo sin objeto no aporta
-   * nada y puede leerse como que el dato se omitió a propósito, no que se
-   * cortó por espacio.
+   * `MAX_CHARS`. El corte por espacio sólo garantiza no partir una PALABRA a
+   * la mitad — no garantiza no partir un LABEL a la mitad, porque los
+   * títulos reales de AniList tienen espacios internos (Task 2, fase 5b:
+   * "Shingeki no Kyojin: The Final Season", "Fate/stay night", "Re:Zero kara
+   * Hajimeru Isekai Seikatsu"). Medido sobre la línea cargada real (hallazgo
+   * B3 de la revisión final de fase 5b): el corte por palabra dejaba
+   * "Shingeki no Kyojin:" — que es una obra DISTINTA y real. El modelo no
+   * tiene forma de saber que está truncado: lee esa afirmación falsa con la
+   * misma autoridad que las verdaderas, y puede terminar recomendando la
+   * obra equivocada.
+   *
+   * Por eso, después del corte por palabra, se retrocede además hasta el
+   * último separador de ÍTEM COMPLETO (", " o "; ") — pero SÓLO si hace
+   * falta: si en la línea SIN truncar lo que sigue justo después del corte
+   * ya es una coma, un punto y coma o el punto final, el corte cayó en un
+   * borde real de todos modos y no hay nada que arreglar (evita retroceder
+   * de más cuando no hace falta, como en un listado de labels cortos donde
+   * el corte por palabra ya coincide con el fin de un ítem).
+   *
+   * El guard de `DANGLING_SUFFIXES` sigue siendo necesario DESPUÉS de este
+   * retroceso: si la sección entera (verbo + label) queda sin ningún
+   * separador previo al que volver (ver más abajo), el verbo puede quedar
+   * colgando sin objeto igual que antes.
    */
   private truncate(line: string): string {
     if (line.length <= MAX_CHARS) return line;
@@ -287,6 +305,37 @@ export class GraphContextService {
     const sliced = line.slice(0, MAX_CHARS);
     const lastSpace = sliced.lastIndexOf(' ');
     let trimmed = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced;
+
+    // ¿El corte cayó justo en un borde real de ítem de la línea SIN
+    // truncar (lo que sigue es coma/punto y coma/punto), o a mitad de un
+    // label más largo? Sólo en el segundo caso hace falta retroceder más.
+    const resto = line.slice(trimmed.length).trimStart();
+    const cortoEnBordeDeItem = resto === '' || /^[,;.]/.test(resto);
+
+    if (!cortoEnBordeDeItem) {
+      const lastComma = trimmed.lastIndexOf(', ');
+      const lastSemicolon = trimmed.lastIndexOf('; ');
+      const lastSeparator = Math.max(lastComma, lastSemicolon);
+
+      if (lastSeparator > 0) {
+        // Hay un ítem anterior completo al que volver: se descarta entero
+        // el ítem a medias que cruzaba el límite, en vez de mostrar su
+        // fragmento.
+        trimmed = trimmed.slice(0, lastSeparator);
+      }
+      // Si no hay NINGÚN separador de ítem (una sola arista con un label
+      // larguísimo que por sí solo ya cruza MAX_CHARS, como el caso ya
+      // cubierto por el test de arriba): no hay a dónde retroceder sin
+      // vaciar la sección entera. Se deja pasar el fragmento a medias del
+      // label — el guard de DANGLING_SUFFIXES de abajo igual limpia el caso
+      // en que el verbo quedó totalmente sin objeto (label entero
+      // excluido). Preferir vaciar la sección completa acá sería más
+      // agresivo de lo necesario en el caso común (un solo label largo,
+      // sin otra obra real con la que confundirse); el label sigue siendo
+      // UN fragmento del propio label, no el nombre de otra obra distinta,
+      // así que el riesgo que este fix ataca (confundirse con otra obra
+      // real) no aplica igual acá.
+    }
 
     for (const suffix of DANGLING_SUFFIXES) {
       if (trimmed.endsWith(suffix)) {
