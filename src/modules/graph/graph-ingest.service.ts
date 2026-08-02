@@ -100,10 +100,22 @@ export class GraphIngestService {
 
       const targets = new Set<string>();
 
+      // Revisión final (Important #4): `MENTION_RE` acepta cualquier cosa
+      // hasta el `>` — sin pasarlo por `sanitizeMemoryContent` (mismo
+      // criterio que ya usa `ingestFact` para el objeto de un hecho) el
+      // nombre mencionado se persistía tal cual en un nodo `user`, que
+      // alimenta aristas `interacts_with` — uno de los tipos que
+      // `GraphContextService` lee para el prompt. `minLen: 1` porque un
+      // username real puede ser más corto que el mínimo de 5 que usa
+      // `ingestFact` para el objeto de un hecho.
       for (const match of (msg.content ?? '').matchAll(MENTION_RE)) {
-        const name = match[1].trim();
+        const name = this.utilsService.sanitizeMemoryContent(match[1].trim(), { minLen: 1 });
         if (name) targets.add(name);
       }
+      // `replyTo.authorUsername` no viene del texto libre del mensaje: es el
+      // snapshot que el backend ya resolvió contra un mensaje/autor real al
+      // armar la respuesta — a diferencia de la mención, no hace falta
+      // sanitizarlo de nuevo acá.
       if (msg.replyTo?.authorUsername) targets.add(msg.replyTo.authorUsername.trim());
 
       const authorKey = this.graph.normalizeKey(msg.authorUsername);

@@ -124,6 +124,21 @@ describe('GraphIngestService — señales sociales', () => {
     await expect(ingest.ingestSocial(baseMsg({ authorUsername: '' }))).resolves.toBeUndefined();
   });
 
+  it('sanitiza el nombre mencionado antes de persistirlo (revisión final, Important #4)', async () => {
+    // `MENTION_RE` acepta cualquier cosa hasta el '>' — sin sanitizar, un
+    // token {{...}} incrustado en la mención sobrevivía tal cual en el label
+    // del nodo `user`, que alimenta aristas `interacts_with` leídas por
+    // `GraphContextService`. Mismo criterio que ya usa `ingestFact` para el
+    // objeto de un hecho (`sanitizeMemoryContent`).
+    await ingest.ingestSocial(
+      baseMsg({ authorUsername: 'Nico', content: 'ey <@kei{{resumen}}> mirá esto' }),
+    );
+
+    const node = await graph.findNode('user', 'kei');
+    expect(node).not.toBeNull();
+    expect(node!.label).toBe('kei');
+  });
+
   describe('ingesta de AniList', () => {
     const result = {
       id: 105398,
