@@ -153,14 +153,24 @@ describe('BotService — handleAniListRequest (caché)', () => {
       expect(chat.translateToSpanish).toHaveBeenCalled();
     });
 
-    it('un fallo del caché no impide responder', async () => {
+    it('un fallo del caché no impide responder: sigue el camino normal, no el de error', async () => {
       cache.findWork.mockRejectedValue(new Error('mongo caído'));
       anilist.search.mockResolvedValue(ficha);
       chat.translateToSpanish.mockResolvedValue('traducido');
 
       await invocar('manhwa', 'Solo Leveling', 'Nico');
 
-      expect(socket.sendMessage).toHaveBeenCalled();
+      // No alcanza con "se llamó a sendMessage": el mensaje de error genérico
+      // de AniList también llama a sendMessage. Hay que verificar que se
+      // siguió el camino normal (se consultó AniList, se tradujo, se mandó
+      // la tarjeta) y no el catch externo (que mandaría un error que nunca
+      // ocurrió).
+      expect(anilist.search).toHaveBeenCalledWith('manhwa', 'Solo Leveling');
+      expect(chat.translateToSpanish).toHaveBeenCalled();
+      expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Solo Leveling'));
+      expect(socket.sendMessage).not.toHaveBeenCalledWith(
+        expect.stringContaining('AniList no respondió'),
+      );
     });
 
     it('con acierto TAMBIÉN registra que el usuario preguntó', async () => {
