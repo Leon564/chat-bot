@@ -24,6 +24,18 @@ jest.mock('yt-dlp-wrap', () => {
 });
 
 /**
+ * `music.service.ts` usa el `node-fetch` importado a nivel de módulo (no
+ * `globalThis.fetch`) para el HEAD que verifica si una URL cacheada sigue
+ * viva — mockear `global.fetch` no alcanzaría, porque el import ya tiene su
+ * propia referencia. Se mockea el módulo entero; el resto de los métodos de
+ * `MusicService` que también usan `fetch` (upload, connectivity) no se
+ * ejercitan en esta suite (el pipeline pesado está siempre doblado vía
+ * `enqueueMusicRequest`).
+ */
+jest.mock('node-fetch', () => ({ __esModule: true, default: jest.fn() }));
+import fetch from 'node-fetch';
+
+/**
  * `enqueueMusicRequest` es privado — es el punto de entrada al pipeline
  * pesado (búsqueda ytsr, descarga, ffmpeg, subida). Se dobla en todos los
  * tests salvo los de acierto de caché: el brief pide no ejercitar el
@@ -73,8 +85,8 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       invalidateTrack: jest.fn().mockResolvedValue(undefined),
     };
 
-    fetchMock = jest.fn();
-    (global as any).fetch = fetchMock;
+    fetchMock = fetch as unknown as jest.Mock;
+    fetchMock.mockReset();
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -98,13 +110,12 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
 
   afterEach(() => {
     jest.restoreAllMocks();
-    delete (global as any).fetch;
   });
 
   describe('acierto de caché', () => {
     it('devuelve el BBCode sin encolar (queueLength sigue en 0)', async () => {
       graphCache.findTrack.mockResolvedValue(cachedTrack);
-      fetchMock.mockResolvedValue({ ok: true });
+      fetchMock.mockResolvedValue({ ok: true, status: 200 });
 
       await service.processMusic('cancion de prueba', 'alice');
 
@@ -114,7 +125,7 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
 
     it('el texto contiene el título y la URL cacheada', async () => {
       graphCache.findTrack.mockResolvedValue(cachedTrack);
-      fetchMock.mockResolvedValue({ ok: true });
+      fetchMock.mockResolvedValue({ ok: true, status: 200 });
 
       const result = await service.processMusic('cancion de prueba', 'alice');
 
@@ -122,8 +133,12 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       expect(result.text).toContain(cachedTrack.uploadUrl);
       expect(result.text).toContain('<@alice>');
       expect(result.track).toEqual(cachedTrack);
-      // El HEAD se hizo contra la URL cacheada, no cualquier otra.
-      expect(fetchMock).toHaveBeenCalledWith(cachedTrack.uploadUrl, { method: 'HEAD' });
+      // El HEAD se hizo contra la URL cacheada, no cualquier otra, y con un
+      // AbortSignal (el timeout de 4s) — no cualquier `fetch` desnudo.
+      expect(fetchMock).toHaveBeenCalledWith(
+        cachedTrack.uploadUrl,
+        expect.objectContaining({ method: 'HEAD', signal: expect.anything() }),
+      );
     });
   });
 
@@ -151,14 +166,48 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       expect(result.text).toContain('<@carol>');
     });
 
-    it('una URL cacheada cuyo HEAD falla (red) también se invalida y encola', async () => {
+    it('una URL cacheada que responde 410 (Gone) también se invalida y encola', async () => {
+      graphCache.findTrack.mockResolvedValue(cachedTrack);
+      fetchMock.mockResolvedValue({ ok: false, status: 410 });
+
+      await service.processMusic('cancion de prueba', 'carol');
+
+      expect(graphCache.invalidateTrack).toHaveBeenCalledWith('cancion de prueba');
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('un HEAD que falla por red (timeout/abort) NO invalida — "no sé" no es "está muerta"', async () => {
+      graphCache.findTrack.mockResolvedValue(cachedTrack);
+      const abortError = new Error('The user aborted a request.');
+      abortError.name = 'AbortError';
+      fetchMock.mockRejectedValue(abortError);
+
+      const result = await service.processMusic('cancion de prueba', 'dave');
+
+      expect(graphCache.invalidateTrack).not.toHaveBeenCalled();
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+      expect(result.text).toContain('<@dave>');
+    });
+
+    it('un HEAD que rechaza por un error de red (ECONNRESET) NO invalida', async () => {
       graphCache.findTrack.mockResolvedValue(cachedTrack);
       fetchMock.mockRejectedValue(new Error('ECONNRESET'));
 
       await service.processMusic('cancion de prueba', 'dave');
 
-      expect(graphCache.invalidateTrack).toHaveBeenCalledWith('cancion de prueba');
+      expect(graphCache.invalidateTrack).not.toHaveBeenCalled();
       expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('un HEAD que responde 403 (CDN que rechaza HEAD) NO invalida — status ambiguo, se sigue al pipeline', async () => {
+      graphCache.findTrack.mockResolvedValue(cachedTrack);
+      fetchMock.mockResolvedValue({ ok: false, status: 403 });
+
+      const result = await service.processMusic('cancion de prueba', 'frank');
+
+      expect(graphCache.invalidateTrack).not.toHaveBeenCalled();
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+      expect(result.text).toContain('<@frank>');
     });
 
     it('un fallo del propio caché (findTrack rechaza) encola normalmente, sin lanzar', async () => {

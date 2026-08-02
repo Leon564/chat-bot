@@ -39,6 +39,11 @@ export class MusicService {
   // CONNECTIVITY_TTL_MS so back-to-back queue items skip the re-check.
   private lastConnectivityOk: number = 0;
   private readonly CONNECTIVITY_TTL_MS = 60_000;
+  // Timeout del HEAD que verifica si una URL cacheada sigue viva. Corto a
+  // propósito: este chequeo corre ANTES de encolar, así que un host que
+  // nunca responde cabecera no puede sumarle minutos a un camino que antes
+  // arrancaba de inmediato.
+  private readonly CACHED_URL_HEAD_TIMEOUT_MS = 4_000;
   // Dedup de pedidos en vuelo: si dos solicitudes idénticas (misma query
   // normalizada) llegan mientras la primera todavía está resolviéndose (cache
   // miss + pipeline en curso), la segunda no encola un item nuevo — comparte
@@ -367,9 +372,17 @@ export class MusicService {
    * Busca la pista en el grafo (Task 1). Un acierto no es automáticamente
    * servible: la URL subida puede haber muerto (litterbox venció, o incluso
    * un catbox/filegarden eliminado a mano), así que se verifica con un HEAD
-   * antes de devolverla. HEAD falso o falla → se invalida la entrada y se
-   * sigue al pipeline normal. Cualquier fallo del propio caché (Mongo caído,
-   * etc.) se traga acá y también cae al pipeline normal, nunca lanza.
+   * antes de devolverla.
+   *
+   * Sólo un 404/410 explícito ("esto ya no existe") invalida la entrada.
+   * Cualquier otra cosa — timeout, error de red, un 403/405 de un CDN que
+   * rechaza HEAD, o directamente que `fetch` no exista — es "no sé", no "está
+   * muerta": se cae al pipeline normal SIN borrar el dato. Invalidar ante la
+   * duda es peor que no cachear: un blip de red borraría una URL perfectamente
+   * viva y obligaría a re-subir el archivo la próxima vez.
+   *
+   * Cualquier fallo del propio caché (Mongo caído, etc.) se traga acá y
+   * también cae al pipeline normal, nunca lanza.
    */
   private async tryServeFromCache(
     query: string,
@@ -386,25 +399,50 @@ export class MusicService {
     }
     if (!cached) return null;
 
-    let alive = false;
-    try {
-      const head = await (globalThis as any).fetch(cached.uploadUrl, { method: "HEAD" });
-      alive = !!head && head.ok;
-    } catch (err) {
-      console.warn(
-        `⚠️ [CACHE] HEAD a "${cached.uploadUrl}" falló: ${err instanceof Error ? err.message : err}`
-      );
-      alive = false;
+    const status = await this.checkCachedUrl(cached.uploadUrl);
+
+    if (status === "dead") {
+      console.log(`🗑️ [CACHE] URL cacheada muerta (404/410) para "${query}", invalidando y siguiendo al pipeline`);
+      await this.graphCacheService.invalidateTrack(query).catch(() => {});
+      return null;
     }
 
-    if (!alive) {
-      console.log(`🗑️ [CACHE] URL cacheada muerta para "${query}", invalidando y siguiendo al pipeline`);
-      await this.graphCacheService.invalidateTrack(query).catch(() => {});
+    if (status === "unknown") {
+      console.log(`❓ [CACHE] No se pudo confirmar la URL cacheada para "${query}" (timeout/error/status ambiguo), sin invalidar — siguiendo al pipeline`);
       return null;
     }
 
     console.log(`✨ [CACHE] Sirviendo "${query}" desde el grafo, sin pipeline`);
     return this.buildResultFromTrack(cached, username);
+  }
+
+  /**
+   * HEAD contra la URL cacheada usando el mismo `node-fetch` que el resto del
+   * archivo (no `globalThis.fetch`, que es una dependencia implícita de
+   * Node 18+ que ni declara `package.json`), con un timeout corto: un host
+   * que acepta la conexión y nunca responde cabecera puede colgar varios
+   * minutos, y este chequeo corre ANTES de encolar — el usuario ya vio
+   * "Buscando…" y el pedido ni siquiera entró a la cola.
+   */
+  private async checkCachedUrl(url: string): Promise<"alive" | "dead" | "unknown"> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.CACHED_URL_HEAD_TIMEOUT_MS);
+
+    try {
+      const head = await fetch(url, { method: "HEAD", signal: controller.signal });
+      if (head.status === 404 || head.status === 410) return "dead";
+      if (head.ok) return "alive";
+      // Cualquier otro status (403, 405, 500...) no confirma ni desmiente
+      // que el archivo siga vivo.
+      return "unknown";
+    } catch (err) {
+      console.warn(
+        `⚠️ [CACHE] HEAD a "${url}" falló o hizo timeout: ${err instanceof Error ? err.message : err}`
+      );
+      return "unknown";
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
