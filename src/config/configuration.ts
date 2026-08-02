@@ -64,4 +64,15 @@ export default () => ({
   database: {
     uri: process.env.MONGODB_URI || '',
   },
+
+  // Graph cache (Fase 4a) — fichas de AniList y pistas ya subidas servidas
+  // desde el grafo en vez de re-procesarse. CACHE_ENABLED=false apaga el
+  // camino de lectura por completo (GraphCacheService.findWork/findTrack
+  // devuelven null sin consultar Mongo), forzando siempre el pipeline
+  // normal — pensado como interruptor de emergencia sin necesitar rollback.
+  // Las escrituras (saveTranslation/invalidateTrack/ingest*) no se gatean:
+  // persistir no hace daño aunque la lectura del caché esté apagada.
+  graph: {
+    cacheEnabled: process.env.CACHE_ENABLED !== 'false',
+  },
 });

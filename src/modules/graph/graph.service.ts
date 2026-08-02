@@ -129,6 +129,38 @@ export class GraphService {
   }
 
   /**
+   * Igual que `resolveByAlias`, pero exige además que una prop del nodo tenga
+   * un valor exacto — filtrando a nivel de Mongo, no eligiendo primero por
+   * peso y recién después descartando por no calzar.
+   *
+   * Existe porque una obra puede estar en el grafo dos veces con el mismo
+   * alias — p. ej. "Solo Leveling" como manhwa (muy preguntado, peso alto) y
+   * como anime (poco preguntado, peso bajo). `resolveByAlias` siempre
+   * devuelve el de mayor peso sin mirar el tipo pedido: pedir el anime
+   * resolvía siempre al manhwa, no calzaba el `kind`, y era un miss
+   * permanente — justo para las obras más preguntadas, que son las que
+   * terminan con entrada doble. Filtrar la prop en la query evita elegir un
+   * ganador equivocado para después descartarlo.
+   */
+  async resolveByAliasAndProp(
+    alias: string,
+    types: NodeType[] | undefined,
+    propKey: string,
+    propValue: unknown,
+  ): Promise<GraphNodeDocument | null> {
+    const needle = this.normalizeKey(alias);
+    if (!needle) return null;
+
+    const filter: Record<string, unknown> = {
+      $or: [{ aliases: needle }, { key: needle }],
+      [`props.${propKey}`]: propValue,
+    };
+    if (types && types.length > 0) filter.type = { $in: types };
+
+    return this.nodeModel.findOne(filter).sort({ weight: -1, lastSeenAt: -1 }).exec();
+  }
+
+  /**
    * Igual que `resolveByAlias` pero para N candidatos en una sola consulta:
    * arma un único `$in` en vez de que el llamador dispare una consulta por
    * candidato. Pensado para el router de intención (`intent-router.service.ts`),
