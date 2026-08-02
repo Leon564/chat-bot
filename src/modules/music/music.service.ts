@@ -18,6 +18,8 @@ import {
   MusicResult,
   TrackMeta,
 } from "../../common/interfaces";
+import { GraphCacheService } from "../graph/graph-cache.service";
+import { GraphService } from "../graph/graph.service";
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -37,8 +39,18 @@ export class MusicService {
   // CONNECTIVITY_TTL_MS so back-to-back queue items skip the re-check.
   private lastConnectivityOk: number = 0;
   private readonly CONNECTIVITY_TTL_MS = 60_000;
+  // Dedup de pedidos en vuelo: si dos solicitudes idénticas (misma query
+  // normalizada) llegan mientras la primera todavía está resolviéndose (cache
+  // miss + pipeline en curso), la segunda no encola un item nuevo — comparte
+  // la promesa de la PISTA (no del MusicResult completo, que trae el
+  // <@usuario> del que la disparó) y arma su propio texto al resolver.
+  private readonly inFlightTrackRequests = new Map<string, Promise<TrackMeta>>();
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly graphCacheService: GraphCacheService,
+    private readonly graphService: GraphService,
+  ) {
     this.isProcessing = false;
     this.queue = [];
 
@@ -295,9 +307,133 @@ export class MusicService {
   }
 
   /**
-   * Procesa una solicitud de música
+   * Procesa una solicitud de música. Antes de encolar, intenta servir desde
+   * el grafo (una subida ya hecha y todavía viva) y deduplica pedidos
+   * idénticos que ya están en vuelo — un acierto en cualquiera de los dos
+   * casos saltea búsqueda, descarga, transcodificación y subida por completo.
    */
   async processMusic(query: string, username: string): Promise<MusicResult> {
+    const cachedResult = await this.tryServeFromCache(query, username);
+    if (cachedResult) {
+      return cachedResult;
+    }
+
+    const normalizedQuery = this.graphService.normalizeKey(query);
+
+    if (normalizedQuery) {
+      const inFlight = this.inFlightTrackRequests.get(normalizedQuery);
+      if (inFlight) {
+        console.log(
+          `🎵 [DEDUP] Pedido idéntico en vuelo para "${query}" — reutilizando sin encolar de nuevo`
+        );
+        const track = await inFlight;
+        return this.buildResultFromTrack(track, username);
+      }
+    }
+
+    const pipelinePromise = this.enqueueMusicRequest(query, username);
+
+    if (!normalizedQuery) {
+      return pipelinePromise;
+    }
+
+    // Se comparte la promesa de la PISTA, no la del MusicResult: el texto
+    // trae el <@usuario> del que disparó el pipeline y no debe filtrarse a
+    // los demás llamadores deduplicados.
+    const trackPromise = pipelinePromise.then((result) => {
+      if (!result.track) {
+        throw new Error(result.text);
+      }
+      return result.track;
+    });
+    // Sin este catch, un pipeline que falla dispara un unhandledRejection acá
+    // (nadie más "atrapa" trackPromise salvo que haya llegado un pedido
+    // duplicado) — el rechazo real lo sigue viendo quien espera
+    // `pipelinePromise` más abajo.
+    trackPromise.catch(() => {});
+
+    this.inFlightTrackRequests.set(normalizedQuery, trackPromise);
+    const clearInFlight = () => {
+      if (this.inFlightTrackRequests.get(normalizedQuery) === trackPromise) {
+        this.inFlightTrackRequests.delete(normalizedQuery);
+      }
+    };
+    trackPromise.then(clearInFlight, clearInFlight);
+
+    return pipelinePromise;
+  }
+
+  /**
+   * Busca la pista en el grafo (Task 1). Un acierto no es automáticamente
+   * servible: la URL subida puede haber muerto (litterbox venció, o incluso
+   * un catbox/filegarden eliminado a mano), así que se verifica con un HEAD
+   * antes de devolverla. HEAD falso o falla → se invalida la entrada y se
+   * sigue al pipeline normal. Cualquier fallo del propio caché (Mongo caído,
+   * etc.) se traga acá y también cae al pipeline normal, nunca lanza.
+   */
+  private async tryServeFromCache(
+    query: string,
+    username: string,
+  ): Promise<MusicResult | null> {
+    let cached: TrackMeta | null;
+    try {
+      cached = await this.graphCacheService.findTrack(query);
+    } catch (err) {
+      console.warn(
+        `⚠️ [CACHE] findTrack falló, se sigue sin caché: ${err instanceof Error ? err.message : err}`
+      );
+      return null;
+    }
+    if (!cached) return null;
+
+    let alive = false;
+    try {
+      const head = await (globalThis as any).fetch(cached.uploadUrl, { method: "HEAD" });
+      alive = !!head && head.ok;
+    } catch (err) {
+      console.warn(
+        `⚠️ [CACHE] HEAD a "${cached.uploadUrl}" falló: ${err instanceof Error ? err.message : err}`
+      );
+      alive = false;
+    }
+
+    if (!alive) {
+      console.log(`🗑️ [CACHE] URL cacheada muerta para "${query}", invalidando y siguiendo al pipeline`);
+      await this.graphCacheService.invalidateTrack(query).catch(() => {});
+      return null;
+    }
+
+    console.log(`✨ [CACHE] Sirviendo "${query}" desde el grafo, sin pipeline`);
+    return this.buildResultFromTrack(cached, username);
+  }
+
+  /**
+   * Arma el MusicResult exactamente con el mismo formato que
+   * `processSingleMusicRequest`, reusando `buildAudioBBCode`, para que el
+   * texto sea idéntico venga del caché o del pipeline. Es el punto donde
+   * cada llamador deduplicado inserta su propio nombre — la pista compartida
+   * no lo trae.
+   */
+  private buildResultFromTrack(track: TrackMeta, username: string): MusicResult {
+    const videoLike = {
+      title: track.title,
+      author: track.artist ? { name: track.artist } : undefined,
+      bestThumbnail: track.thumb ? { url: track.thumb } : undefined,
+    };
+    const audioTag = this.buildAudioBBCode(track.uploadUrl, videoLike);
+    return {
+      text: `🎵 <@${username}> Aquí tienes "${track.title}": ${audioTag}`,
+      track,
+    };
+  }
+
+  /**
+   * Empuja la solicitud a la cola FIFO real y dispara `processQueue` si
+   * estaba ociosa. Extraído de lo que antes era el cuerpo entero de
+   * `processMusic` para que sea un punto de entrada único al pipeline
+   * pesado — el que se dobla en los tests.
+   */
+  private enqueueMusicRequest(query: string, username: string): Promise<MusicResult> {
     return new Promise((resolve, reject) => {
       const request: MusicRequest = {
         query,
