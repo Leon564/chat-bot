@@ -137,6 +137,29 @@ describe('GraphContextService', () => {
     expect(resaltado![1].toLowerCase()).not.toContain('vinland');
   });
 
+  it('resalta una obra cuya clave difiere de su etiqueta (formato real de AniList)', async () => {
+    // `GraphIngestService.ingestAniList` persiste los nodos `work` con
+    // `key = 'anilist:<id>'` y `label` = título mostrable — distintos a
+    // propósito. Comparar por `label` normalizado (en vez de por `key`, la
+    // identidad real del nodo) fallaría en silencio para TODAS las obras
+    // ingresadas desde AniList, que es el origen real de estos nodos en
+    // producción — no simplificar este fixture a `key === label` como el
+    // resto de los tests de este archivo, porque eso reabre exactamente el
+    // agujero que este test existe para cerrar.
+    const u = await graph.upsertNode({ type: 'user', key: 'Nico', label: 'Nico' });
+    const w = await graph.upsertNode({
+      type: 'work',
+      key: 'anilist:105398',
+      label: 'Solo Leveling',
+      aliases: ['solo leveling'],
+    });
+    await graph.upsertEdge({ from: u!._id, to: w!._id, type: 'likes', source: 'fact' });
+
+    const linea = await service.build('Nico', 'bot que onda con solo leveling?');
+
+    expect(linea).toMatch(/preguntó por solo leveling/i);
+  });
+
   it('respeta el tope de caracteres', async () => {
     for (let i = 0; i < 40; i++) {
       await sembrarGusto('Nico', `Obra con un titulo bastante largo numero ${i}`, i + 1);
