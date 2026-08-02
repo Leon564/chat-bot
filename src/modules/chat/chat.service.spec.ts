@@ -16,6 +16,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
+import { GraphContextService } from '../graph/graph-context.service';
 
 const respuesta = (content: string, prompt = 100, completion = 20) => ({
   choices: [{ message: { content } }],
@@ -28,6 +29,7 @@ describe('ChatService — instrumentación de tokens', () => {
   let context: { getForUser: jest.Mock; save: jest.Mock };
   let builder: { build: jest.Mock };
   let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
+  let graphContext: { build: jest.Mock };
 
   beforeEach(async () => {
     crearMock.mockReset();
@@ -41,6 +43,7 @@ describe('ChatService — instrumentación de tokens', () => {
       route: jest.fn().mockResolvedValue(['PERSONA', 'TEMPORAL']),
       isSimpleGreeting: jest.fn().mockReturnValue(false),
     };
+    graphContext = { build: jest.fn().mockResolvedValue('') };
 
     const config = {
       get: jest.fn((clave: string) => {
@@ -66,6 +69,7 @@ describe('ChatService — instrumentación de tokens', () => {
         { provide: LoggingService, useValue: { getLastMessages: jest.fn().mockResolvedValue([{ user: 'Nico', message: 'hola' }]) } },
         { provide: PromptBuilderService, useValue: builder },
         { provide: IntentRouterService, useValue: router },
+        { provide: GraphContextService, useValue: graphContext },
       ],
     }).compile();
 
@@ -205,5 +209,59 @@ describe('ChatService — instrumentación de tokens', () => {
     expect(builder.build).toHaveBeenCalledWith(
       expect.objectContaining({ blocks: expect.arrayContaining(['ANILIST', 'MUSIC']) }),
     );
+  });
+
+  it('pide el contexto del grafo para el usuario que habla', async () => {
+    graphContext.build.mockResolvedValue('Sobre Nico: le gusta Berserk.');
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('qué leo hoy', 'Aria', 'Nico');
+
+    expect(graphContext.build).toHaveBeenCalledWith('Nico', 'qué leo hoy');
+  });
+
+  it('inyecta la línea del grafo al prompt', async () => {
+    graphContext.build.mockResolvedValue('Sobre Nico: le gusta Berserk.');
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('qué leo hoy', 'Aria', 'Nico');
+
+    const mensajes = crearMock.mock.calls[0][0].messages;
+    expect(mensajes.some((m: any) => m.content.includes('le gusta Berserk'))).toBe(true);
+  });
+
+  it('cuando el grafo no devuelve nada, no inyecta un mensaje vacío', async () => {
+    graphContext.build.mockResolvedValue('');
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('hola', 'Aria', 'Nico');
+
+    const mensajes = crearMock.mock.calls[0][0].messages;
+    // Ningún mensaje del payload puede tener contenido vacío: sería gastar
+    // una entrada del array para nada.
+    expect(mensajes.every((m: any) => m.content.trim().length > 0)).toBe(true);
+  });
+
+  it('etiqueta intents con "graph" sólo cuando efectivamente inyectó contexto', async () => {
+    graphContext.build.mockResolvedValue('Sobre Nico: le gusta Berserk.');
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    await service.chat('qué leo', 'Aria', 'Nico');
+    await dejarCorrer();
+
+    expect(usage.record.mock.calls[0][0].intents).toContain('graph');
+  });
+
+  it('si el grafo falla, responde igual y sin la etiqueta', async () => {
+    graphContext.build.mockRejectedValue(new Error('mongo caído'));
+    crearMock.mockResolvedValue(respuesta('hola!'));
+
+    const salida = await service.chat('qué leo', 'Aria', 'Nico');
+    await dejarCorrer();
+
+    // Aserciones que DISTINGUEN el camino: no alcanza con que haya respuesta.
+    expect(salida).toContain('hola');
+    expect(crearMock).toHaveBeenCalled();
+    expect(usage.record.mock.calls[0][0].intents).not.toContain('graph');
   });
 });

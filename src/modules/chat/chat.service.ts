@@ -8,6 +8,7 @@ import { UsageService } from './usage.service';
 import { LlmKind } from '../../common/schemas/llm-usage.schema';
 import { PromptBuilderService, ALL_BLOCKS } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
+import { GraphContextService } from '../graph/graph-context.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -38,6 +39,7 @@ export class ChatService {
     private readonly usageService: UsageService,
     private readonly promptBuilder: PromptBuilderService,
     private readonly intentRouter: IntentRouterService,
+    private readonly graphContext: GraphContextService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -50,16 +52,16 @@ export class ChatService {
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
     const personality = this.getPersonality();
 
-    // Tres lecturas independientes a Mongo, antes serializadas una tras
-    // otra (route → getForUser → getMemory): el aggregate con $lookup del
-    // router es el más caro y corría delante de las otras dos incluso para
+    // Cuatro lecturas independientes a Mongo, antes serializadas una tras
+    // otra (route → getForUser → grafo): el aggregate con $lookup del
+    // router es el más caro y corría delante de las otras incluso para
     // un mensaje casual. Con `Promise.all` corren en paralelo.
     //
     // El fallback del router se mantiene igual: si `route` rechaza, se usa
     // el prompt completo (perder tokens es aceptable; perder una feature
-    // porque faltó su bloque, no). El `.catch()` va ANTES del
-    // `Promise.all` para que un rechazo del router no tumbe las otras dos
-    // promesas (`Promise.all` rechaza entera ante el primer rechazo).
+    // porque faltó su bloque, no). Cada `.catch()` va ANTES del
+    // `Promise.all` para que un rechazo de una no tumbe a las otras
+    // (`Promise.all` rechaza entera ante el primer rechazo).
     const blocksPromise = this.intentRouter
       .route(message, { useMemory, username })
       .catch((err) => {
@@ -67,12 +69,14 @@ export class ChatService {
         return [...ALL_BLOCKS];
       });
     const contextPromise = this.contextService.getForUser(username ?? '');
-    const memoryPromise = useMemory ? this.memoryService.getMemory(username) : Promise.resolve([]);
+    const graphContextPromise = this.graphContext
+      .build(username ?? '', message)
+      .catch(() => '');
 
-    const [blocks, context, memory] = await Promise.all([
+    const [blocks, context, graphLine] = await Promise.all([
       blocksPromise,
       contextPromise,
-      memoryPromise,
+      graphContextPromise,
     ]);
 
     const systemPrompt = this.promptBuilder.build({
@@ -101,18 +105,18 @@ export class ChatService {
       });
     }
 
-    // Add memory context if available (optimized and filtered) and enabled
-    let memoryInjected = false;
-    if (useMemory && memory && memory.length > 0) {
-      // Solo usar memoria relevante, máximo 3 elementos
-      const relevantMemories = memory.slice(-3);
-      if (relevantMemories.length > 0) {
-        messages.push({
-          role: 'system',
-          content: `Contexto relevante recordado: ${relevantMemories.join(' | ')}`
-        });
-        memoryInjected = true;
-      }
+    // Contexto del grafo de conocimiento: reemplaza el volcado de las
+    // últimas memorias guardadas por lo relevante a la pregunta (Fase 4b).
+    // Si `graphLine` viene vacía (sin datos en el grafo, o falló la lectura),
+    // no se empuja ningún mensaje — un mensaje de contenido vacío gastaría
+    // una entrada del array para nada.
+    let graphContextInjected = false;
+    if (graphLine && graphLine.trim().length > 0) {
+      messages.push({
+        role: 'system',
+        content: graphLine,
+      });
+      graphContextInjected = true;
     }
 
     // Add conversation context more efficiently
@@ -159,7 +163,7 @@ export class ChatService {
       // distintas de estas variantes sin forma de auditarlo después.
       const intents: string[] = [personality === 'unfiltered' ? 'persona:unfiltered' : 'persona:default'];
       if (isSimpleGreeting) intents.push('greeting');
-      if (memoryInjected) intents.push('memory');
+      if (graphContextInjected) intents.push('graph');
       intents.push(...blocks);
 
       this.registrarUso('chat', response, username, intents);
