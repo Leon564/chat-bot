@@ -118,10 +118,15 @@ export class GraphIngestService {
       // sanitizarlo de nuevo acá.
       if (msg.replyTo?.authorUsername) targets.add(msg.replyTo.authorUsername.trim());
 
-      const authorKey = this.graph.normalizeKey(msg.authorUsername);
+      // `normalizeUserKey`, no `normalizeKey`: el objetivo mencionado es una
+      // persona, y la identidad de personas sigue la regla del backend
+      // (sensible a acentos), no la de obras/temas (insensible). Con
+      // `normalizeKey` acá, "Jose" y "José" -dos cuentas distintas para el
+      // backend- se trataban como auto-mención y se perdía la arista social.
+      const authorKey = this.graph.normalizeUserKey(msg.authorUsername);
 
       for (const target of targets) {
-        if (this.graph.normalizeKey(target) === authorKey) continue;
+        if (this.graph.normalizeUserKey(target) === authorKey) continue;
 
         const node = await this.graph.upsertNode({ type: 'user', key: target, label: target });
         if (!node) continue;

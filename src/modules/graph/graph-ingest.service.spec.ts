@@ -113,6 +113,34 @@ describe('GraphIngestService — señales sociales', () => {
     expect(total).toBe(0);
   });
 
+  it('trata a dos usuarios que difieren en acentos como personas distintas', async () => {
+    // El backend los considera cuentas distintas, así que el grafo también
+    // debe hacerlo. Antes esta mención se descartaba como auto-mención.
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Jose', content: 'ey <@José> mirá' }));
+
+    const jose = await graph.findNode('user', 'Jose');
+    const joseConTilde = await graph.findNode('user', 'José');
+
+    expect(jose).not.toBeNull();
+    expect(joseConTilde).not.toBeNull();
+    expect(jose!._id.toString()).not.toBe(joseConTilde!._id.toString());
+
+    const aristas = await graph.topEdges(jose!._id, ['interacts_with'], 10);
+    expect(aristas.map((a) => a.label)).toContain('José');
+  });
+
+  it('sigue descartando la auto-mención real', async () => {
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'yo <@Nico> soy' }));
+    expect(await connection.collection('bot_edges').countDocuments({})).toBe(0);
+  });
+
+  it('sigue descartando la auto-mención con distinta capitalización', async () => {
+    // El backend es insensible a mayúsculas, así que "NICO" y "Nico" SÍ son
+    // la misma persona y esto sí es una auto-mención.
+    await ingest.ingestSocial(baseMsg({ authorUsername: 'Nico', content: 'yo <@NICO> soy' }));
+    expect(await connection.collection('bot_edges').countDocuments({})).toBe(0);
+  });
+
   it('ignora mensajes de stickers para las menciones', async () => {
     await ingest.ingestSocial(baseMsg({ type: 'sticker', content: '<@kei>' }));
 
