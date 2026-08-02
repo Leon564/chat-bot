@@ -6,7 +6,6 @@ import { MessagesService } from './messages.service';
 import { OnlineUsersService } from './online-users.service';
 import { UsageService } from './usage.service';
 import { UtilsModule } from '../../common/utils/utils.module';
-import { UtilsService } from '../../common/utils/utils.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { Memory, MemorySchema } from '../../common/schemas/memory.schema';
@@ -32,9 +31,15 @@ import { GraphModule } from '../graph/graph.module';
     UtilsModule,
   ],
   providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
-  // UtilsService ya no se declara acá: viene de UtilsModule (importado arriba)
-  // y se re-exporta tal cual para que BotModule lo siga recibiendo a través
-  // de ChatModule sin cambios.
-  exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, UsageService, MongooseModule],
+  // UtilsService ya no se declara acá: viene de UtilsModule (importado
+  // arriba). Nest NO permite reexportar un provider individual que llegó vía
+  // un módulo importado — solo se puede exportar un token propio (declarado
+  // en `providers` de este mismo módulo) o el módulo entero. Reexportar
+  // `UtilsService` directamente acá revienta el boot con
+  // `UnknownExportException` ("Nest cannot export a provider/module that is
+  // not a part of the currently processed module"). Por eso se exporta
+  // `UtilsModule` completo: BotModule sigue recibiendo `UtilsService` a
+  // través de `ChatModule` sin cambios en su propio código.
+  exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsModule, UsageService, MongooseModule],
 })
 export class ChatModule {}
