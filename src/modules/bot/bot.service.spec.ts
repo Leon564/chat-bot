@@ -10,7 +10,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
-import { GraphUserService } from '../graph/graph-user.service';
+import { GraphUserService, MAX_FACTS_SHOWN } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 
@@ -551,6 +551,60 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
     expect(graphUser.describe).not.toHaveBeenCalledWith('OtraPersona');
     expect(chat.chat).not.toHaveBeenCalled();
   });
+
+  it('Minor #5 — un EdgeType fuera de RELATION_ORDER igual se muestra, no desaparece', async () => {
+    // 'has_genre' SÍ está en RELATION_ORDER; usamos un valor que no calzaría
+    // con ninguna entrada para simular un EdgeType agregado después que nadie
+    // sincronizó en el array. El contrato de `!quesabes` es "TODO lo que
+    // tengo guardado" — el default tiene que ser mostrar de más, no ocultar.
+    graphUser.describe.mockResolvedValue([
+      { relation: 'likes', label: 'Berserk', weight: 3 },
+      { relation: 'nuevo_tipo_no_listado' as never, label: 'Cosa Rara', weight: 1 },
+    ]);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Cosa Rara'));
+  });
+
+  it('Minor #6 — con la lista truncada al tope, avisa que sólo muestra las más fuertes', async () => {
+    const facts = Array.from({ length: MAX_FACTS_SHOWN }, (_, i) => ({
+      relation: 'likes' as const,
+      label: `Obra ${i}`,
+      weight: MAX_FACTS_SHOWN - i,
+    }));
+    graphUser.describe.mockResolvedValue(facts);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining(`${MAX_FACTS_SHOWN} más fuertes`),
+    );
+  });
+
+  it('con menos hechos que el tope, NO avisa de truncamiento', async () => {
+    graphUser.describe.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 1 }]);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('más fuertes'));
+  });
+
+  it('Minor #7 — con varias partes, respeta responseDelay entre mensajes (igual que las otras rutas multiparte)', async () => {
+    utils.splitMessageIntoParts.mockReturnValue(['parte 1', 'parte 2', 'parte 3']);
+    graphUser.describe.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 1 }]);
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(socket.sendMessage).toHaveBeenCalledTimes(3);
+    // Un sleep entre cada par de partes: 2 sleeps para 3 partes, no antes de
+    // la primera ni después de la última.
+    expect(utils.sleep).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
@@ -711,6 +765,19 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
     expect(graphUser.forgetAll).toHaveBeenCalledWith('Nico');
     expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringMatching(/borr[eé] 5/i));
     expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('Minor #4 — "!olvida todo sí" (con tilde) también confirma, no cae al buscador de términos', async () => {
+    graphUser.forgetAll.mockResolvedValue(5);
+
+    await invocar('!olvida todo sí', 'Nico');
+    await dejarCorrer();
+
+    expect(graphUser.forgetAll).toHaveBeenCalledWith('Nico');
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringMatching(/borr[eé] 5/i));
+    // El modo de falla viejo era caer acá y responder "no encontré nada" en
+    // vez de confirmar — verificamos que ese camino ya no se toma.
+    expect(graphUser.findForgettable).not.toHaveBeenCalled();
   });
 
   it('el comando corta el dispatcher: no se procesa como mensaje normal', async () => {

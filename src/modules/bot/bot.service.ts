@@ -9,7 +9,12 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
-import { GraphUserService, UserFact, MIN_FORGET_TERM_LENGTH } from '../graph/graph-user.service';
+import {
+  GraphUserService,
+  UserFact,
+  MIN_FORGET_TERM_LENGTH,
+  MAX_FACTS_SHOWN,
+} from '../graph/graph-user.service';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
@@ -793,11 +798,16 @@ export class BotService implements OnModuleInit {
 
     const message = this.formatMemoryFacts(facts);
     const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
     const parts = this.utilsService.splitMessageIntoParts(message, maxLength);
 
+    // Minor #7: única ruta multiparte del servicio que no respetaba
+    // `responseDelay` entre mensajes — con 40 hechos son varias partes de
+    // golpe. Mismo patrón que `handleChatResponse`/`handleSummaryRequest`.
     for (let i = 0; i < parts.length; i++) {
       const text = i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i];
       this.sendBotMessage(text);
+      if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
     return true;
   }
@@ -808,6 +818,16 @@ export class BotService implements OnModuleInit {
    * crudo. `RELATION_ORDER` fija el orden de las secciones para que el
    * mensaje sea estable entre llamados, no dependa del orden de llegada de
    * `describe` (que es por peso, no por tipo).
+   *
+   * Minor #5: `RELATION_ORDER` es un array suelto (a diferencia de
+   * `RELATION_LABELS`, tipado `Record<EdgeType, string>`, que rompe la
+   * compilación si falta un tipo) — si se agrega un `EdgeType` nuevo y nadie
+   * actualiza `RELATION_ORDER`, esa categoría desaparecería del mensaje SIN
+   * AVISO. En un comando cuyo contrato es "esto es TODO lo que tengo sobre
+   * vos", ocultar una categoría es peor que mostrarla sin traducir. Por eso,
+   * después de recorrer `RELATION_ORDER`, cualquier relación agrupada que
+   * haya quedado afuera se emite igual (con el `EdgeType` crudo si no hay
+   * label) — el default es mostrar de más, nunca ocultar.
    */
   private formatMemoryFacts(facts: UserFact[]): string {
     const grouped = new Map<EdgeType, string[]>();
@@ -818,10 +838,23 @@ export class BotService implements OnModuleInit {
     }
 
     const lines: string[] = [];
+    const seen = new Set<EdgeType>();
     for (const relation of RELATION_ORDER) {
+      seen.add(relation);
       const labels = grouped.get(relation);
       if (!labels || labels.length === 0) continue;
       lines.push(`${RELATION_LABELS[relation]}: ${labels.join(', ')}`);
+    }
+    for (const [relation, labels] of grouped) {
+      if (seen.has(relation) || labels.length === 0) continue;
+      lines.push(`${RELATION_LABELS[relation] ?? relation}: ${labels.join(', ')}`);
+    }
+
+    // Minor #6: sin este aviso, alguien con más de `MAX_FACTS_SHOWN` aristas
+    // ve una lista que parece completa acá y después, en "!olvida todo", un
+    // conteo mayor sin relación aparente con lo que acaba de leer.
+    if (facts.length >= MAX_FACTS_SHOWN) {
+      lines.push(`\n(te muestro las ${MAX_FACTS_SHOWN} más fuertes)`);
     }
 
     return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
@@ -876,6 +909,14 @@ export class BotService implements OnModuleInit {
     }
 
     const lower = rawArg.toLowerCase();
+    // Minor #4: la confirmación se compara sin acentos (mismo criterio que
+    // `isOnlineUsersRequest` en este archivo) para que "!olvida todo sí" —la
+    // forma natural de confirmar en español— no caiga al buscador de
+    // términos y responda "no encontré nada guardado sobre 'todo sí'". Si
+    // esto no matchea, el flujo cae más abajo a la rama de término/longitud
+    // mínima, que nunca borra nada por su cuenta — el modo de falla sigue
+    // siendo "no hace nada", nunca "borra de más".
+    const lowerNoAccents = this.stripAccents(lower);
 
     if (lower === 'todo') {
       const count = await this.graphUserService.countForgettableAll(authorUsername);
@@ -889,7 +930,7 @@ export class BotService implements OnModuleInit {
       return true;
     }
 
-    if (/^todo\s+si$/i.test(lower)) {
+    if (/^todo\s+si$/i.test(lowerNoAccents)) {
       const deleted = await this.graphUserService.forgetAll(authorUsername);
       if (deleted === 0) {
         this.sendBotMessage(`@${authorUsername} 🤷 Ya no tenía nada guardado sobre vos.`);
@@ -923,6 +964,13 @@ export class BotService implements OnModuleInit {
     return true;
   }
 
+  /** Quita acentos (NFD + strip de diacríticos) para comparar sin importar tilde. */
+  private stripAccents(text: string): string {
+    return text
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '');
+  }
+
   /**
    * Detect requests for the *full list* of online users. Earlier this matched
    * single bare keywords like "online" or "conectados", which falsely fired
@@ -933,10 +981,7 @@ export class BotService implements OnModuleInit {
    */
   private isOnlineUsersRequest(message: string): boolean {
     if (!message || typeof message !== 'string') return false;
-    const lower = message
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, ''); // strip accents so linea/línea both match
+    const lower = this.stripAccents(message.toLowerCase()); // strip accents so linea/línea both match
 
     // Reject questions about a specific user, e.g. "está el admin online?",
     // "esta neru conectado?", "donde anda kei?". Singular "está/esta" + person
