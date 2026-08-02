@@ -50,7 +50,13 @@ export interface Candidate {
  * de esto, el bot estaría diciendo "le gustó a alguien más" apoyado en una
  * sola coincidencia — ruido, no señal de comunidad. No gatilla nada en
  * `GraphService.collaborative` en sí (que puede devolver 1 o 2 candidatas sin
- * problema): el umbral es sólo para decidir si vale la pena MOSTRARLAS.
+ * problema): el umbral cumple DOS funciones río abajo, y las dos leen este
+ * mismo valor porque tienen que coincidir: decidir si vale la pena MOSTRARLAS
+ * en la línea de contexto (`GraphContextService`) y decidir si vale la pena
+ * MARCARLAS como `recommended_to` después de la respuesta (`BotService`,
+ * fix B2). Si los dos umbrales llegaran a divergir, se volvería a marcar
+ * como recomendado algo que el modelo nunca llegó a ver mencionado en el
+ * prompt.
  */
 export const MIN_CANDIDATES = 3;
 
