@@ -133,13 +133,31 @@ describe('BotService — handleAniListRequest (caché)', () => {
     });
 
     it('con acierto pero sin traducción guardada, sí traduce', async () => {
-      cache.findWork.mockResolvedValue({ result: ficha, sinopsisEs: null });
+      // `findWork` real SIEMPRE reconstruye la ficha con `description: null`
+      // (el caché no persiste el inglés crudo, sólo la traducción) — un
+      // acierto sin `sinopsisEs` es un "miss parcial" que necesita volver a
+      // AniList para conseguir el texto que va a traducir.
+      const fichaDeCache: AniListResult = { ...ficha, description: null };
+      cache.findWork.mockResolvedValue({ result: fichaDeCache, sinopsisEs: null });
+      anilist.search.mockResolvedValue(ficha); // AniList sí trae el inglés
       chat.translateToSpanish.mockResolvedValue('traducido');
 
       await invocar('manhwa', 'Solo Leveling', 'Nico');
 
-      expect(anilist.search).not.toHaveBeenCalled();
-      expect(chat.translateToSpanish).toHaveBeenCalled();
+      expect(anilist.search).toHaveBeenCalledWith('manhwa', 'Solo Leveling');
+      expect(chat.translateToSpanish).toHaveBeenCalledWith(ficha.description, 'Nico');
+    });
+
+    it('con acierto pero sin traducción guardada, la ingesta renueva cachedAt (sí habló con AniList)', async () => {
+      const fichaDeCache: AniListResult = { ...ficha, description: null };
+      cache.findWork.mockResolvedValue({ result: fichaDeCache, sinopsisEs: null });
+      anilist.search.mockResolvedValue(ficha);
+      chat.translateToSpanish.mockResolvedValue('traducido');
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+      await dejarCorrer();
+
+      expect(ingest.ingestAniList).toHaveBeenCalledWith('Nico', ficha, 'Solo Leveling', { refreshCache: true });
     });
 
     it('con fallo va por el camino normal', async () => {
@@ -151,6 +169,46 @@ describe('BotService — handleAniListRequest (caché)', () => {
 
       expect(anilist.search).toHaveBeenCalledWith('manhwa', 'Solo Leveling');
       expect(chat.translateToSpanish).toHaveBeenCalled();
+    });
+
+    it('con miss total, la ingesta renueva cachedAt (habló con AniList)', async () => {
+      cache.findWork.mockResolvedValue(null);
+      anilist.search.mockResolvedValue(ficha);
+      chat.translateToSpanish.mockResolvedValue('traducido');
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+      await dejarCorrer();
+
+      expect(ingest.ingestAniList).toHaveBeenCalledWith('Nico', ficha, 'Solo Leveling', { refreshCache: true });
+    });
+
+    it('no persiste la traducción cuando translateToSpanish cae a su fallback (texto igual al original)', async () => {
+      // El fallback documentado de translateToSpanish es devolver el texto
+      // original en inglés cuando el modelo falla o responde vacío. Antes de
+      // este fix eso se guardaba como si fuera una traducción buena y, al no
+      // vencer nunca una obra FINISHED, quedaba en inglés para siempre.
+      cache.findWork.mockResolvedValue(null);
+      anilist.search.mockResolvedValue(ficha);
+      chat.translateToSpanish.mockResolvedValue(ficha.description);
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+      await dejarCorrer();
+
+      expect(cache.saveTranslation).not.toHaveBeenCalled();
+    });
+
+    it('sí persiste la traducción cuando es distinta del original', async () => {
+      cache.findWork.mockResolvedValue(null);
+      anilist.search.mockResolvedValue(ficha);
+      chat.translateToSpanish.mockResolvedValue('Un cazador débil recibe una segunda oportunidad.');
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+      await dejarCorrer();
+
+      expect(cache.saveTranslation).toHaveBeenCalledWith(
+        ficha.id,
+        'Un cazador débil recibe una segunda oportunidad.',
+      );
     });
 
     it('un fallo del caché no impide responder: sigue el camino normal, no el de error', async () => {
@@ -173,13 +231,15 @@ describe('BotService — handleAniListRequest (caché)', () => {
       );
     });
 
-    it('con acierto TAMBIÉN registra que el usuario preguntó', async () => {
+    it('con acierto TAMBIÉN registra que el usuario preguntó, sin renovar cachedAt', async () => {
       cache.findWork.mockResolvedValue({ result: ficha, sinopsisEs: 'texto' });
 
       await invocar('manhwa', 'Solo Leveling', 'Nico');
       await dejarCorrer();
 
-      expect(ingest.ingestAniList).toHaveBeenCalledWith('Nico', ficha, 'Solo Leveling');
+      // refreshCache: false — es un acierto completo, no habló con AniList,
+      // así que no debe renovar `cachedAt` (fix crítico 1: TTL invertido).
+      expect(ingest.ingestAniList).toHaveBeenCalledWith('Nico', ficha, 'Solo Leveling', { refreshCache: false });
     });
   });
 });

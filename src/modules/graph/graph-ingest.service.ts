@@ -107,8 +107,24 @@ export class GraphIngestService {
    * para que la fase 4 pueda servirla sin volver a pegarle a la API ni
    * re-traducir la sinopsis. Los géneros se guardan TODOS, no solo los 5 que
    * muestra la tarjeta.
+   *
+   * `options.refreshCache` (default `true`) controla si esta llamada escribe
+   * `cachedAt`. Se llama a este método también en un acierto de caché (para
+   * mantener viva la arista `asked_about`), y ahí hay que pasar `false`: si
+   * `cachedAt` se renovara en cada acierto, una obra `RELEASING` preguntada
+   * cada semana nunca volvería a vencer — el TTL sólo expiraría las entradas
+   * frías, nunca las calientes, que son justo las que cambian de estado.
+   * Sólo el camino que realmente habló con AniList (miss, o el "miss
+   * parcial" de una traducción faltante) debe renovar la fecha.
    */
-  async ingestAniList(username: string, result: AniListResult, rawQuery: string): Promise<void> {
+  async ingestAniList(
+    username: string,
+    result: AniListResult,
+    rawQuery: string,
+    options: { refreshCache?: boolean } = {},
+  ): Promise<void> {
+    const refreshCache = options.refreshCache ?? true;
+
     try {
       const user = await this.touchUser(username);
       if (!user) return;
@@ -137,7 +153,7 @@ export class GraphIngestService {
           genres: result.genres,
           titleRomaji: result.titleRomaji,
           titleEnglish: result.titleEnglish,
-          cachedAt: new Date(),
+          ...(refreshCache ? { cachedAt: new Date() } : {}),
         },
         bumpWeight: true,
       });

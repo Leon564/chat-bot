@@ -223,6 +223,58 @@ describe('GraphIngestService — señales sociales', () => {
       const top = await graph.topEdges(nico!._id, ['asked_about'], 10);
       expect(top[0].weight).toBe(2);
     });
+
+    describe('refreshCache — el TTL invertido (fix crítico 1)', () => {
+      it('por defecto (camino normal) sí escribe/renueva cachedAt', async () => {
+        await ingest.ingestAniList('Nico', result, 'x');
+
+        const node = await graph.findNode('work', 'anilist:105398');
+        expect(node!.props.cachedAt).toBeDefined();
+      });
+
+      it('con refreshCache=false (acierto de caché) NO escribe cachedAt en un nodo nuevo', async () => {
+        await ingest.ingestAniList('Nico', result, 'x', { refreshCache: false });
+
+        const node = await graph.findNode('work', 'anilist:105398');
+        expect(node).not.toBeNull();
+        // El resto de la ingesta (nodo, alias, arista asked_about, géneros)
+        // sigue pasando igual — sólo cachedAt queda afuera.
+        expect(node!.props.score).toBe(84);
+        expect(node!.props.cachedAt).toBeUndefined();
+      });
+
+      it('con refreshCache=false NO renueva un cachedAt ya existente (simula un acierto sobre una obra RELEASING vieja)', async () => {
+        const hace10dias = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+
+        // Camino normal: deja un cachedAt "viejo" en el nodo.
+        await ingest.ingestAniList('Nico', result, 'x');
+        await connection
+          .collection('bot_nodes')
+          .updateOne({ key: 'anilist:105398' }, { $set: { 'props.cachedAt': hace10dias } });
+
+        // Un acierto de caché sobre esa misma obra sólo debe reforzar
+        // asked_about, sin tocar la fecha — si la tocara, una obra RELEASING
+        // preguntada cada semana nunca volvería a vencer.
+        await ingest.ingestAniList('Nico', result, 'x', { refreshCache: false });
+
+        const node = await graph.findNode('work', 'anilist:105398');
+        expect(new Date(node!.props.cachedAt as string | Date).getTime()).toBe(hace10dias.getTime());
+      });
+
+      it('el camino normal (refreshCache=true, default) sí renueva un cachedAt viejo', async () => {
+        const hace10dias = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+
+        await ingest.ingestAniList('Nico', result, 'x');
+        await connection
+          .collection('bot_nodes')
+          .updateOne({ key: 'anilist:105398' }, { $set: { 'props.cachedAt': hace10dias } });
+
+        await ingest.ingestAniList('Nico', result, 'x');
+
+        const node = await graph.findNode('work', 'anilist:105398');
+        expect(new Date(node!.props.cachedAt as string | Date).getTime()).toBeGreaterThan(hace10dias.getTime());
+      });
+    });
   });
 
   describe('ingesta de música', () => {

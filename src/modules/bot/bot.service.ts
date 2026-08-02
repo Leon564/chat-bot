@@ -179,7 +179,16 @@ export class BotService implements OnModuleInit {
       // llamada al modelo de varios cientos de tokens.
       const cached = await this.graphCacheService.findWork(kind, title).catch(() => null);
 
-      const result = cached ? cached.result : await this.aniListService.search(kind, title);
+      // Un acierto "completo" (ficha + traducción) es el único caso que se
+      // sirve sin tocar AniList. `findWork` siempre reconstruye la ficha con
+      // `description: null` (el caché no persiste el inglés crudo, sólo la
+      // traducción) — así que un acierto SIN traducción guardada no puede
+      // traducir nada por su cuenta: se trata como "miss parcial" y se va a
+      // AniList igual, sólo que conservando la arista `asked_about` como
+      // cualquier acierto (ver `refreshCache` más abajo).
+      const isFullHit = !!cached && !!cached.sinopsisEs;
+
+      const result = isFullHit ? cached!.result : await this.aniListService.search(kind, title);
       if (!result) {
         this.sendBotMessage(
           `@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`,
@@ -194,14 +203,23 @@ export class BotService implements OnModuleInit {
       // arista `asked_about`, que registra que este usuario preguntó por esta
       // obra — sin eso el grafo perdería señal de interés justo para las
       // obras más populares, que son las que más aciertan en el caché.
-      void this.graphIngestService.ingestAniList(authorUsername, result, title).catch(() => {});
+      //
+      // `refreshCache: !isFullHit` es la mitad de la corrección del TTL
+      // invertido: `cachedAt` sólo se renueva cuando esta llamada realmente
+      // habló con AniList (miss total, o el miss parcial de arriba). Un
+      // acierto completo no aporta ningún dato nuevo, así que no debe
+      // renovar la fecha — si lo hiciera, una obra `RELEASING` preguntada
+      // seguido quedaría congelada para siempre en el primer estado que vio.
+      void this.graphIngestService
+        .ingestAniList(authorUsername, result, title, { refreshCache: !isFullHit })
+        .catch(() => {});
 
       let translatedDescription: string | null;
 
-      if (cached && cached.sinopsisEs) {
+      if (isFullHit) {
         // Ya se tradujo antes: nos ahorramos la llamada al modelo y dejamos
         // registro del ahorro para poder medir la tasa de acierto real.
-        translatedDescription = cached.sinopsisEs;
+        translatedDescription = cached!.sinopsisEs;
         void this.usageService
           .record({
             kind: 'translate',
@@ -213,15 +231,21 @@ export class BotService implements OnModuleInit {
           .catch(() => {});
       } else {
         // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
-        // OpenAI que ya usa el bot. Si la traducción falla, translateToSpanish
-        // cae al texto original para no romper la tarjeta.
+        // OpenAI que ya usa el bot. Si la traducción falla o el modelo no
+        // responde, translateToSpanish cae al texto original en inglés para no
+        // romper la tarjeta.
         translatedDescription = result.description
           ? await this.chatService.translateToSpanish(result.description, authorUsername)
           : null;
 
         // La traducción cuesta una llamada al modelo por ficha. Persistirla en
-        // el nodo hace que la próxima consulta de esta obra no la pague.
-        if (translatedDescription) {
+        // el nodo hace que la próxima consulta de esta obra no la pague — pero
+        // sólo si de verdad se tradujo: cuando `translateToSpanish` cae a su
+        // fallback (timeout, rate-limit, respuesta vacía) devuelve el mismo
+        // texto en inglés que recibió, y guardar ESO sería persistir un fallo
+        // transitorio como si fuera una traducción buena. Como una obra
+        // `FINISHED` no vence nunca, ese inglés quedaría servido para siempre.
+        if (translatedDescription && translatedDescription !== result.description) {
           void this.graphCacheService.saveTranslation(result.id, translatedDescription).catch(() => {});
         }
       }
