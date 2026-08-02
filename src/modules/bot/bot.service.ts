@@ -9,7 +9,7 @@ import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
-import { GraphService, Candidate, MAX_CANDIDATES } from '../graph/graph.service';
+import { GraphService, Candidate, MAX_CANDIDATES, MIN_CANDIDATES } from '../graph/graph.service';
 import {
   GraphUserService,
   UserFact,
@@ -257,7 +257,13 @@ export class BotService implements OnModuleInit {
     if (!userNode) return;
 
     const candidates = await this.graphService.collaborative(userNode._id, MAX_CANDIDATES);
-    if (candidates.length === 0) return;
+    // Mismo umbral que decide si `GraphContextService.render` las muestra en
+    // la línea de contexto (`MIN_CANDIDATES`) — no un tope propio. Si
+    // divergieran, con menos candidatas que ese umbral el modelo nunca las
+    // vio en el prompt, y cualquier mención incidental (una pregunta factual
+    // sobre esa obra, no una recomendación) marcaría recommended_to para
+    // siempre algo que nadie llegó a ofrecer de verdad.
+    if (candidates.length < MIN_CANDIDATES) return;
 
     const mentioned = this.mentionedCandidates(response, candidates);
 

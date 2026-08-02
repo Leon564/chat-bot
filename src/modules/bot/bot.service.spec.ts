@@ -977,9 +977,16 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
       .trim()
       .replace(/\s+/g, ' ');
 
+  // Tres candidatas, no dos: MIN_CANDIDATES (3) es el mismo umbral que usa
+  // GraphContextService.render para decidir si las muestra en la línea de
+  // contexto (B2, ronda de corrección final) -- fixtures de 2 nunca superan
+  // ese umbral, así que markCollaborativeRecommendations corta antes de
+  // llegar al filtro de mención y los tests de acá abajo dejarían de
+  // ejercitarlo sin que nadie lo notara.
   const CANDIDATOS: Candidate[] = [
     { key: 'vinland-saga', label: 'Vinland Saga', score: 5 },
     { key: 'berserk', label: 'Berserk', score: 3 },
+    { key: 'orv', label: 'ORV', score: 2 },
   ];
 
   beforeEach(async () => {
@@ -992,6 +999,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
         if (type === 'user' && key === 'Nico') return Promise.resolve({ _id: 'nico-id' });
         if (type === 'work' && key === 'vinland-saga') return Promise.resolve({ _id: 'vinland-id' });
         if (type === 'work' && key === 'berserk') return Promise.resolve({ _id: 'berserk-id' });
+        if (type === 'work' && key === 'orv') return Promise.resolve({ _id: 'orv-id' });
         if (type === 'work' && key === 'air') return Promise.resolve({ _id: 'air-id' });
         if (type === 'work' && key === 'fate') return Promise.resolve({ _id: 'fate-id' });
         if (type === 'work' && key === 'fate-zero') return Promise.resolve({ _id: 'fate-zero-id' });
@@ -1071,16 +1079,20 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
       type: 'recommended_to',
       source: 'signal',
     });
-    // Berserk estaba entre las candidatas que devolvió collaborative, pero el
-    // modelo no la mencionó: no se marca. Marcar de más significaría no
-    // volver a ofrecerla más adelante, aunque nunca se haya sugerido de verdad.
+    // Berserk y ORV estaban entre las candidatas que devolvió collaborative,
+    // pero el modelo no las mencionó: no se marcan. Marcar de más significaría
+    // no volver a ofrecerlas más adelante, aunque nunca se hayan sugerido de
+    // verdad.
     expect(graph.upsertEdge).not.toHaveBeenCalledWith(
       expect.objectContaining({ to: 'berserk-id' }),
+    );
+    expect(graph.upsertEdge).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'orv-id' }),
     );
   });
 
   it('una candidata que el modelo no mencionó NO se marca', async () => {
-    // Ninguna de las dos etiquetas aparece en el texto.
+    // Ninguna de las tres etiquetas aparece en el texto.
     chat.chat.mockResolvedValue('Qué buena pregunta, no tengo nada puntual para recomendarte hoy.');
 
     await invocar('bot recomendame algo', 'Nico');
@@ -1091,7 +1103,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     expect(graph.upsertEdge).not.toHaveBeenCalled();
   });
 
-  it('si el modelo menciona las dos candidatas, se marcan las dos', async () => {
+  it('si el modelo menciona dos de las tres candidatas, se marcan esas dos (y no la tercera)', async () => {
     chat.chat.mockResolvedValue('Te recomiendo Vinland Saga y también Berserk, ambas te van a encantar.');
 
     await invocar('bot recomendame algo', 'Nico');
@@ -1100,11 +1112,35 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     expect(graph.upsertEdge).toHaveBeenCalledTimes(2);
     expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'vinland-id' }));
     expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'berserk-id' }));
+    // ORV también estaba entre las candidatas (llegan las 3 al umbral de
+    // MIN_CANDIDATES), pero el modelo no la mencionó.
+    expect(graph.upsertEdge).not.toHaveBeenCalledWith(expect.objectContaining({ to: 'orv-id' }));
   });
 
   it('sin candidatas de collaborative, no marca nada', async () => {
     graph.collaborative.mockResolvedValue([]);
     chat.chat.mockResolvedValue('Vinland Saga es genial.');
+
+    await invocar('bot recomendame algo', 'Nico');
+    await dejarCorrer();
+
+    expect(graph.upsertEdge).not.toHaveBeenCalled();
+  });
+
+  it('con menos de MIN_CANDIDATES no marca aunque el modelo mencione una candidata (B2, ronda de corrección final)', async () => {
+    // Sólo 2 candidatas -- por debajo de MIN_CANDIDATES (3), el umbral que
+    // usa GraphContextService.render para decidir si las muestra en la línea
+    // de contexto. Con 2, el modelo nunca las vio como sugerencia: que
+    // mencione "Vinland Saga" acá es casualidad (p. ej. una pregunta factual
+    // sobre la obra), no una recomendación cumplida. Sin este mismo umbral en
+    // el marcado, quedaría etiquetada recommended_to para siempre -- una
+    // buena recomendación futura perdida en silencio, sin que nadie la haya
+    // visto de verdad.
+    graph.collaborative.mockResolvedValue([
+      { key: 'vinland-saga', label: 'Vinland Saga', score: 5 },
+      { key: 'berserk', label: 'Berserk', score: 3 },
+    ]);
+    chat.chat.mockResolvedValue('Deberías probar Vinland Saga, seguro te gusta.');
 
     await invocar('bot recomendame algo', 'Nico');
     await dejarCorrer();
@@ -1124,7 +1160,14 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
 
   describe('límite de palabra en el marcado (ronda de corrección 1)', () => {
     it('"Air" NO se marca cuando el texto sólo dice "aire" — includes() sin límite de palabra marcaría de más', async () => {
-      graph.collaborative.mockResolvedValue([{ key: 'air', label: 'Air', score: 4 }]);
+      // Dos candidatas de relleno (no mencionadas) sólo para llegar a
+      // MIN_CANDIDATES -- por debajo de eso, markCollaborativeRecommendations
+      // corta antes de llegar al filtro de mención que este test ejercita.
+      graph.collaborative.mockResolvedValue([
+        { key: 'air', label: 'Air', score: 4 },
+        { key: 'vinland-saga', label: 'Vinland Saga', score: 2 },
+        { key: 'orv', label: 'ORV', score: 1 },
+      ]);
       chat.chat.mockResolvedValue('Che, hoy hace un aire fresco buenísimo para salir a caminar.');
 
       await invocar('bot recomendame algo', 'Nico');
@@ -1136,9 +1179,12 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     });
 
     it('"Fate" NO se marca cuando sólo se mencionó "Fate/Zero" (candidata contenida en otra)', async () => {
+      // Tercera candidata de relleno (no mencionada) sólo para llegar a
+      // MIN_CANDIDATES -- ver comentario del test de "Air" arriba.
       graph.collaborative.mockResolvedValue([
         { key: 'fate', label: 'Fate', score: 3 },
         { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+        { key: 'orv', label: 'ORV', score: 1 },
       ]);
       chat.chat.mockResolvedValue('Deberías ver Fate/Zero, es un clásico.');
 
@@ -1155,9 +1201,12 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     });
 
     it('si "Fate" aparece POR SEPARADO de "Fate/Zero" en el mismo texto, también se marca', async () => {
+      // Tercera candidata de relleno (no mencionada) sólo para llegar a
+      // MIN_CANDIDATES -- ver comentario del test de "Air" arriba.
       graph.collaborative.mockResolvedValue([
         { key: 'fate', label: 'Fate', score: 3 },
         { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+        { key: 'orv', label: 'ORV', score: 1 },
       ]);
       chat.chat.mockResolvedValue('Te recomiendo Fate/Zero, y si te gusta, después mirá Fate a secas.');
 
