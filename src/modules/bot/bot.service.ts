@@ -177,7 +177,16 @@ export class BotService implements OnModuleInit {
     // cortaron antes si aplicaban, y ninguno de ellos cuesta tokens: limitarlos
     // sería peor que no limitar nada.
     if (!this.rateLimitService.check(authorUsername, authorRole)) {
-      this.sendBotMessage(`@${authorUsername} ${RATE_LIMITED_MESSAGE}`);
+      // Revisión final (Important #2): avisar en CADA mensaje rechazado abre
+      // un canal de flood gratuito — el bot corre con `role=bot`, que
+      // bypasea el anti-spam del gateway, así que nada del otro lado frena a
+      // alguien pasado de cupo que siga escribiendo. `shouldNotifyRejection`
+      // deja pasar un aviso por ventana de cooldown y calla el resto — nunca
+      // silencio total, porque la persona no entendería por qué el bot la
+      // empezó a ignorar.
+      if (this.rateLimitService.shouldNotifyRejection(authorUsername)) {
+        this.sendBotMessage(`@${authorUsername} ${RATE_LIMITED_MESSAGE}`);
+      }
       return;
     }
 

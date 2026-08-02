@@ -5,6 +5,14 @@ import { ConfigService } from '@nestjs/config';
 const WINDOW_MS = 60 * 60 * 1000;
 
 /**
+ * Cooldown propio (independiente de `WINDOW_MS`) para el AVISO de rechazo,
+ * no para el límite en sí — ver `shouldNotifyRejection`. Cinco minutos deja
+ * que alguien que se pasó de cupo escribiendo seguido reciba UN aviso y
+ * después silencio, en vez de un aviso por mensaje.
+ */
+const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
  * Cada tantas invocaciones a `check` se barre el Map completo, no sólo la
  * entrada del usuario que está consultando (ver `maybeSweep`). Un número
  * chico penaliza el throughput; uno enorme deja crecer la memoria durante
@@ -33,6 +41,14 @@ export class RateLimitService {
 
   /** Marcas de tiempo (epoch ms) de llamadas aceptadas, por usuario normalizado. */
   private readonly hits = new Map<string, number[]>();
+
+  /**
+   * Último aviso de rechazo (epoch ms) enviado a cada usuario normalizado —
+   * ver `shouldNotifyRejection`. Mapa aparte de `hits`: uno cuenta llamadas
+   * ACEPTADAS dentro de la ventana de una hora, éste cuenta el último aviso
+   * de rechazo dentro de una ventana de `NOTIFY_COOLDOWN_MS` mucho más corta.
+   */
+  private readonly lastNotifiedAt = new Map<string, number>();
 
   /** Contador de invocaciones desde el último barrido completo del Map. */
   private checksSinceSweep = 0;
@@ -72,6 +88,33 @@ export class RateLimitService {
     return true;
   }
 
+  /**
+   * `true` sólo la primera vez que se llama para `username` dentro de una
+   * ventana de `NOTIFY_COOLDOWN_MS` — pensado para que `BotService` avise UNA
+   * vez que el usuario fue rate-limited y después se quede en silencio en
+   * vez de responder a cada mensaje rechazado.
+   *
+   * Existe porque el bot corre con `role=bot`, que bypasea el anti-spam del
+   * gateway (ver `chat.gateway.ts`) — sin este cooldown propio, alguien
+   * pasado de cupo que siga escribiendo recibe un aviso por mensaje, y como
+   * ese aviso no cuesta tokens pero sí un mensaje de chat por cada uno,
+   * `check()` (que evita gastar tokens) terminaba abriendo un canal de flood
+   * gratuito, justo para quien agota la cuota a propósito.
+   *
+   * Silencio total tampoco sirve — la persona no entendería por qué el bot
+   * la empezó a ignorar sin avisar — así que el balance es "avisar una vez y
+   * después callar" hasta que el cooldown expire.
+   */
+  shouldNotifyRejection(username: string): boolean {
+    const key = this.normalize(username);
+    const now = Date.now();
+    const last = this.lastNotifiedAt.get(key);
+    if (last !== undefined && now - last < NOTIFY_COOLDOWN_MS) return false;
+
+    this.lastNotifiedAt.set(key, now);
+    return true;
+  }
+
   private normalize(username: string): string {
     return username.trim().toLowerCase();
   }
@@ -89,6 +132,10 @@ export class RateLimitService {
     this.checksSinceSweep += 1;
     if (this.checksSinceSweep < SWEEP_EVERY_N_CHECKS) return;
     this.checksSinceSweep = 0;
+
+    for (const [key, lastNotified] of this.lastNotifiedAt) {
+      if (now - lastNotified >= NOTIFY_COOLDOWN_MS) this.lastNotifiedAt.delete(key);
+    }
 
     for (const [key, timestamps] of this.hits) {
       const fresh = timestamps.filter((t) => now - t < WINDOW_MS);

@@ -1,3 +1,17 @@
+/**
+ * `parseInt` de un entero de `.env` con fallback seguro cuando el valor no es
+ * numérico. Existe porque `parseInt('abc', 10)` da `NaN`, y `NaN ?? default`
+ * NO cae al default (`NaN` no es nullish) — un operador editando el `.env` a
+ * mano y tipeando mal `RATE_LIMIT_PER_HOUR` apagaba el guard de costo por
+ * completo y en silencio: `NaN <= 0` es `false` (no toma la rama de
+ * "desactivado") y `fresh.length >= NaN` es `false` SIEMPRE, así que nadie se
+ * limitaba nunca, sin un solo log de aviso.
+ */
+function parseIntEnv(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export default () => ({
   port: parseInt(process.env.PORT || '3000', 10),
 
@@ -28,7 +42,7 @@ export default () => ({
     // !quesabes/!olvida — ninguno de esos cuesta tokens. admin/superAdmin
     // nunca se limitan. RATE_LIMIT_PER_HOUR=0 desactiva el límite por
     // completo (todos pasan) — interruptor de emergencia sin tocar código.
-    rateLimitPerHour: parseInt(process.env.RATE_LIMIT_PER_HOUR || '20', 10),
+    rateLimitPerHour: parseIntEnv(process.env.RATE_LIMIT_PER_HOUR, 20),
   },
 
   // Music Configuration

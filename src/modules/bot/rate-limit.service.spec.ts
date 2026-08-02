@@ -90,4 +90,33 @@ describe('RateLimitService', () => {
       expect(service.check('Nico')).toBe(true);
     }
   });
+
+  describe('shouldNotifyRejection (Important #2 — cooldown del aviso, no del límite)', () => {
+    it('avisa la primera vez y calla las siguientes dentro del cooldown', () => {
+      expect(service.shouldNotifyRejection('Nico')).toBe(true);
+      expect(service.shouldNotifyRejection('Nico')).toBe(false);
+      expect(service.shouldNotifyRejection('Nico')).toBe(false);
+    });
+
+    it('pasados 5 minutos vuelve a avisar', () => {
+      expect(service.shouldNotifyRejection('Nico')).toBe(true);
+      expect(service.shouldNotifyRejection('Nico')).toBe(false);
+
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1000);
+
+      expect(service.shouldNotifyRejection('Nico')).toBe(true);
+    });
+
+    it('el cooldown es por usuario: uno no calla al otro', () => {
+      expect(service.shouldNotifyRejection('Nico')).toBe(true);
+      expect(service.shouldNotifyRejection('Nico')).toBe(false);
+
+      expect(service.shouldNotifyRejection('Kei')).toBe(true);
+    });
+
+    it('tolera mayúsculas y espacios, igual que check()', () => {
+      expect(service.shouldNotifyRejection('Nico')).toBe(true);
+      expect(service.shouldNotifyRejection(' NICO ')).toBe(false);
+    });
+  });
 });

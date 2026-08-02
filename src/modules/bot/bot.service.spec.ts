@@ -731,7 +731,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
 describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
   let service: BotService;
   let chat: { chat: jest.Mock };
-  let rateLimit: { check: jest.Mock };
+  let rateLimit: { check: jest.Mock; shouldNotifyRejection: jest.Mock };
   let ingest: { ingestSocial: jest.Mock };
   let logging: { saveLog: jest.Mock };
   let socket: {
@@ -746,7 +746,10 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
 
   beforeEach(async () => {
     chat = { chat: jest.fn().mockResolvedValue('respuesta del modelo') };
-    rateLimit = { check: jest.fn() };
+    // `shouldNotifyRejection` por defecto `true`: estos tests verifican el
+    // guard en sí (check), no el cooldown del aviso — ese vive en su propio
+    // describe más abajo.
+    rateLimit = { check: jest.fn(), shouldNotifyRejection: jest.fn().mockReturnValue(true) };
     ingest = { ingestSocial: jest.fn().mockResolvedValue(undefined) };
     logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
     socket = {
@@ -817,6 +820,22 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
       expect.stringContaining('respuesta del modelo'),
     );
     expect(rateLimit.check).toHaveBeenCalledWith('Nico', 'user');
+    expect(rateLimit.shouldNotifyRejection).toHaveBeenCalledWith('Nico');
+  });
+
+  it('Important #2 — pasado el cooldown de aviso, NO se manda el mensaje de rate-limit (silencio, no flood)', async () => {
+    // `shouldNotifyRejection` en `false` simula que ya se avisó recientemente
+    // dentro de la ventana de cooldown: BotService no debe insistir con el
+    // aviso en cada mensaje rechazado — eso abriría un canal de flood
+    // gratuito, justo lo que este guard evita.
+    rateLimit.check.mockReturnValue(false);
+    rateLimit.shouldNotifyRejection.mockReturnValue(false);
+
+    await invocar('bot decime algo', 'Nico', 'user');
+    await dejarCorrer();
+
+    expect(chat.chat).not.toHaveBeenCalled();
+    expect(socket.sendMessage).not.toHaveBeenCalled();
   });
 
   it('superado el tope, un admin sí llega al modelo', async () => {
