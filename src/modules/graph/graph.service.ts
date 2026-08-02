@@ -169,6 +169,33 @@ export class GraphService {
    * props y (opcionalmente) sube el peso.
    */
   async upsertNode(input: UpsertNodeInput): Promise<GraphNodeDocument | null> {
+    return this.upsertNodeWithReturn(input, 'after');
+  }
+
+  /**
+   * Igual que `upsertNode` en todo (misma normalización de key, misma fusión
+   * de aliases/props, mismo `$inc` de peso), salvo que devuelve el documento
+   * tal como estaba ANTES de esta escritura -- `null` si el nodo se crea
+   * recién ahora, porque entonces no había "antes" -- en vez del resultante.
+   *
+   * Existe para `GraphIngestService.touchUser` (Task 4, fase 5b —
+   * reconocimiento de regreso): para saber cuánto tiempo pasó desde el
+   * último mensaje de alguien hace falta el valor de `lastMessageAt` de
+   * ANTES de pisarlo con "ahora", y `findOneAndUpdate` con
+   * `returnDocument: 'before'` lo da en la misma escritura, sin una lectura
+   * previa aparte.
+   *
+   * `upsertNode` (arriba) NO cambia: sigue devolviendo 'after' para todos sus
+   * llamadores existentes, sin ninguna diferencia de comportamiento.
+   */
+  async upsertNodeReturningPrevious(input: UpsertNodeInput): Promise<GraphNodeDocument | null> {
+    return this.upsertNodeWithReturn(input, 'before');
+  }
+
+  private async upsertNodeWithReturn(
+    input: UpsertNodeInput,
+    returnDocument: 'before' | 'after',
+  ): Promise<GraphNodeDocument | null> {
     const normalize = this.keyNormalizerFor(input.type);
     const key = normalize(input.key);
     if (!key) return null;
@@ -198,7 +225,7 @@ export class GraphService {
     return this.nodeModel
       .findOneAndUpdate({ type: input.type, key }, update, {
         upsert: true,
-        returnDocument: 'after',
+        returnDocument,
       })
       .exec();
   }

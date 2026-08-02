@@ -27,6 +27,18 @@ const CONTEXT_EDGE_TYPES: EdgeType[] = ['likes', 'recommended_to', 'interacts_wi
  */
 export const LAST_NODE_WINDOW_MS = 30 * 60 * 1000;
 
+/** Un día, en milisegundos — unidad de `RETURNING_AFTER_DAYS`. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Umbral, en días, a partir del cual alguien que vuelve a escribir se
+ * considera que "vuelve después de un tiempo" (Task 4, fase 5b —
+ * reconocimiento de regreso). Lee `props.previousMessageAt`, que
+ * `GraphIngestService.touchUser` deja con el `lastMessageAt` que el usuario
+ * tenía ANTES del mensaje actual — no con el de ahora.
+ */
+export const RETURNING_AFTER_DAYS = 14;
+
 /**
  * Frases-gancho de cada sección: un verbo/preposición que sin su objeto no
  * dice nada por sí solo. `truncate()` las usa para no dejar un fragmento a
@@ -41,6 +53,7 @@ const DANGLING_SUFFIXES = [
   'interactuó con',
   'lo último que miró fue',
   'justo preguntó por',
+  'su gusto más fuerte es',
 ];
 
 /** Tipos de nodo que puede mencionar una pregunta (nunca 'user'). */
@@ -84,8 +97,14 @@ export class GraphContextService {
 
       const edges = await this.graph.topEdges(userNode._id, CONTEXT_EDGE_TYPES, MAX_EDGES);
       const lastNode = this.resolveLastNode(userNode);
+      const previousMessageAt = this.resolvePreviousMessageAt(userNode);
+      const returningNote = this.resolveReturningNote(edges, previousMessageAt);
 
-      if (edges.length === 0 && !lastNode) return '';
+      // Alguien que vuelve después de mucho tiempo pero no tiene ningún
+      // `likes`/`recommended_to`/`interacts_with` ni `lastNode` reciente
+      // igual merece la nota de regreso — sin esta condición extra, el corte
+      // temprano de abajo la descartaría en silencio junto con el resto.
+      if (edges.length === 0 && !lastNode && !returningNote) return '';
 
       const highlight = await this.resolveHighlight(message, edges);
       // Sólo lectura, igual que el resto de este método: si el usuario no
@@ -93,7 +112,14 @@ export class GraphContextService {
       // sin tocar Mongo de más (ver el corte temprano en `GraphService`).
       const candidates = await this.graph.collaborative(userNode._id, MAX_CANDIDATES);
 
-      const line = this.render(userNode.label || username, edges, highlight, lastNode, candidates);
+      const line = this.render(
+        userNode.label || username,
+        edges,
+        highlight,
+        lastNode,
+        candidates,
+        returningNote,
+      );
       return this.truncate(line);
     } catch (err) {
       this.logger.warn(`build falló, se sigue sin contexto extra: ${(err as Error).message}`);
@@ -146,6 +172,47 @@ export class GraphContextService {
   }
 
   /**
+   * Lee `props.previousMessageAt` del nodo de usuario -- el `lastMessageAt`
+   * que tenía ANTES del mensaje actual, escrito por
+   * `GraphIngestService.touchUser`. `null` si nunca se escribió (primer
+   * mensaje de la persona) o si viene mal formado.
+   */
+  private resolvePreviousMessageAt(userNode: GraphNodeDocument): Date | null {
+    const raw = (userNode.props as Record<string, unknown> | undefined)?.previousMessageAt as
+      | string
+      | Date
+      | undefined;
+    if (!raw) return null;
+
+    const at = new Date(raw);
+    if (Number.isNaN(at.getTime())) return null;
+    return at;
+  }
+
+  /**
+   * Si `previousMessageAt` es de hace más de `RETURNING_AFTER_DAYS`, arma el
+   * dato crudo de que esta persona vuelve después de un tiempo -- nunca el
+   * saludo: el tono lo pone el modelo con su propia voz (personalidad
+   * configurable), no el código. Si además tiene algún `likes`, se agrega el
+   * más fuerte (el primero de `edges` filtrado por tipo -- `edges` ya viene
+   * ordenado por peso desde `topEdges`); si no tiene ninguno, la nota se
+   * arma igual, sin inventar un gusto.
+   *
+   * `null` si no hay `previousMessageAt`, o si no pasó suficiente tiempo
+   * todavía (alguien que escribió ayer NO es "alguien que vuelve").
+   */
+  private resolveReturningNote(edges: TopEdge[], previousMessageAt: Date | null): string | null {
+    if (!previousMessageAt) return null;
+
+    const daysSince = Math.floor((Date.now() - previousMessageAt.getTime()) / DAY_MS);
+    if (daysSince <= RETURNING_AFTER_DAYS) return null;
+
+    const strongestLike = edges.find((e) => e.type === 'likes')?.label ?? null;
+    const base = `vuelve después de ${daysSince} días sin escribir`;
+    return strongestLike ? `${base}; su gusto más fuerte es ${strongestLike}` : base;
+  }
+
+  /**
    * Agrupa por tipo de relación para que el modelo distinga "le gusta" de "ya
    * le recomendé".
    *
@@ -171,6 +238,12 @@ export class GraphContextService {
    * Sólo se muestran con al menos `MIN_CANDIDATES`: por debajo de eso sería
    * "le gustó a alguien más" apoyado en una sola coincidencia, que no es
    * una señal de comunidad real.
+   *
+   * La nota de regreso (Task 4, fase 5b) va PRIMERO, antes que gustos y todo
+   * lo demás: es la sección que más vale la pena proteger de un recorte por
+   * `MAX_CHARS` (ver `truncate()`, que corta por el final de la línea) --
+   * saber que alguien no escribía hace rato es justo el dato que más cambia
+   * cómo el modelo abre la respuesta.
    */
   private render(
     displayName: string,
@@ -178,12 +251,14 @@ export class GraphContextService {
     highlight: string | null,
     lastNode: LastNodeProp | null,
     candidates: Candidate[],
+    returningNote: string | null,
   ): string {
     const likes = edges.filter((e) => e.type === 'likes').map((e) => e.label);
     const recommended = edges.filter((e) => e.type === 'recommended_to').map((e) => e.label);
     const interactions = edges.filter((e) => e.type === 'interacts_with').map((e) => e.label);
 
     const segments: string[] = [];
+    if (returningNote) segments.push(returningNote);
     if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);
     if (recommended.length > 0) segments.push(`ya le recomendé ${recommended.join(', ')}`);
     if (candidates.length >= MIN_CANDIDATES) {

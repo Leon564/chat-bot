@@ -632,4 +632,63 @@ describe('GraphService — nodos', () => {
       await expect(service.collaborative(u._id, 5)).resolves.toEqual([]);
     });
   });
+
+  describe('upsertNodeReturningPrevious (Task 4, fase 5b — reconocimiento de regreso)', () => {
+    it('entrega null la primera vez (no había ningún documento antes)', async () => {
+      const result = await service.upsertNodeReturningPrevious({
+        type: 'user',
+        key: 'nico',
+        label: 'Nico',
+        props: { marca: 'primera' },
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('en la segunda llamada entrega el documento tal como estaba ANTES de esta escritura, no el resultante', async () => {
+      await service.upsertNodeReturningPrevious({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'primera' },
+      });
+      const previous = await service.upsertNodeReturningPrevious({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'segunda' },
+      });
+
+      // Si se devolviera el documento POSTERIOR (bug de orden invertido —
+      // exactamente el que esta tarea existe para evitar), esta aserción
+      // vería 'segunda' en vez de 'primera' y fallaría.
+      expect(previous).not.toBeNull();
+      expect(previous!.props.marca).toBe('primera');
+
+      // Y la escritura sí ocurrió -- leyendo aparte, ya quedó en 'segunda'.
+      const actual = await service.findNode('user', 'nico');
+      expect(actual!.props.marca).toBe('segunda');
+    });
+
+    it('también hace el upsert normal: crea, fusiona props y bumpea peso igual que upsertNode', async () => {
+      await service.upsertNodeReturningPrevious({
+        type: 'work', key: 'anilist:1', label: 'Obra', bumpWeight: true,
+      });
+      await service.upsertNodeReturningPrevious({
+        type: 'work', key: 'anilist:1', label: 'Obra', bumpWeight: true,
+      });
+
+      const actual = await service.findNode('work', 'anilist:1');
+      expect(actual!.weight).toBe(2);
+
+      const total = await connection.collection('bot_nodes').countDocuments({ type: 'work' });
+      expect(total).toBe(1);
+    });
+
+    it('el upsertNode existente sigue devolviendo el documento POSTERIOR (sin regresión)', async () => {
+      await service.upsertNode({ type: 'user', key: 'nico', label: 'Nico', props: { marca: 'primera' } });
+      const after = await service.upsertNode({
+        type: 'user', key: 'nico', label: 'Nico', props: { marca: 'segunda' },
+      });
+
+      // Si alguien accidentalmente cambiara upsertNode a 'before', este test
+      // vería 'primera' en vez de 'segunda' y fallaría -- es la comprobación
+      // de que la variante nueva no tocó al llamador existente.
+      expect(after!.props.marca).toBe('segunda');
+    });
+  });
 });

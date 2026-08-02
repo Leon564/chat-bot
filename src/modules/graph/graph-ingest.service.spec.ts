@@ -595,4 +595,66 @@ describe('GraphIngestService — señales sociales', () => {
       });
     });
   });
+
+  describe('previousMessageAt (Task 4, fase 5b — reconocimiento de regreso)', () => {
+    it('en el primer mensaje de alguien, previousMessageAt queda sin definir', async () => {
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      expect(nico!.props.previousMessageAt).toBeUndefined();
+      // lastMessageAt sí queda escrito -- lo único que falta es "el anterior".
+      expect(nico!.props.lastMessageAt).toBeDefined();
+    });
+
+    it('touchUser guarda en previousMessageAt el lastMessageAt ANTERIOR, no el que acaba de escribir', async () => {
+      await ingest.touchUser('Nico');
+
+      // Retrasa el lastMessageAt sembrado por el primer touch, para poder
+      // distinguirlo sin ambigüedad del "ahora" del segundo touch.
+      const hace20Dias = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+      await connection.collection('bot_nodes').updateOne(
+        { type: 'user', key: 'nico' },
+        { $set: { 'props.lastMessageAt': hace20Dias } },
+      );
+
+      const antes = Date.now();
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      const previousMessageAt = new Date(nico!.props.previousMessageAt as string | Date);
+      const lastMessageAt = new Date(nico!.props.lastMessageAt as string | Date);
+
+      // Si `touchUser` tomara el valor del documento POSTERIOR (el de ESTE
+      // segundo touch, "ahora") en vez del anterior -- exactamente el bug de
+      // orden invertido que esta tarea existe para evitar --
+      // `previousMessageAt` caería a milisegundos de `antes`, no a los 20
+      // días sembrados. Esta aserción distingue ambos casos sin ambigüedad.
+      expect(previousMessageAt.getTime()).toBe(hace20Dias.getTime());
+      // Y lastMessageAt sí se refrescó a "ahora" -- el dato viejo no se perdió,
+      // se movió a previousMessageAt.
+      expect(lastMessageAt.getTime()).toBeGreaterThanOrEqual(antes);
+    });
+
+    it('dos mensajes seguidos (sin tiempo real entre medio) dejan previousMessageAt cerca de ahora, no de la nada', async () => {
+      await ingest.touchUser('Nico');
+      await ingest.touchUser('Nico');
+
+      const nico = await graph.findNode('user', 'nico');
+      const previousMessageAt = new Date(nico!.props.previousMessageAt as string | Date);
+
+      expect(Date.now() - previousMessageAt.getTime()).toBeLessThan(5000);
+    });
+
+    it('touchUser sigue devolviendo un documento no nulo con _id resoluble, incluso en el primer mensaje de alguien', async () => {
+      // Los llamadores (ingestSocial/ingestAniList/ingestTrack/ingestFact)
+      // usan `author._id` de inmediato -- si touchUser devolviera el
+      // documento ANTERIOR (null en el primer mensaje) en vez del posterior,
+      // esto rompería la ingesta completa para cualquier usuario nuevo.
+      const author = await ingest.touchUser('Nico Nuevo');
+
+      expect(author).not.toBeNull();
+      expect(author!._id).toBeDefined();
+      expect(author!.key).toBe('nico nuevo');
+    });
+  });
 });

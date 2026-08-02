@@ -9,7 +9,13 @@ import {
 import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
-import { GraphContextService, MAX_EDGES, MAX_CHARS, LAST_NODE_WINDOW_MS } from './graph-context.service';
+import {
+  GraphContextService,
+  MAX_EDGES,
+  MAX_CHARS,
+  LAST_NODE_WINDOW_MS,
+  RETURNING_AFTER_DAYS,
+} from './graph-context.service';
 import { MIN_CANDIDATES } from './graph.service';
 
 describe('GraphContextService', () => {
@@ -62,6 +68,18 @@ describe('GraphContextService', () => {
       props: { lastNode: { key: `work:${label}`, type: 'work', label, at } },
     });
   };
+
+  /** Escribe `props.previousMessageAt` directamente, como haría `GraphIngestService.touchUser`. */
+  const sembrarPreviousMessageAt = async (user: string, at: Date) => {
+    return graph.upsertNode({
+      type: 'user',
+      key: user,
+      label: user,
+      props: { previousMessageAt: at },
+    });
+  };
+
+  const haceDias = (dias: number) => new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
 
   it('devuelve cadena vacía para un usuario sin nada en el grafo', async () => {
     expect(await service.build('Nico', 'hola')).toBe('');
@@ -331,5 +349,128 @@ describe('GraphContextService', () => {
     jest.spyOn(graph, 'findNode').mockRejectedValueOnce(new Error('mongo caído'));
 
     expect(await service.build('Nico', 'hola')).toBe('');
+  });
+
+  describe('nota de regreso — previousMessageAt (Task 4, fase 5b)', () => {
+    it('un usuario cuyo previousMessageAt es de hace más de RETURNING_AFTER_DAYS recibe la nota de regreso', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+      await sembrarPreviousMessageAt('Nico', haceDias(RETURNING_AFTER_DAYS + 6));
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toMatch(/vuelve después de \d+ días sin escribir/i);
+    });
+
+    it('uno que habló ayer NO la recibe', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+      await sembrarPreviousMessageAt('Nico', haceDias(1));
+
+      const linea = await service.build('Nico', 'hola');
+
+      // Si la condición de días estuviera invertida (p. ej. "< " en vez de
+      // "> RETURNING_AFTER_DAYS"), este caso -que está del lado equivocado
+      // del umbral- dispararía la nota igual, y esta aserción lo detectaría.
+      expect(linea).not.toMatch(/vuelve después de/i);
+    });
+
+    it('exactamente en el umbral (RETURNING_AFTER_DAYS días, ni uno más) todavía NO se considera "más de"', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+      await sembrarPreviousMessageAt('Nico', haceDias(RETURNING_AFTER_DAYS));
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).not.toMatch(/vuelve después de/i);
+    });
+
+    it('uno sin previousMessageAt (primera vez que se le ve) NO la recibe', async () => {
+      await sembrarGusto('Nico', 'Berserk');
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).not.toMatch(/vuelve después de/i);
+    });
+
+    it('la nota incluye su gusto más fuerte, si tiene alguno', async () => {
+      await sembrarGusto('Nico', 'Berserk', 5);
+      await sembrarGusto('Nico', 'Poco Reforzado', 1);
+      await sembrarPreviousMessageAt('Nico', haceDias(RETURNING_AFTER_DAYS + 6));
+
+      const linea = await service.build('Nico', 'hola');
+
+      // La nota de regreso es su propio segmento (termina en el próximo ';'
+      // que abre la sección "le gusta"): el gusto que carga tiene que ser el
+      // más fuerte (Berserk, mayor peso), no "Poco Reforzado".
+      const nota = linea.match(/vuelve después de \d+ días sin escribir; su gusto más fuerte es ([^;]+)/i);
+      expect(nota).not.toBeNull();
+      expect(nota![1]).toBe('Berserk');
+    });
+
+    it('alguien que vuelve pero no tiene gustos guardados recibe la nota igual, sin inventar uno', async () => {
+      // Sin sembrarGusto, sin lastNode, sin ninguna otra arista: la ÚNICA
+      // señal en el grafo es previousMessageAt. Si el corte temprano de
+      // `build()` no considerara la nota de regreso, esto devolvería '' --
+      // exactamente el caso que la revisión final de esta tarea señaló.
+      await sembrarPreviousMessageAt('Nico', haceDias(RETURNING_AFTER_DAYS + 6));
+
+      const linea = await service.build('Nico', 'hola');
+
+      expect(linea).toMatch(/vuelve después de \d+ días sin escribir/i);
+      // Ningún gusto inventado: la nota termina con "sin escribir" (más el
+      // punto final de la línea, si no hay más secciones), sin agregar
+      // "su gusto más fuerte es" cuando no hay ningún `likes`.
+      expect(linea).not.toMatch(/su gusto más fuerte/i);
+      expect(linea).toBe(`Sobre Nico: vuelve después de ${RETURNING_AFTER_DAYS + 6} días sin escribir.`);
+    });
+
+    it('respeta el tope de caracteres con TODAS las secciones activas a la vez (gustos, recomendados, candidatas, interlocutores, lo mencionado, lo último visto y la nota de regreso)', async () => {
+      // Gustos (varios, para ejercitar la sección "le gusta").
+      const { u } = await sembrarGusto('Nico', 'Berserk', 10);
+      await sembrarGusto('Nico', 'Vinland Saga', 8);
+
+      // Recomendado.
+      const rec = await graph.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await graph.upsertEdge({ from: u._id, to: rec!._id, type: 'recommended_to', source: 'signal' });
+
+      // Interlocutor.
+      const kei = await graph.upsertNode({ type: 'user', key: 'kei', label: 'kei' });
+      await graph.upsertEdge({ from: u._id, to: kei!._id, type: 'interacts_with', source: 'signal' });
+
+      // Lo último que miró (dentro de la ventana).
+      await sembrarLastNode('Nico', 'Frieren');
+
+      // Candidatas colaborativas (>= MIN_CANDIDATES): alguien más que
+      // comparte el gusto por Berserk, con >= MIN_CANDIDATES obras propias.
+      const otro = await graph.upsertNode({ type: 'user', key: 'rin', label: 'rin' });
+      const berserk = await graph.findNode('work', 'Berserk');
+      await graph.upsertEdge({ from: otro!._id, to: berserk!._id, type: 'likes', source: 'fact' });
+      for (let i = 0; i < MIN_CANDIDATES; i++) {
+        const cand = await graph.upsertNode({ type: 'work', key: `candidata${i}`, label: `Candidata ${i}` });
+        await graph.upsertEdge({ from: otro!._id, to: cand!._id, type: 'likes', source: 'fact' });
+      }
+
+      // Nota de regreso.
+      await sembrarPreviousMessageAt('Nico', haceDias(RETURNING_AFTER_DAYS + 20));
+
+      const linea = await service.build('Nico', 'bot que onda con berserk?');
+
+      // Todas las secciones están presentes -- si alguna se hubiera omitido
+      // por accidente en vez de recortarse, esta prueba no estaría
+      // ejercitando el caso que dice cubrir.
+      expect(linea).toMatch(/vuelve después de \d+ días sin escribir/i);
+      expect(linea).toMatch(/le gusta/i);
+      expect(linea).toMatch(/ya le recomendé/i);
+      expect(linea).toMatch(/gustos parecidos/i);
+      expect(linea).toMatch(/interactuó con/i);
+      expect(linea).toMatch(/lo último que miró fue/i);
+      expect(linea).toMatch(/preguntó por berserk/i);
+
+      expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+
+      // Ningún fragmento colgando: ningún verbo/preposición de sección
+      // termina sin su objeto detrás (el recorte, si hizo falta, no dejó a
+      // medias ninguna de las frases-gancho conocidas).
+      expect(linea.endsWith(';')).toBe(false);
+      expect(linea.trim().endsWith('.')).toBe(true);
+    });
   });
 });

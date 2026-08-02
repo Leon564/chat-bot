@@ -71,17 +71,57 @@ export class GraphIngestService {
     private readonly utilsService: UtilsService,
   ) {}
 
-  /** Crea o refresca el nodo de un usuario. */
+  /**
+   * Crea o refresca el nodo de un usuario, y de paso deja registrado hace
+   * cuánto no escribía (Task 4, fase 5b — reconocimiento de regreso).
+   *
+   * `lastMessageAt` se pisa con "ahora" en TODOS los mensajes, así que para
+   * cuando `GraphContextService` construye la línea de contexto ya vale
+   * "ahora" — no sirve para saber cuánto tiempo pasó desde el mensaje
+   * anterior. La solución: `upsertNodeReturningPrevious` devuelve el
+   * documento tal como estaba ANTES de esta escritura (con el
+   * `lastMessageAt` viejo, o `undefined` si es el primer mensaje de esta
+   * persona) en la MISMA escritura que ya iba a hacer falta — sin una
+   * lectura previa aparte.
+   *
+   * Ese valor viejo es justo lo que hay que guardar en `previousMessageAt`.
+   * **El orden importa**: tiene que ser el valor de ANTES de esta escritura,
+   * nunca el de después — si se tomara del documento posterior, quedaría
+   * "ahora" y la nota de regreso no se dispararía nunca, en silencio (ver
+   * los tests de `graph-ingest.service.spec.ts` que retrasan el
+   * `lastMessageAt` sembrado para distinguir ambos casos sin ambigüedad).
+   *
+   * Como `upsertNodeReturningPrevious` devuelve el documento ANTERIOR (que
+   * es `null` en el primer mensaje de alguien), no sirve para el valor que
+   * este método le da a sus llamadores (`ingestSocial`/`ingestAniList`/
+   * `ingestTrack`/`ingestFact` usan `author._id` de inmediato) — devolver
+   * `null` en el primer mensaje de cada persona rompería la ingesta de
+   * cualquier usuario nuevo. Por eso hace falta una segunda escritura
+   * (barata: sin bump de peso, sin alias) que persista `previousMessageAt`
+   * y devuelva el documento POSTERIOR de siempre.
+   */
   async touchUser(username: string): Promise<GraphNodeDocument | null> {
     const clean = (username ?? '').trim();
     if (!clean) return null;
 
-    return this.graph.upsertNode({
+    const previous = await this.graph.upsertNodeReturningPrevious({
       type: 'user',
       key: clean,
       label: clean,
       props: { lastMessageAt: new Date() },
       bumpWeight: true,
+    });
+
+    const previousMessageAt = (previous?.props as Record<string, unknown> | undefined)?.lastMessageAt as
+      | Date
+      | string
+      | undefined;
+
+    return this.graph.upsertNode({
+      type: 'user',
+      key: clean,
+      label: clean,
+      props: previousMessageAt ? { previousMessageAt } : {},
     });
   }
 
