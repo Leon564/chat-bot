@@ -462,5 +462,62 @@ describe('ChatService — instrumentación de tokens', () => {
         expect(resultado.facts).toEqual([{ user: 'Nico', relation: 'likes', object: 'Bleach' }]);
       });
     });
+
+    describe('Ronda de corrección 2 — la red de seguridad no debe borrar contenido legítimo del resumen', () => {
+      // El propio prompt sugiere este formato de 5 líneas sin especificar
+      // separador para las listas — "RPG | Anime | Terror" es una respuesta
+      // perfectamente válida del modelo, no un hecho disfrazado.
+      const resumenRealista = [
+        '🎯 Temas principales: RPG | Anime | Terror',
+        '👥 Usuarios más activos: Nico | Sora | Kei',
+        '📺 Anime/Manga mencionados: Bleach | AoT',
+        '💬 Momento destacado: Kei recomendó una película de terror clásica',
+        '🎮 Otros temas: nuevo lanzamiento de un JRPG',
+      ].join('\n');
+
+      it('un resumen realista con listas de tres ítems separadas por "|" sobrevive completo, sin perder ninguna línea', async () => {
+        crearMock.mockResolvedValue(respuesta(resumenRealista));
+
+        const resultado = await service.generateSummary();
+
+        // Ninguna de las 5 líneas del formato sugerido puede faltar. Contra
+        // la versión que sólo contaba partes (sin mirar la del medio), las
+        // dos primeras líneas ("RPG | Anime | Terror" y "Nico | Sora | Kei")
+        // tienen exactamente 3 partes separadas por "|" y se borraban por
+        // error — este test falla contra esa versión y pasa con la que
+        // exige que la parte del medio sea una relación real.
+        expect(resultado.text).toBe(resumenRealista);
+        expect(resultado.facts).toEqual([]);
+      });
+
+      it('el mismo resumen realista seguido de hechos de verdad: las líneas del resumen sobreviven Y los hechos se extraen', async () => {
+        crearMock.mockResolvedValue(
+          respuesta(
+            `${resumenRealista}\n<<<HECHOS>>>\nNico|likes|Berserk\nSora|asked_about|Bleach`,
+          ),
+        );
+
+        const resultado = await service.generateSummary();
+
+        expect(resultado.text).toBe(resumenRealista);
+        expect(resultado.facts).toEqual([
+          { user: 'Nico', relation: 'likes', object: 'Berserk' },
+          { user: 'Sora', relation: 'asked_about', object: 'Bleach' },
+        ]);
+      });
+
+      it('una línea "Nico|likes|Berserk" suelta, sin delimitador, se sigue descartando del texto enviado', async () => {
+        crearMock.mockResolvedValue(respuesta('Resumen breve.\nNico|likes|Berserk'));
+
+        const resultado = await service.generateSummary();
+
+        // La relación del medio ("likes") SÍ es válida, así que la red de
+        // seguridad tiene que seguir reconociendo esto como hecho disfrazado
+        // y sacarlo del texto — a diferencia de "RPG | Anime | Terror" de
+        // arriba, cuya parte del medio ("Anime") no es una relación.
+        expect(resultado.text).toBe('Resumen breve.');
+        expect(resultado.text).not.toContain('Nico|likes|Berserk');
+      });
+    });
   });
 });

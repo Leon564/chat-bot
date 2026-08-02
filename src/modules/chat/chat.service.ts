@@ -8,7 +8,8 @@ import { LlmKind } from '../../common/schemas/llm-usage.schema';
 import { PromptBuilderService, ALL_BLOCKS } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
-import { GraphIngestService } from '../graph/graph-ingest.service';
+import { GraphIngestService, FACT_RELATIONS } from '../graph/graph-ingest.service';
+import { EdgeType } from '../../common/schemas/graph-edge.schema';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -410,11 +411,10 @@ escribas nada después del delimitador.`
       const line = rawLine.trim();
       if (!line) continue;
 
-      const parts = ChatService.splitThreeParts(line);
-      if (!parts) continue;
+      const fact = ChatService.parseFactLine(line);
+      if (!fact) continue;
 
-      const [user, relation, object] = parts;
-      facts.push({ user, relation, object });
+      facts.push(fact);
     }
 
     // Defensa en profundidad (ver comentario arriba): corre siempre, no sólo
@@ -425,7 +425,7 @@ escribas nada después del delimitador.`
         const trimmed = line.trim();
         if (!trimmed) return true; // preserva líneas en blanco del resumen real
         if (ChatService.DELIMITER_LOOKALIKE_RE.test(trimmed)) return false;
-        if (ChatService.splitThreeParts(trimmed)) return false;
+        if (ChatService.parseFactLine(trimmed)) return false;
         return true;
       })
       .join('\n')
@@ -460,14 +460,37 @@ escribas nada después del delimitador.`
   private static readonly SUMMARY_PARSE_ERROR = '❌ Error al generar el resumen. Intenta más tarde.';
 
   /**
-   * Si `line` tiene EXACTAMENTE tres partes separadas por `|`, la trata como
-   * candidata a hecho (`usuario|relación|objeto`). Se reusa tanto para
-   * extraer hechos del bloque posterior al delimitador como para la red de
-   * seguridad que limpia el texto del resumen.
+   * Reconoce una línea `usuario|relación|objeto`: exige EXACTAMENTE tres
+   * partes separadas por `|` Y que la parte del medio (normalizada a
+   * minúsculas) sea una relación real del enum cerrado — la misma lista
+   * (`FACT_RELATIONS`) que ya valida `GraphIngestService.ingestFact`,
+   * importada de ahí para que las dos validaciones no se desincronicen si el
+   * enum cambia. Se reusa tanto para extraer hechos del bloque posterior al
+   * delimitador como para la red de seguridad que limpia el texto del
+   * resumen.
+   *
+   * Ronda de corrección 2: antes sólo se exigían tres partes separadas por
+   * `|`, sin mirar el contenido de la del medio. El propio prompt del
+   * resumen sugiere listas como `🎯 Temas principales: RPG | Anime | Terror`
+   * sin especificar separador — esa línea también tiene tres partes
+   * separadas por `|`, así que la red de seguridad la confundía con un
+   * hecho y la borraba del resumen visible pese a ser una respuesta
+   * perfectamente válida del modelo. Exigir que la parte del medio sea una
+   * relación real es preciso, no heurístico: "Anime" nunca es
+   * `likes`/`dislikes`/`asked_about`, así que esa línea ya no matchea,
+   * mientras que "Nico|likes|Berserk" sigue matcheando sin cambios.
    */
-  private static splitThreeParts(line: string): [string, string, string] | null {
+  private static parseFactLine(
+    line: string,
+  ): { user: string; relation: string; object: string } | null {
     const parts = line.split('|').map((p) => p.trim());
-    return parts.length === 3 ? (parts as [string, string, string]) : null;
+    if (parts.length !== 3) return null;
+
+    const [user, rawRelation, object] = parts;
+    const relation = rawRelation.toLowerCase();
+    if (!FACT_RELATIONS.includes(relation as EdgeType)) return null;
+
+    return { user, relation, object };
   }
 
   /**

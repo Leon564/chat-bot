@@ -46,8 +46,13 @@ const PERMANENT_UPLOADS = ['catbox', 'filegarden'];
  * contra que un usuario plante una relación arbitraria en el grafo; no hay
  * lista de strings que sanitizar porque no hay relación inventada que pase
  * esta validación.
+ *
+ * Exportada (ronda de corrección 2, Task 5) para que `chat.service.ts`
+ * reconozca una línea `usuario|relación|objeto` dentro del resumen por la
+ * MISMA lista que valida `ingestFact`, en vez de mantener una copia aparte
+ * que podría desincronizarse si el enum cambia.
  */
-const FACT_RELATIONS: EdgeType[] = ['likes', 'dislikes', 'asked_about'];
+export const FACT_RELATIONS: EdgeType[] = ['likes', 'dislikes', 'asked_about'];
 
 /** Largo mínimo del objeto de un hecho ya sanitizado. Por debajo de esto no vale la pena persistirlo. */
 const FACT_OBJECT_MIN_LEN = 3;
