@@ -288,11 +288,15 @@ export class GraphContextService {
    *
    * Por eso, después del corte por palabra, se retrocede además hasta el
    * último separador de ÍTEM COMPLETO (", " o "; ") — pero SÓLO si hace
-   * falta: si en la línea SIN truncar lo que sigue justo después del corte
-   * ya es una coma, un punto y coma o el punto final, el corte cayó en un
-   * borde real de todos modos y no hay nada que arreglar (evita retroceder
-   * de más cuando no hace falta, como en un listado de labels cortos donde
-   * el corte por palabra ya coincide con el fin de un ítem).
+   * falta: si `trimmed` (el resultado del corte por palabra) YA termina en
+   * una coma, un punto y coma o un punto, el corte cayó en un borde real de
+   * todos modos y no hay nada que arreglar (evita retroceder de más cuando
+   * no hace falta, como en un listado de labels cortos donde el corte por
+   * palabra ya coincide con el fin de un ítem). Lo que sigue DESPUÉS del
+   * corte no sirve para esta pregunta: ahí siempre empieza el ítem
+   * siguiente (o lo que quedó de un label partido a la mitad), así que
+   * nunca va a ser puntuación aunque el corte ya esté en un borde limpio —
+   * por eso el guard mira el final de `trimmed`, no el principio del resto.
    *
    * El guard de `DANGLING_SUFFIXES` sigue siendo necesario DESPUÉS de este
    * retroceso: si la sección entera (verbo + label) queda sin ningún
@@ -306,11 +310,14 @@ export class GraphContextService {
     const lastSpace = sliced.lastIndexOf(' ');
     let trimmed = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced;
 
-    // ¿El corte cayó justo en un borde real de ítem de la línea SIN
-    // truncar (lo que sigue es coma/punto y coma/punto), o a mitad de un
-    // label más largo? Sólo en el segundo caso hace falta retroceder más.
-    const resto = line.slice(trimmed.length).trimStart();
-    const cortoEnBordeDeItem = resto === '' || /^[,;.]/.test(resto);
+    // ¿`trimmed` ya termina en un borde real de ítem (coma/punto y
+    // coma/punto), o quedó a mitad de un label más largo? Sólo en el
+    // segundo caso hace falta retroceder más. Mirar el lado de ADENTRO del
+    // corte (el final de `trimmed`) en vez de lo que sigue después es lo
+    // que importa: lo que sigue siempre empieza el próximo ítem (o el resto
+    // de un label partido), así que nunca es puntuación aunque el corte ya
+    // esté en un borde limpio.
+    const cortoEnBordeDeItem = /[,;.]$/.test(trimmed);
 
     if (!cortoEnBordeDeItem) {
       const lastComma = trimmed.lastIndexOf(', ');

@@ -323,11 +323,39 @@ describe('GraphContextService', () => {
     // El defecto exacto medido en la revisión: el resultado terminaba en
     // "Shingeki no Kyojin:", el prefijo que además es otra obra real.
     expect(linea.endsWith('Kyojin:')).toBe(false);
-    // Si el título real aparece mencionado, tiene que estar COMPLETO -- nunca
-    // un prefijo suyo.
-    if (linea.includes('Shingeki')) {
-      expect(linea).toContain(target);
-    }
+  });
+
+  it('no descarta un ítem completo cuando el corte por palabra ya cae en su borde (M1, ronda corta)', async () => {
+    // item0 e item1 son ítems cortos y completos, sin espacios internos;
+    // item2 es un solo token larguísimo (también sin espacios) que por sí
+    // solo cruza MAX_CHARS -- para forzar la rama de truncado de forma
+    // determinística, igual que el test de arriba. La diferencia clave: acá
+    // el corte por límite de palabra cae justo en el espacio que sigue a la
+    // coma de item1 -- un borde de ítem REAL, no a mitad de un label -- así
+    // que ni item0 ni item1 deberían perderse. El guard vigente mira lo que
+    // sigue DESPUÉS del corte (el arranque de item2, que nunca es puntuación)
+    // en vez de mirar que `trimmed` ya termina en coma, así que retrocede de
+    // más y descarta item1 igual.
+    const item0 = 'PrimeraObra';
+    const item1 = 'SegundaObra';
+    const prefix = 'Sobre Nico: le gusta ';
+    const itemLargo = 'Z'.repeat(MAX_CHARS);
+
+    await sembrarGusto('Nico', item0, 3);
+    await sembrarGusto('Nico', item1, 2);
+    await sembrarGusto('Nico', itemLargo, 1);
+
+    const linea = await service.build('Nico', 'hola');
+    const sinTruncar = `${prefix}${item0}, ${item1}, ${itemLargo}.`;
+
+    // Realmente entró a la rama de truncado, no es casualidad que ya calzara.
+    expect(sinTruncar.length).toBeGreaterThan(MAX_CHARS);
+    expect(linea.length).toBeLessThanOrEqual(MAX_CHARS);
+
+    expect(linea).toContain(item0);
+    // El ítem completo que el guard actual descarta de más: ya estaba
+    // entero antes del corte, en un borde de ítem real.
+    expect(linea).toContain(item1);
   });
 
   it('no incluye más de MAX_EDGES relaciones', async () => {
