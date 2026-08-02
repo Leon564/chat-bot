@@ -243,3 +243,121 @@ describe('BotService — handleAniListRequest (caché)', () => {
     });
   });
 });
+
+/**
+ * `handleSummaryRequest` es privado — mismo patrón de cast puntual que
+ * `handleAniListRequest` arriba.
+ */
+type BotServiceConResumen = {
+  handleSummaryRequest(response: string, authorUsername: string): Promise<void>;
+};
+
+describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extraídos del resumen)', () => {
+  let service: BotService;
+  let chat: { generateSummary: jest.Mock };
+  let ingest: { ingestFact: jest.Mock };
+  let logging: {
+    saveLog: jest.Mock;
+    getLastEventType: jest.Mock;
+    saveEventsLog: jest.Mock;
+    clearMessagesLog: jest.Mock;
+  };
+  let socket: {
+    onMessage: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    getOnlineUsers: jest.Mock;
+    username: string;
+  };
+  let utils: { sleep: jest.Mock; splitMessageIntoParts: jest.Mock };
+
+  beforeEach(async () => {
+    chat = { generateSummary: jest.fn() };
+    ingest = { ingestFact: jest.fn().mockResolvedValue(undefined) };
+    logging = {
+      saveLog: jest.fn().mockResolvedValue(undefined),
+      getLastEventType: jest.fn().mockResolvedValue({ minutesLeft: 1000, lastResumenEvent: null }),
+      saveEventsLog: jest.fn().mockResolvedValue(undefined),
+      clearMessagesLog: jest.fn().mockResolvedValue(0),
+    };
+    socket = {
+      onMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+      deleteMessage: jest.fn(),
+      getOnlineUsers: jest.fn().mockResolvedValue([]),
+      username: 'Aria',
+    };
+    // Split identidad: alcanza para estas pruebas, que no ejercitan el
+    // troceado en sí (ya cubierto en otras partes del repo).
+    utils = {
+      sleep: jest.fn().mockResolvedValue(undefined),
+      splitMessageIntoParts: jest.fn((text: string) => [text]),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: {} },
+        { provide: AniListService, useValue: {} },
+        { provide: UtilsService, useValue: utils },
+        { provide: LoggingService, useValue: logging },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: ingest },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    }).compile();
+
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  const invocar = (response: string, authorUsername: string) =>
+    (service as unknown as BotServiceConResumen).handleSummaryRequest(response, authorUsername);
+
+  /** La ingesta de hechos es fire-and-forget: hay que dejar correr la microtask. */
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('tras generar el resumen, ingesta cada hecho extraído con source "batch"', async () => {
+    chat.generateSummary.mockResolvedValue({
+      text: 'Resumen del chat',
+      facts: [
+        { user: 'Nico', relation: 'likes', object: 'Attack on Titan' },
+        { user: 'Kei', relation: 'dislikes', object: 'el ecchi' },
+      ],
+    });
+
+    await invocar('{{resumen}}', 'Nico');
+    await dejarCorrer();
+
+    // El orden y el cuarto argumento ('batch') distinguen esto de la ingesta
+    // en vivo de SAVE_FACT (source: 'fact', sin este cuarto argumento).
+    expect(ingest.ingestFact).toHaveBeenCalledTimes(2);
+    expect(ingest.ingestFact).toHaveBeenNthCalledWith(1, 'Nico', 'likes', 'Attack on Titan', 'batch');
+    expect(ingest.ingestFact).toHaveBeenNthCalledWith(2, 'Kei', 'dislikes', 'el ecchi', 'batch');
+  });
+
+  it('un fallo de la ingesta no impide enviar el resumen al chat', async () => {
+    chat.generateSummary.mockResolvedValue({
+      text: 'Resumen del chat',
+      facts: [{ user: 'Nico', relation: 'likes', object: 'Attack on Titan' }],
+    });
+    ingest.ingestFact.mockRejectedValue(new Error('mongo caído'));
+
+    await invocar('{{resumen}}', 'Nico');
+    await dejarCorrer();
+
+    // Si la ingesta se esperara sin su propio catch (en vez de fire-and-forget),
+    // el rechazo del mock rompería el try y el catch externo mandaría el
+    // mensaje de error genérico en lugar del resumen — esta aserción
+    // distingue ambos caminos.
+    expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Resumen del chat'));
+    expect(socket.sendMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining('Error al generar el resumen'),
+    );
+  });
+});

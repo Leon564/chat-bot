@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GraphService } from './graph.service';
 import { GraphNodeDocument } from '../../common/schemas/graph-node.schema';
-import { EdgeType } from '../../common/schemas/graph-edge.schema';
+import { EdgeType, EdgeSource } from '../../common/schemas/graph-edge.schema';
 import { ChatMessage } from '../chat-socket/chat-socket.service';
 import { AniListResult } from '../anilist/anilist.service';
 import { TrackMeta } from '../../common/interfaces';
@@ -280,8 +280,19 @@ export class GraphIngestService {
    * `artist` ya conocido (vía alias) para no duplicar "Attack on Titan" como
    * un `topic` suelto cuando ya existe como `work` desde AniList. Si no
    * resuelve, se crea (o refuerza) un nodo `topic` con el texto tal cual.
+   *
+   * `source` (default `'fact'`) distingue un hecho capturado en vivo vía
+   * `SAVE_FACT` de uno extraído en lote del resumen (Task 5, fase 4b, que
+   * pasa `'batch'`). No cambia ninguna validación: `upsertEdge` sólo escribe
+   * `source` en `$setOnInsert`, así que una arista ya existente nunca se
+   * degrada porque el lote la vuelva a proponer.
    */
-  async ingestFact(username: string, relation: string, object: string): Promise<void> {
+  async ingestFact(
+    username: string,
+    relation: string,
+    object: string,
+    source: EdgeSource = 'fact',
+  ): Promise<void> {
     try {
       if (!FACT_RELATIONS.includes(relation as EdgeType)) return;
 
@@ -307,7 +318,7 @@ export class GraphIngestService {
         from: user._id,
         to: target._id,
         type: relation as EdgeType,
-        source: 'fact',
+        source,
       });
     } catch (err) {
       this.logger.warn(`Ingesta de hecho falló: ${(err as Error)?.message}`);

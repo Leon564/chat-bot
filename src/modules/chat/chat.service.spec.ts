@@ -322,4 +322,80 @@ describe('ChatService — instrumentación de tokens', () => {
       expect(salida).not.toContain('SAVE_FACT');
     });
   });
+
+  describe('generateSummary — extracción de hechos en lote (Task 5, fase 4b)', () => {
+    it('separa el resumen de los hechos por el delimitador', async () => {
+      crearMock.mockResolvedValue(
+        respuesta('Un resumen cualquiera del chat.\n<<<HECHOS>>>\nNico|likes|Attack on Titan'),
+      );
+
+      const resultado = await service.generateSummary();
+
+      expect(resultado.text).toBe('Un resumen cualquiera del chat.');
+      expect(resultado.facts).toEqual([
+        { user: 'Nico', relation: 'likes', object: 'Attack on Titan' },
+      ]);
+    });
+
+    it('el texto devuelto NO incluye el delimitador ni los hechos', async () => {
+      crearMock.mockResolvedValue(
+        respuesta('Un resumen cualquiera del chat.\n<<<HECHOS>>>\nNico|likes|Attack on Titan'),
+      );
+
+      const resultado = await service.generateSummary();
+
+      // Distingue de un bug que recorta el delimitador pero deja colgadas
+      // las líneas de hechos (o viceversa) dentro del texto que ve el chat.
+      expect(resultado.text).not.toContain('<<<HECHOS>>>');
+      expect(resultado.text).not.toContain('Nico|likes|Attack on Titan');
+    });
+
+    it('si el modelo no emite el delimitador, devuelve todo como resumen y cero hechos', async () => {
+      crearMock.mockResolvedValue(respuesta('Resumen sin ningún delimitador de hechos.'));
+
+      const resultado = await service.generateSummary();
+
+      expect(resultado.text).toBe('Resumen sin ningún delimitador de hechos.');
+      expect(resultado.facts).toEqual([]);
+    });
+
+    it('si el modelo emite el delimitador pero ningún hecho válido, devuelve cero hechos', async () => {
+      crearMock.mockResolvedValue(
+        respuesta(
+          'Resumen bonito.\n<<<HECHOS>>>\nesto no tiene el formato correcto\nnitampoco|esto',
+        ),
+      );
+
+      const resultado = await service.generateSummary();
+
+      expect(resultado.text).toBe('Resumen bonito.');
+      expect(resultado.facts).toEqual([]);
+    });
+
+    it('descarta líneas de hecho mal formadas sin perder las bien formadas', async () => {
+      crearMock.mockResolvedValue(
+        respuesta(
+          [
+            'Resumen bonito.',
+            '<<<HECHOS>>>',
+            'Nico|likes|Attack on Titan',
+            'esto no tiene el formato correcto',
+            'Kei|asked_about',
+            'Lyna|dislikes|el ecchi|extra',
+            'Sora|likes|Bleach',
+          ].join('\n'),
+        ),
+      );
+
+      const resultado = await service.generateSummary();
+
+      // Ni la línea sin pipes, ni la de un solo pipe (Kei), ni la de tres
+      // pipes (Lyna, cuatro partes) sobreviven — sólo las dos con
+      // EXACTAMENTE tres partes, en el orden en que aparecieron.
+      expect(resultado.facts).toEqual([
+        { user: 'Nico', relation: 'likes', object: 'Attack on Titan' },
+        { user: 'Sora', relation: 'likes', object: 'Bleach' },
+      ]);
+    });
+  });
 });

@@ -570,7 +570,20 @@ export class BotService implements OnModuleInit {
     try {
       console.log('📋 Generando resumen del chat...');
       const resumen = await this.chatService.generateSummary(authorUsername);
-      const resumenParts = this.utilsService.splitMessageIntoParts(resumen, maxLength);
+
+      // Ingesta en lote de los hechos que el modelo extrajo del resumen
+      // (Task 5, fase 4b) — captura lo que se habla en el chat sin mencionar
+      // al bot, sin ninguna llamada nueva al modelo. Fire-and-forget: no
+      // puede demorar ni impedir el envío del resumen si la ingesta falla.
+      // `source: 'batch'` la distingue de un SAVE_FACT en vivo (source:
+      // 'fact'); la validación de relación/objeto la hace `ingestFact`.
+      for (const fact of resumen.facts) {
+        void this.graphIngestService
+          .ingestFact(fact.user, fact.relation, fact.object, 'batch')
+          .catch(() => {});
+      }
+
+      const resumenParts = this.utilsService.splitMessageIntoParts(resumen.text, maxLength);
       console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {

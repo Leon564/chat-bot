@@ -285,11 +285,14 @@ export class ChatService {
     }
   }
 
-  async generateSummary(username?: string): Promise<string> {
+  async generateSummary(username?: string): Promise<{
+    text: string;
+    facts: Array<{ user: string; relation: string; object: string }>;
+  }> {
     const messages = await this.loggingService.getLastMessages();
-    
+
     if (!messages || messages.length === 0) {
-      return 'No hay mensajes para resumir en este momento. 🤷‍♂️';
+      return { text: 'No hay mensajes para resumir en este momento. 🤷‍♂️', facts: [] };
     }
 
     // Filtrar y limpiar mensajes para el resumen
@@ -300,7 +303,7 @@ export class ChatService {
       .join('\n');
 
     if (!cleanMessages.trim()) {
-      return 'No hay contenido suficiente para generar un resumen. 🤷‍♂️';
+      return { text: 'No hay contenido suficiente para generar un resumen. 🤷‍♂️', facts: [] };
     }
 
     try {
@@ -326,7 +329,12 @@ FORMATO SUGERIDO:
 👥 Usuarios más activos: [nombres]
 📺 Anime/Manga mencionados: [títulos]
 💬 Momento destacado: [algo interesante que pasó]
-🎮 Otros temas: [gaming, música, etc.]`
+🎮 Otros temas: [gaming, música, etc.]
+
+Después del resumen, agregá una línea con exactamente <<<HECHOS>>> y debajo,
+un hecho por línea con el formato usuario|relación|objeto, usando sólo las
+relaciones likes, dislikes o asked_about. Si no encontraste ninguno, no
+escribas nada después del delimitador.`
           },
           {
             role: 'user',
@@ -340,15 +348,62 @@ FORMATO SUGERIDO:
 
       this.registrarUso('summary', summaryResponse, username);
 
-      const summary = summaryResponse.choices[0].message.content || '';
-      console.log(`✅ Resumen generado: ${summary.substring(0, 100)}...`);
-      
-      return summary;
+      const raw = summaryResponse.choices[0].message.content || '';
+      const { text, facts } = this.parseSummaryAndFacts(raw);
+      console.log(`✅ Resumen generado: ${text.substring(0, 100)}...`);
+
+      return { text, facts };
     } catch (error) {
       console.error('Error generando resumen:', error);
-      return '❌ Error al generar el resumen. Intenta más tarde.';
+      return { text: '❌ Error al generar el resumen. Intenta más tarde.', facts: [] };
     }
   }
+
+  /**
+   * Separa el resumen del bloque de hechos que el modelo agrega al final
+   * (Task 5, fase 4b) — ninguna llamada nueva al modelo, sólo aprovecha la
+   * respuesta que `generateSummary` ya pide. El parseo es defensivo porque el
+   * modelo puede no seguir el formato pedido en el prompt:
+   *   - Sin el delimitador `<<<HECHOS>>>`, todo el texto es el resumen y no
+   *     hay hechos — nunca se asume que el modelo lo va a emitir.
+   *   - Con el delimitador, el resumen es lo anterior a él y los hechos son
+   *     las líneas posteriores que tengan EXACTAMENTE tres partes separadas
+   *     por `|` (usuario|relación|objeto). Cualquier línea que no matchee
+   *     (vacía, sin pipes, con pipes de más) se descarta en silencio — no
+   *     rompe el resumen ni el resto de los hechos bien formados.
+   * La validación de la relación contra el enum cerrado y la sanitización del
+   * objeto quedan en `GraphIngestService.ingestFact`, que es quien las
+   * ingesta — acá sólo se separa el texto.
+   */
+  private parseSummaryAndFacts(raw: string): {
+    text: string;
+    facts: Array<{ user: string; relation: string; object: string }>;
+  } {
+    const delimiterIndex = raw.indexOf(ChatService.FACTS_DELIMITER);
+    if (delimiterIndex === -1) {
+      return { text: raw.trim(), facts: [] };
+    }
+
+    const text = raw.slice(0, delimiterIndex).trim();
+    const factsBlock = raw.slice(delimiterIndex + ChatService.FACTS_DELIMITER.length);
+
+    const facts: Array<{ user: string; relation: string; object: string }> = [];
+    for (const rawLine of factsBlock.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      const parts = line.split('|').map((p) => p.trim());
+      if (parts.length !== 3) continue;
+
+      const [user, relation, object] = parts;
+      facts.push({ user, relation, object });
+    }
+
+    return { text, facts };
+  }
+
+  /** Delimitador que separa el resumen del bloque de hechos en la respuesta cruda del modelo. */
+  private static readonly FACTS_DELIMITER = '<<<HECHOS>>>';
 
   /**
    * Registra el consumo de una llamada al modelo. Fire-and-forget a propósito:

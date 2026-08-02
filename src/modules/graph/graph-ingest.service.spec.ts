@@ -452,5 +452,21 @@ describe('GraphIngestService — señales sociales', () => {
       const total = await connection.collection('bot_edges').countDocuments({});
       expect(total).toBe(0);
     });
+
+    describe('source de la arista (Task 5, fase 4b — hechos en lote desde el resumen)', () => {
+      it('sin el cuarto argumento, persiste la arista con source "fact" (SAVE_FACT en vivo)', async () => {
+        await ingest.ingestFact('Nico', 'likes', 'Attack on Titan');
+
+        const edge = await connection.collection('bot_edges').findOne({ type: 'likes' });
+        expect(edge?.source).toBe('fact');
+      });
+
+      it('con el cuarto argumento "batch", persiste la arista con source "batch", no "fact"', async () => {
+        await ingest.ingestFact('Nico', 'likes', 'Attack on Titan', 'batch');
+
+        const edge = await connection.collection('bot_edges').findOne({ type: 'likes' });
+        expect(edge?.source).toBe('batch');
+      });
+    });
   });
 });
