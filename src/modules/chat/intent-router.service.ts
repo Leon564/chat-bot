@@ -192,7 +192,7 @@ export class IntentRouterService {
     message: string,
     opts: { useMemory: boolean; username?: string },
   ): Promise<PromptBlock[]> {
-    const normalized = this.normalize(message);
+    const normalized = this.graphService.normalizeKey(message);
     const included = new Set<PromptBlock>(['PERSONA', 'TEMPORAL']);
 
     if (IntentRouterService.isSimpleGreetingNormalized(normalized)) {
@@ -245,27 +245,11 @@ export class IntentRouterService {
    * fuente, ambos lados coinciden siempre.
    */
   isSimpleGreeting(message: string): boolean {
-    return IntentRouterService.isSimpleGreetingNormalized(this.normalize(message));
+    return IntentRouterService.isSimpleGreetingNormalized(this.graphService.normalizeKey(message));
   }
 
   private static isSimpleGreetingNormalized(normalized: string): boolean {
     return IntentRouterService.SIMPLE_GREETING_RE.test(normalized);
-  }
-
-  /**
-   * Normaliza una sola vez: minúsculas, sin acentos, espacios colapsados.
-   * Usa la forma escapada del rango de diacríticos (\u0300-\u036f) y NO
-   * los caracteres combinantes crudos — hay precedente en este repo de que
-   * un editor los normaliza a NFC y el regex queda inerte en silencio.
-   */
-  private normalize(message: string): string {
-    if (!message || typeof message !== 'string') return '';
-    return message
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
   }
 
   private isAnilistRequest(normalized: string): boolean {
