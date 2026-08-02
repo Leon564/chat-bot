@@ -992,6 +992,9 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
         if (type === 'user' && key === 'Nico') return Promise.resolve({ _id: 'nico-id' });
         if (type === 'work' && key === 'vinland-saga') return Promise.resolve({ _id: 'vinland-id' });
         if (type === 'work' && key === 'berserk') return Promise.resolve({ _id: 'berserk-id' });
+        if (type === 'work' && key === 'air') return Promise.resolve({ _id: 'air-id' });
+        if (type === 'work' && key === 'fate') return Promise.resolve({ _id: 'fate-id' });
+        if (type === 'work' && key === 'fate-zero') return Promise.resolve({ _id: 'fate-zero-id' });
         return Promise.resolve(null);
       }),
       collaborative: jest.fn().mockResolvedValue(CANDIDATOS),
@@ -1117,5 +1120,57 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     await dejarCorrer();
 
     expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Vinland Saga'));
+  });
+
+  describe('límite de palabra en el marcado (ronda de corrección 1)', () => {
+    it('"Air" NO se marca cuando el texto sólo dice "aire" — includes() sin límite de palabra marcaría de más', async () => {
+      graph.collaborative.mockResolvedValue([{ key: 'air', label: 'Air', score: 4 }]);
+      chat.chat.mockResolvedValue('Che, hoy hace un aire fresco buenísimo para salir a caminar.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      // "air" es prefijo de "aire": sin exigir un límite de palabra real,
+      // esta aserción fallaría porque la candidata se marcaría igual.
+      expect(graph.upsertEdge).not.toHaveBeenCalled();
+    });
+
+    it('"Fate" NO se marca cuando sólo se mencionó "Fate/Zero" (candidata contenida en otra)', async () => {
+      graph.collaborative.mockResolvedValue([
+        { key: 'fate', label: 'Fate', score: 3 },
+        { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+      ]);
+      chat.chat.mockResolvedValue('Deberías ver Fate/Zero, es un clásico.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      expect(graph.upsertEdge).toHaveBeenCalledTimes(1);
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-zero-id' }));
+      // "Fate" es subcadena de "Fate/Zero" -- un límite de palabra tipo `\b`
+      // igual matchearía "fate" ahí adentro, porque "/" también cuenta como
+      // límite de palabra. Sin consumir el texto que ya matcheó la
+      // candidata más larga, esta aserción fallaría.
+      expect(graph.upsertEdge).not.toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-id' }));
+    });
+
+    it('si "Fate" aparece POR SEPARADO de "Fate/Zero" en el mismo texto, también se marca', async () => {
+      graph.collaborative.mockResolvedValue([
+        { key: 'fate', label: 'Fate', score: 3 },
+        { key: 'fate-zero', label: 'Fate/Zero', score: 5 },
+      ]);
+      chat.chat.mockResolvedValue('Te recomiendo Fate/Zero, y si te gusta, después mirá Fate a secas.');
+
+      await invocar('bot recomendame algo', 'Nico');
+      await dejarCorrer();
+
+      // Acá "Fate" SÍ aparece mencionada por su cuenta, en otro lugar del
+      // texto -- consumir SIEMPRE toda ocurrencia de la palabra corta (en
+      // vez de sólo la porción atribuida a la candidata larga) marcaría de
+      // menos y esta aserción fallaría.
+      expect(graph.upsertEdge).toHaveBeenCalledTimes(2);
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-zero-id' }));
+      expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-id' }));
+    });
   });
 });

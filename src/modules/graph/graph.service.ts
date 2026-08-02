@@ -62,6 +62,23 @@ export const MIN_CANDIDATES = 3;
  */
 export const MAX_CANDIDATES = 5;
 
+/**
+ * Tope de "pares" (otros usuarios que comparten al menos un gusto con quien
+ * pregunta) que entran al paso 4 de `collaborative`. Sin esto, un ancla muy
+ * popular — una obra que cientos de personas marcaron con `likes` — puede
+ * llevar `peerIds` a un tamaño sin cota antes de llegar al `$group`/`$sort`/
+ * `$limit` que arma las candidatas: los índices de `bot_edges` evitan el
+ * collscan, pero no acotan cuántos documentos procesa el pipeline. 200 es un
+ * número elegido para que la comunidad muestreada siga siendo representativa
+ * (mucho más que el puñado de coincidencias que hace falta para superar
+ * `MIN_CANDIDATES`) sin dejar que una obra masiva dispare el volumen. No es
+ * un corte arbitrario de los primeros 200 que aparezcan: se prioriza a los
+ * pares cuyo propio `likes` hacia el ancla tiene más peso (`$sort` antes del
+ * `$limit`), así que si hay que recortar, se recorta por los que menos
+ * fuerte comparten el gusto, no al azar.
+ */
+export const MAX_PEERS = 200;
+
 export interface TopEdge {
   type: EdgeType;
   weight: number;
@@ -471,6 +488,9 @@ export class GraphService {
    * `GraphIngestService.ingestFact`), con una etiqueta como "tiene 25 años".
    * Sin filtrar por tipo tanto en el ancla (paso 1) como en las candidatas
    * (paso 4), el bot terminaría "recomendando" eso.
+   *
+   * El paso 2 (pares) está acotado por `MAX_PEERS` — ver su comentario para
+   * el porqué del número y del criterio de prioridad usado al recortar.
    */
   async collaborative(userId: Types.ObjectId, limit: number): Promise<Candidate[]> {
     if (limit <= 0) return [];
@@ -483,10 +503,18 @@ export class GraphService {
       // 2. Quién más le puso `likes` a esas mismas obras. Se excluye al
       //    propio usuario explícitamente: por definición ya le gustan esas
       //    obras (son el ancla), así que no cuenta como "otro" que comparte
-      //    el gusto.
-      const peerIds = await this.edgeModel
-        .distinct('from', { to: { $in: myWorkIds }, type: 'likes', from: { $ne: userId } })
+      //    el gusto. Acotado a `MAX_PEERS`, priorizando (vía `$sort` antes
+      //    del `$limit`) a quienes más fuerte comparten el gusto — ver el
+      //    comentario de `MAX_PEERS` sobre por qué hace falta este tope.
+      const peerRows = await this.edgeModel
+        .aggregate([
+          { $match: { to: { $in: myWorkIds }, type: 'likes', from: { $ne: userId } } },
+          { $group: { _id: '$from', peerWeight: { $max: '$weight' } } },
+          { $sort: { peerWeight: -1 } },
+          { $limit: MAX_PEERS },
+        ])
         .exec();
+      const peerIds = peerRows.map((r) => r._id as Types.ObjectId);
       if (peerIds.length === 0) return [];
 
       // 3. Qué ya tiene el usuario — le gusta o ya se le recomendó — para

@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongoose';
-import { Connection, Model } from 'mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import {
   rootMongooseTestModule,
   closeMongoConnection,
@@ -8,7 +8,7 @@ import {
 } from '../../common/testing/mongo-test.helper';
 import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.schema';
 import { GraphEdge, GraphEdgeSchema, GraphEdgeDocument } from '../../common/schemas/graph-edge.schema';
-import { GraphService } from './graph.service';
+import { GraphService, MAX_PEERS } from './graph.service';
 
 describe('GraphService — nodos', () => {
   let connection: Connection;
@@ -533,6 +533,78 @@ describe('GraphService — nodos', () => {
 
       expect(await service.collaborative(u._id, 3)).toHaveLength(3);
     });
+
+    it('acota los pares a MAX_PEERS, priorizando a quienes más fuerte comparten el gusto (ronda de corrección 1)', async () => {
+      // Sembrado por escritura directa a la colección (no vía upsertNode/
+      // upsertEdge, uno por uno) porque son cientos de documentos -- lo que
+      // importa acá es el volumen y los pesos exactos, no ejercitar el
+      // upsert en sí (ya cubierto por otros tests de este archivo).
+      const nico = await service.upsertNode({ type: 'user', key: 'Nico', label: 'Nico' });
+      const berserk = await service.upsertNode({ type: 'work', key: 'Berserk', label: 'Berserk' });
+      await service.upsertEdge({ from: nico!._id, to: berserk!._id, type: 'likes', source: 'fact' });
+
+      const total = MAX_PEERS + 20;
+      const now = new Date();
+      const peerNodes = Array.from({ length: total }, (_, i) => ({
+        _id: new Types.ObjectId(),
+        type: 'user',
+        key: `peer${i}`,
+        label: `peer${i}`,
+        aliases: [],
+        props: {},
+        weight: 0,
+        lastSeenAt: now,
+      }));
+      const candNodes = Array.from({ length: total }, (_, i) => ({
+        _id: new Types.ObjectId(),
+        type: 'work',
+        key: `cand${i}`,
+        label: `Candidata ${i}`,
+        aliases: [],
+        props: {},
+        weight: 0,
+        lastSeenAt: now,
+      }));
+      await connection.collection('bot_nodes').insertMany([...peerNodes, ...candNodes]);
+
+      // El peer `i` comparte el gusto por Berserk con un peso creciente
+      // (i + 1): el último peer (índice `total - 1`) es el que MÁS fuerte
+      // lo comparte, y por eso debería sobrevivir al tope.
+      const anchorEdges = peerNodes.map((p, i) => ({
+        from: p._id,
+        to: berserk!._id,
+        type: 'likes',
+        weight: i + 1,
+        source: 'fact',
+        lastSeenAt: now,
+      }));
+      // Cada peer recomienda una candidata propia y distinta -- así el
+      // conteo final de candidatas devueltas mide directamente cuántos
+      // pares sobrevivieron al tope.
+      const candidateEdges = peerNodes.map((p, i) => ({
+        from: p._id,
+        to: candNodes[i]._id,
+        type: 'likes',
+        weight: 1,
+        source: 'fact',
+        lastSeenAt: now,
+      }));
+      await connection.collection('bot_edges').insertMany([...anchorEdges, ...candidateEdges]);
+
+      const result = await service.collaborative(nico!._id, total);
+
+      // El tope de MAX_PEERS pares termina limitando, en los hechos, a
+      // MAX_PEERS candidatas -- aunque el `limit` pedido (total) sea mucho
+      // mayor y daría lugar a más si no hubiera tope de pares.
+      expect(result).toHaveLength(MAX_PEERS);
+      // Los peers de MENOS peso (índices bajos) quedaron afuera del tope...
+      expect(result.find((c) => c.key === 'cand0')).toBeUndefined();
+      expect(result.find((c) => c.key === 'cand19')).toBeUndefined();
+      // ...los de MÁS peso (índices altos) sí entraron: el recorte prioriza,
+      // no es un corte arbitrario de los primeros que aparezcan.
+      expect(result.find((c) => c.key === `cand${total - 1}`)).toBeDefined();
+      expect(result.find((c) => c.key === 'cand20')).toBeDefined();
+    }, 20000);
 
     it('no cuenta al propio usuario como "otro"', async () => {
       // Nico es el ÚNICO conectado a Berserk -- nadie más comparte el gusto.
