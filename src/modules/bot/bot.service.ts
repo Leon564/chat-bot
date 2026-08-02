@@ -601,9 +601,21 @@ export class BotService implements OnModuleInit {
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
-      await this.loggingService.saveEventsLog('Resumen', authorUsername);
-      const clearedCount = await this.loggingService.clearMessagesLog();
-      console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+      // Revisión final (Minor #6): `generateSummary` no LANZA cuando el
+      // parseo del modelo falla — devuelve normalmente `resumen.text` igual
+      // al mensaje de error (`ChatService.SUMMARY_PARSE_ERROR`), que el
+      // bucle de arriba ya mandó al chat como si fuera un resumen. Sin esta
+      // guarda, ese envío igual quemaba el cooldown de 10 minutos Y borraba
+      // los 50 mensajes del log — quien pidió el resumen quedaba sin poder
+      // reintentar por un fallo que no fue suyo. Sólo se consume el estado
+      // cuando de verdad se generó y envió un resumen.
+      if (resumen.text === ChatService.SUMMARY_PARSE_ERROR) {
+        console.log('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
+      } else {
+        await this.loggingService.saveEventsLog('Resumen', authorUsername);
+        const clearedCount = await this.loggingService.clearMessagesLog();
+        console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+      }
     } catch (error) {
       console.error('❌ Error generating summary:', error);
       this.sendBotMessage('❌ Error al generar el resumen. Inténtalo más tarde.');

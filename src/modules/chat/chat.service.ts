@@ -540,8 +540,16 @@ escribas nada después del delimitador.`
    */
   private static readonly DELIMITER_LOOKALIKE_RE = /^<{2,}.*>{2,}$/;
 
-  /** Mismo mensaje que ya usaba el `catch` de `generateSummary`, reusado cuando el parseo deja el resumen vacío. */
-  private static readonly SUMMARY_PARSE_ERROR = '❌ Error al generar el resumen. Intenta más tarde.';
+  /**
+   * Mismo mensaje que ya usaba el `catch` de `generateSummary`, reusado cuando
+   * el parseo deja el resumen vacío. Público (Minor #6): `bot.service.ts`
+   * necesita comparar `resumen.text` contra este valor exacto para no quemar
+   * el cooldown de 10 minutos ni borrar los 50 mensajes del log cuando lo que
+   * se envió al chat fue este mensaje de error, no un resumen real — antes
+   * era privado y ambos archivos hubieran tenido que mantener el string
+   * duplicado y sincronizado a mano.
+   */
+  static readonly SUMMARY_PARSE_ERROR = '❌ Error al generar el resumen. Intenta más tarde.';
 
   /**
    * Reconoce una línea `usuario|relación|objeto`: exige EXACTAMENTE tres

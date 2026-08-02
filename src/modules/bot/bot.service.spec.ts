@@ -360,4 +360,41 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
       expect.stringContaining('Error al generar el resumen'),
     );
   });
+
+  describe('Revisión final (Minor #6) — el resumen fallido no debe quemar el cooldown ni borrar el log', () => {
+    it('cuando generateSummary devuelve el mensaje de error de parseo, NO consume el cooldown ni limpia el log', async () => {
+      // `generateSummary` no lanza cuando el parseo falla: devuelve
+      // normalmente `text` igual a `ChatService.SUMMARY_PARSE_ERROR`, que el
+      // bucle de envío ya manda al chat como si fuera un resumen real. Antes
+      // de este fix, eso igual quemaba el cooldown de 10 minutos y borraba
+      // los 50 mensajes del log — el usuario quedaba sin poder reintentar
+      // por un fallo que no fue suyo.
+      chat.generateSummary.mockResolvedValue({
+        text: ChatService.SUMMARY_PARSE_ERROR,
+        facts: [],
+      });
+
+      await invocar('{{resumen}}', 'Nico');
+      await dejarCorrer();
+
+      expect(socket.sendMessage).toHaveBeenCalledWith(
+        expect.stringContaining(ChatService.SUMMARY_PARSE_ERROR),
+      );
+      expect(logging.saveEventsLog).not.toHaveBeenCalled();
+      expect(logging.clearMessagesLog).not.toHaveBeenCalled();
+    });
+
+    it('cuando el resumen es válido, sí consume el cooldown y limpia el log (comportamiento normal, sin regresión)', async () => {
+      chat.generateSummary.mockResolvedValue({
+        text: 'Resumen del chat',
+        facts: [],
+      });
+
+      await invocar('{{resumen}}', 'Nico');
+      await dejarCorrer();
+
+      expect(logging.saveEventsLog).toHaveBeenCalledWith('Resumen', 'Nico');
+      expect(logging.clearMessagesLog).toHaveBeenCalled();
+    });
+  });
 });
