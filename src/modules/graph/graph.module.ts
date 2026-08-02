@@ -4,7 +4,7 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphMigration, GraphMigrationSchema } from '../../common/schemas/graph-migration.schema';
 import { Memory, MemorySchema } from '../../common/schemas/memory.schema';
-import { UtilsService } from '../../common/utils/utils.service';
+import { UtilsModule } from '../../common/utils/utils.module';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
@@ -12,13 +12,14 @@ import { GraphCacheService } from './graph-cache.service';
 import { GraphContextService } from './graph-context.service';
 
 /**
- * Módulo autónomo del grafo. No importa ningún otro módulo del bot a
- * propósito: tanto ChatModule como BotModule van a depender de él, así que
- * cualquier dependencia hacia arriba crearía un ciclo. Por eso `UtilsService`
- * (sin dependencias propias, usado por `GraphIngestService.ingestFact` desde
- * la Task 4 de la fase 4b) se declara acá como provider propio en vez de
- * importarlo desde `ChatModule` — el mismo patrón que ya usa `ChatModule` en
- * vez de un `UtilsModule` compartido.
+ * Módulo autónomo del grafo. No importa `ChatModule` a propósito: tanto
+ * ChatModule como BotModule van a depender de él, así que cualquier
+ * dependencia hacia arriba crearía un ciclo. `UtilsService` (sin
+ * dependencias propias, usado por `GraphIngestService.ingestFact` desde la
+ * Task 4 de la fase 4b) ya no se declara acá como provider local: desde la
+ * Task 1 de la fase 5a vive en `UtilsModule`, un módulo hoja sin imports
+ * propios, así que importarlo acá no crea ningún ciclo — ChatModule también
+ * lo importa, y ambos reciben la misma instancia singleton.
  */
 @Module({
   imports: [
@@ -28,8 +29,9 @@ import { GraphContextService } from './graph-context.service';
       { name: GraphMigration.name, schema: GraphMigrationSchema },
       { name: Memory.name, schema: MemorySchema },
     ]),
+    UtilsModule,
   ],
-  providers: [GraphService, GraphIngestService, GraphMigrationService, GraphCacheService, GraphContextService, UtilsService],
+  providers: [GraphService, GraphIngestService, GraphMigrationService, GraphCacheService, GraphContextService],
   exports: [GraphService, GraphIngestService, GraphCacheService, GraphContextService, MongooseModule],
 })
 export class GraphModule {}

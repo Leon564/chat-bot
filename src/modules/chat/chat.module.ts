@@ -5,6 +5,7 @@ import { ContextService } from './context.service';
 import { MessagesService } from './messages.service';
 import { OnlineUsersService } from './online-users.service';
 import { UsageService } from './usage.service';
+import { UtilsModule } from '../../common/utils/utils.module';
 import { UtilsService } from '../../common/utils/utils.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { LoggingService } from '../../common/utils/logging.service';
@@ -28,8 +29,12 @@ import { GraphModule } from '../graph/graph.module';
       { name: LlmUsage.name, schema: LlmUsageSchema },
     ]),
     GraphModule,
+    UtilsModule,
   ],
-  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, UtilsService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
+  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
+  // UtilsService ya no se declara acá: viene de UtilsModule (importado arriba)
+  // y se re-exporta tal cual para que BotModule lo siga recibiendo a través
+  // de ChatModule sin cambios.
   exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsService, UsageService, MongooseModule],
 })
 export class ChatModule {}
