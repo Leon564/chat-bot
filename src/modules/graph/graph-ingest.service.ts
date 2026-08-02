@@ -135,6 +135,8 @@ export class GraphIngestService {
           episodes: result.episodes,
           startYear: result.startYear,
           genres: result.genres,
+          titleRomaji: result.titleRomaji,
+          titleEnglish: result.titleEnglish,
           cachedAt: new Date(),
         },
         bumpWeight: true,

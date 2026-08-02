@@ -8,6 +8,7 @@ import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
+import { GraphCacheService } from '../graph/graph-cache.service';
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -21,6 +22,7 @@ export class BotService implements OnModuleInit {
     private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
+    private readonly graphCacheService: GraphCacheService,
   ) {}
 
   async onModuleInit() {
@@ -190,6 +192,13 @@ export class BotService implements OnModuleInit {
       const translatedDescription = result.description
         ? await this.chatService.translateToSpanish(result.description, authorUsername)
         : null;
+
+      // La traducción cuesta una llamada al modelo por ficha. Persistirla en
+      // el nodo hace que la próxima consulta de esta obra no la pague.
+      if (translatedDescription) {
+        void this.graphCacheService.saveTranslation(result.id, translatedDescription).catch(() => {});
+      }
+
       const localized: AniListResult = { ...result, description: translatedDescription };
 
       this.sendBotMessage(this.formatAniListCard(localized));

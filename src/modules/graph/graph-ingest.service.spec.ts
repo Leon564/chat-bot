@@ -194,6 +194,22 @@ describe('GraphIngestService — señales sociales', () => {
       expect(generos[0].label).toBe('Isekai');
     });
 
+    it('guarda los dos títulos en props, no sólo en el label', async () => {
+      await ingest.ingestAniList('Nico', result, 'x');
+
+      const node = await graph.findNode('work', 'anilist:105398');
+      expect(node!.props.titleRomaji).toBe('Na Honjaman Level Up');
+      expect(node!.props.titleEnglish).toBe('Solo Leveling');
+    });
+
+    it('guarda titleEnglish null cuando AniList no lo trae', async () => {
+      await ingest.ingestAniList('Nico', { ...result, titleEnglish: null }, 'x');
+
+      const node = await graph.findNode('work', 'anilist:105398');
+      expect(node!.props.titleRomaji).toBe('Na Honjaman Level Up');
+      expect(node!.props.titleEnglish).toBeNull();
+    });
+
     it('es idempotente: dos consultas no duplican nodos ni aristas', async () => {
       await ingest.ingestAniList('Nico', result, 'solo leveling');
       await ingest.ingestAniList('Nico', result, 'solo leveling');
