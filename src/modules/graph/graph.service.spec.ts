@@ -472,6 +472,37 @@ describe('GraphService — nodos', () => {
       expect(result.find((c) => c.key === 'orv')).toBeUndefined();
     });
 
+    it('NO devuelve obras que al usuario le disgustan (B1, ronda de corrección final)', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const naruto = await service.upsertNode({ type: 'work', key: 'Naruto', label: 'Naruto' });
+      await service.upsertEdge({ from: u._id, to: naruto!._id, type: 'dislikes', source: 'fact' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: naruto!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      // Naruto es justo lo que Nico dijo que le disgusta -- recomendárselo
+      // porque a Kei (un par) le gusta es peor que no recomendar nada.
+      expect(result.find((c) => c.key === 'naruto')).toBeUndefined();
+    });
+
+    it('NO devuelve obras por las que el usuario ya preguntó (B1, ronda de corrección final)', async () => {
+      const { u } = await gusta('Nico', 'Berserk');
+      const orv = await service.upsertNode({ type: 'work', key: 'ORV', label: 'ORV' });
+      await service.upsertEdge({ from: u._id, to: orv!._id, type: 'asked_about', source: 'signal' });
+
+      const { u: kei } = await gusta('Kei', 'Berserk');
+      await service.upsertEdge({ from: kei._id, to: orv!._id, type: 'likes', source: 'fact' });
+
+      const result = await service.collaborative(u._id, 5);
+
+      // ORV ya aparece en la línea de contexto vía lastNode/highlight --
+      // repetirla acá como "a otros también les gustó" es redundante, no un
+      // defecto de corrección, pero igual desperdicia presupuesto de la línea.
+      expect(result.find((c) => c.key === 'orv')).toBeUndefined();
+    });
+
     it('NO devuelve nodos que no sean de tipo work (ni topic, ni genre, ni artist)', async () => {
       const { u } = await gusta('Nico', 'Berserk');
       const { u: kei } = await gusta('Kei', 'Berserk');

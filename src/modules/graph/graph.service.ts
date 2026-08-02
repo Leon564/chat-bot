@@ -544,11 +544,26 @@ export class GraphService {
       const peerIds = peerRows.map((r) => r._id as Types.ObjectId);
       if (peerIds.length === 0) return [];
 
-      // 3. Qué ya tiene el usuario — le gusta o ya se le recomendó — para
-      //    excluirlo de las candidatas. Sin esto se repetiría lo obvio (algo
-      //    que ya le gusta) o lo ya ofrecido (algo ya recomendado).
-      const alreadyHas = await this.edgeModel
-        .distinct('to', { from: userId, type: { $in: ['likes', 'recommended_to'] } })
+      // 3. Qué excluir de las candidatas — cuatro razones, no dos:
+      //    - `likes`: ya le gusta, repetirlo sería obvio.
+      //    - `recommended_to`: ya se le ofreció.
+      //    - `dislikes`: LA QUE IMPORTA DE VERDAD. `SAVE_FACT` crea estas
+      //      aristas desde la Fase 4b; sin excluirla acá, el paso 4 puede
+      //      levantarla si a un par le gusta, y el bot terminaría
+      //      recomendando exactamente lo que la persona dijo que no le
+      //      gusta — peor que no recomendar nada. No la saques de esta
+      //      lista aunque el nombre `excludeIds` no la mencione: es la más
+      //      fácil de dar por "fuera de lugar" en una limpieza futura.
+      //    - `asked_about`: no es un defecto de corrección (nadie recibe
+      //      algo que rechazó), sino redundancia — la obra ya aparece en la
+      //      línea vía `lastNode`/`highlight`, así que listarla de nuevo acá
+      //      gasta presupuesto de la línea repitiendo lo que el modelo ya
+      //      tiene.
+      const excludeIds = await this.edgeModel
+        .distinct('to', {
+          from: userId,
+          type: { $in: ['likes', 'recommended_to', 'dislikes', 'asked_about'] },
+        })
         .exec();
 
       // 4. Qué le gusta a esos pares: se suma el peso cuando varias personas
@@ -558,7 +573,7 @@ export class GraphService {
       //    original.
       const rows = await this.edgeModel
         .aggregate([
-          { $match: { from: { $in: peerIds }, type: 'likes', to: { $nin: alreadyHas } } },
+          { $match: { from: { $in: peerIds }, type: 'likes', to: { $nin: excludeIds } } },
           { $group: { _id: '$to', score: { $sum: '$weight' } } },
           {
             $lookup: {
