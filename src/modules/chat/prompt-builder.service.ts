@@ -173,7 +173,11 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 Si ${input.username} revela algo sobre OTRA persona de la sala, usá:
 SAVE_FACT_ABOUT(usuario, relación, objeto)
 Ejemplo: "a lyna le encanta Berserk" → SAVE_FACT_ABOUT(lyna, likes, Berserk)
-Usá el nombre tal como aparece en el chat. Si no sabés de quién hablan, no lo emitas.`
+Usá el nombre tal como aparece en el chat. Si no sabés de quién hablan, no lo emitas.
+
+Si ${input.username} te pide dejarle un mensaje a otra persona para cuando aparezca, usá:
+SAVE_ERRAND(usuario, texto del recado)
+Ejemplo: "cuando lyna te hable recordale que suba el video" → SAVE_ERRAND(lyna, que suba el video)`
       : '';
 
     return `SISTEMA DE MEMORIA:

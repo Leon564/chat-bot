@@ -18,6 +18,7 @@ import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
 
 const respuesta = (content: string, prompt = 100, completion = 20) => ({
   choices: [{ message: { content } }],
@@ -35,6 +36,9 @@ describe('ChatService — instrumentación de tokens', () => {
   let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
   let graphContext: { build: jest.Mock };
   let graphIngest: { ingestFact: jest.Mock; ingestFactAbout: jest.Mock };
+  // Recados diferidos (Task 4, contexto cruzado): doble mínimo para que la DI
+  // de ChatService resuelva — ChatService ahora inyecta ErrandService.
+  let errands: { create: jest.Mock };
   let logging: { getLastMessages: jest.Mock };
   let configValues: Record<string, unknown>;
   // Flag de contexto cruzado (Task 3): `let` de nivel de describe, en false
@@ -60,6 +64,7 @@ describe('ChatService — instrumentación de tokens', () => {
       ingestFact: jest.fn().mockResolvedValue(undefined),
       ingestFactAbout: jest.fn().mockResolvedValue(undefined),
     };
+    errands = { create: jest.fn().mockResolvedValue('ok') };
     crossEnabled = false;
     // Único autor por defecto: 'Nico'. Los tests de validación de sujeto
     // (Important #2) pisan esto para incluir a otros autores que sus hechos
@@ -93,6 +98,7 @@ describe('ChatService — instrumentación de tokens', () => {
         { provide: GraphContextService, useValue: graphContext },
         { provide: GraphIngestService, useValue: graphIngest },
         { provide: CrossContextSettingsService, useValue: { isEnabled: () => crossEnabled } },
+        { provide: ErrandService, useValue: errands },
       ],
     }).compile();
 
@@ -615,6 +621,180 @@ describe('ChatService — instrumentación de tokens', () => {
         // medio) a escribir basura en el grafo.
         expect(graphIngest.ingestFact).not.toHaveBeenCalled();
         expect(out).not.toContain('SAVE_FACT');
+      });
+    });
+  });
+
+  describe('SAVE_ERRAND (Task 4, contexto cruzado — recados diferidos)', () => {
+    beforeEach(() => {
+      configValues['bot.useMemory'] = true;
+    });
+
+    it('con el flag encendido crea el recado y limpia el texto', async () => {
+      crossEnabled = true;
+      mockCompletion('Dale, se lo digo. SAVE_ERRAND(lyna, que suba el video)');
+
+      const out = await service.chat('bot, decile a lyna que suba el video', 'aria', 'leon');
+
+      expect(out).not.toContain('SAVE_ERRAND');
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video');
+    });
+
+    it('con el flag apagado no crea nada pero limpia igual', async () => {
+      crossEnabled = false;
+      mockCompletion('Ok. SAVE_ERRAND(lyna, que suba el video)');
+
+      const out = await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(out).not.toContain('SAVE_ERRAND');
+      expect(errands.create).not.toHaveBeenCalled();
+    });
+
+    it('convive con SAVE_FACT en la misma respuesta', async () => {
+      crossEnabled = true;
+      mockCompletion('SAVE_ERRAND(lyna, subí el video) SAVE_FACT(likes, Berserk)');
+
+      const out = await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+      expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Berserk');
+      expect(out).not.toContain('SAVE_');
+    });
+
+    // ─── Decisión del controlador #1 — el terminador tiene que aceptar los tres verbos ──
+
+    describe('convive con los otros dos verbos, en ambos órdenes', () => {
+      it('SAVE_FACT primero, SAVE_ERRAND después', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_FACT(likes, Vagabond) SAVE_ERRAND(lyna, subí el video)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Vagabond');
+        expect(out).not.toContain('SAVE_');
+      });
+
+      it('SAVE_ERRAND primero, SAVE_FACT_ABOUT después', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_ERRAND(lyna, subí el video) SAVE_FACT_ABOUT(kei, likes, Berserk)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
+        expect(out).not.toContain('SAVE_');
+      });
+
+      it('SAVE_FACT_ABOUT primero, SAVE_ERRAND después', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_FACT_ABOUT(kei, likes, Berserk) SAVE_ERRAND(lyna, subí el video)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
+        expect(out).not.toContain('SAVE_');
+      });
+
+      it('los tres verbos juntos en una sola respuesta', async () => {
+        crossEnabled = true;
+        mockCompletion(
+          'SAVE_FACT_ABOUT(kei, likes, Berserk) SAVE_ERRAND(lyna, subí el video) SAVE_FACT(dislikes, ecchi)',
+        );
+
+        await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
+        expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'dislikes', 'ecchi');
+      });
+    });
+
+    // ─── Decisión del controlador #2 — truncado/malformado es el caso esperado ──
+
+    describe('una llamada truncada o malformada nunca sale cruda al chat', () => {
+      it('cortada dentro del texto (sin paréntesis de cierre) — SÍ se procesa con el texto que haya', async () => {
+        crossEnabled = true;
+        mockCompletion('Dale. SAVE_ERRAND(lyna, que suba el video');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(out).toBe('Dale.');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video');
+      });
+
+      it('cortada antes del texto, con coma colgante (SAVE_ERRAND(lyna,) — se descarta, se limpia', async () => {
+        crossEnabled = true;
+        mockCompletion('Dale. SAVE_ERRAND(lyna,');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(out).toBe('Dale.');
+        expect(errands.create).not.toHaveBeenCalled();
+      });
+
+      it('cortada justo después del destinatario (sin coma) — se descarta, se limpia', async () => {
+        crossEnabled = true;
+        mockCompletion('Dale. SAVE_ERRAND(lyna');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(out).toBe('Dale.');
+        expect(errands.create).not.toHaveBeenCalled();
+      });
+
+      it('destinatario vacío, SAVE_ERRAND(, texto) — se descarta, se limpia', async () => {
+        crossEnabled = true;
+        mockCompletion('Dale. SAVE_ERRAND(, que suba el video)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(out).toBe('Dale.');
+        expect(errands.create).not.toHaveBeenCalled();
+      });
+
+      it('destinatario de más de 40 caracteres — se descarta, se limpia del texto', async () => {
+        crossEnabled = true;
+        const destinatarioLargo = 'EsteEsUnDestinatarioConMasDeCuarentaCaracteresDeVerdad';
+        expect(destinatarioLargo.length).toBeGreaterThan(40);
+        mockCompletion(`Dale. SAVE_ERRAND(${destinatarioLargo}, que suba el video)`);
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(out).not.toContain(destinatarioLargo);
+        expect(errands.create).not.toHaveBeenCalled();
+      });
+    });
+
+    // ─── Decisión del controlador #3 — el bot no puede ser destinatario ──
+
+    describe('el bot nunca puede ser destinatario de un recado', () => {
+      it('rechaza un SAVE_ERRAND cuyo destinatario es el propio bot (sin importar mayúsculas)', async () => {
+        crossEnabled = true;
+        mockCompletion('Ok. SAVE_ERRAND(ARIA, que me hagas caso)');
+
+        const out = await service.chat('bot, algo', 'Aria', 'leon');
+
+        expect(out).not.toContain('SAVE_ERRAND');
+        expect(errands.create).not.toHaveBeenCalled();
+      });
+
+      it('un recado real (no al bot) en la misma respuesta sí se crea', async () => {
+        crossEnabled = true;
+        mockCompletion(
+          'Ok. SAVE_ERRAND(ARIA, hazme caso) SAVE_ERRAND(lyna, subí el video)',
+        );
+
+        await service.chat('bot, algo', 'Aria', 'leon');
+
+        expect(errands.create).toHaveBeenCalledTimes(1);
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
       });
     });
   });

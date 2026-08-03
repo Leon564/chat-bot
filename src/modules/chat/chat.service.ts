@@ -11,6 +11,7 @@ import { GraphContextService } from '../graph/graph-context.service';
 import { GraphIngestService, FACT_RELATIONS } from '../graph/graph-ingest.service';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -53,6 +54,7 @@ export class ChatService {
     private readonly graphContext: GraphContextService,
     private readonly graphIngest: GraphIngestService,
     private readonly crossContext: CrossContextSettingsService,
+    private readonly errandService: ErrandService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -259,6 +261,22 @@ export class ChatService {
         if (about.facts.length > 0 || about.cleanContent !== content) {
           content = about.cleanContent;
         }
+
+        // Recados diferidos (Task 4, contexto cruzado). Corre EN EL MISMO
+        // BLOQUE, después de sacar los SAVE_FACT_ABOUT y antes de que el
+        // SAVE_FACT clásico (de abajo) toque el contenido: mismo motivo de
+        // fusión de capturas que ya documentó `extractFactsAboutFromResponse`
+        // — con un SAVE_ERRAND( en el medio, el lookahead de cierre de
+        // cualquiera de los otros dos regex no se cumple, el motor retrocede
+        // y fusiona las llamadas. Corre SIEMPRE que la memoria esté activa,
+        // con el flag de contexto cruzado encendido o no: apagado no se crea
+        // ningún recado, pero el texto se limpia igual — si no, la llamada
+        // cruda saldría al chat.
+        const errandsResult = this.extractErrandsFromResponse(content);
+        if (errandsResult.errands.length > 0 || errandsResult.cleanContent !== content) {
+          content = errandsResult.cleanContent;
+        }
+
         if (this.crossContext.isEnabled()) {
           for (const fact of about.facts) {
             // Nunca se ingiere un hecho cuyo sujeto sea el propio bot: el
@@ -276,6 +294,24 @@ export class ChatService {
             }
             void this.graphIngest
               .ingestFactAbout(fact.subject, fact.relation, fact.object)
+              .catch(() => {});
+          }
+
+          for (const errand of errandsResult.errands) {
+            // El propio bot no puede ser destinatario de un recado: el
+            // dispatcher (`BotService`) ignora todo mensaje cuyo autor tenga
+            // `role='bot'`, así que un recado dirigido al bot nunca se
+            // entrega y sólo consume el cupo del AUTOR hasta que caduque
+            // (Decisión del controlador #3). Mismo camino de comparación que
+            // ya usa el rechazo de sujeto de `SAVE_FACT_ABOUT` arriba.
+            if (
+              botName &&
+              ChatService.normalizeAuthorName(errand.forUser) === ChatService.normalizeAuthorName(botName)
+            ) {
+              continue;
+            }
+            void this.errandService
+              .create(username ?? '', errand.forUser, errand.text)
               .catch(() => {});
           }
         }
@@ -765,9 +801,19 @@ escribas nada después del delimitador.`
    * `SAVE_FACT_ABOUT\s*\(` como único terminador deja el objeto fusionado;
    * `SAVE_FACT(?:_ABOUT)?\s*\(` (acepta tanto otro `SAVE_FACT_ABOUT(` como
    * un `SAVE_FACT(` liso) lo resuelve en los dos órdenes.
+   *
+   * Actualización (Task 4, recados diferidos): con un tercer verbo en juego
+   * (`SAVE_ERRAND`) que TAMBIÉN se extrae ANTES del `SAVE_FACT` clásico (ver
+   * `extractErrandsFromResponse`), este regex corre PRIMERO en el pipeline —
+   * así que si un `SAVE_ERRAND(` aparece justo después de un
+   * `SAVE_FACT_ABOUT(...)`, es ESTE regex el que tiene que reconocerlo como
+   * terminador válido, no al revés. Reproducido con TDD antes de agregar la
+   * alternativa: `SAVE_FACT_ABOUT(kei, likes, Berserk) SAVE_ERRAND(lyna, subí
+   * el video)` fusionaba el objeto en "Berserk) SAVE_ERRAND(lyna, subí el
+   * video)" hasta agregar `SAVE_ERRAND\s*\(` a la alternancia.
    */
   private static createFactAboutRegex(): RegExp {
-    return /SAVE_FACT_ABOUT\s*\(\s*([^,()\n]*?)\s*,\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT(?:_ABOUT)?\s*\(|$))|$)/gi;
+    return /SAVE_FACT_ABOUT\s*\(\s*([^,()\n]*?)\s*,\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT(?:_ABOUT)?\s*\(|SAVE_ERRAND\s*\(|$))|$)/gi;
   }
 
   /**
@@ -901,7 +947,11 @@ escribas nada después del delimitador.`
         subject.length <= ChatService.FACT_ABOUT_SUBJECT_MAX_LEN &&
         relation &&
         object &&
-        !/SAVE_FACT/i.test(object) &&
+        // Defensa en profundidad ampliada (Task 4): además de "SAVE_FACT"
+        // (fusión con otro SAVE_FACT/SAVE_FACT_ABOUT), ahora también
+        // "SAVE_ERRAND" — un tercer verbo puede fusionarse en el objeto por
+        // el mismo mecanismo si el terminador de arriba fallara.
+        !/SAVE_(FACT|ERRAND)/i.test(object) &&
         !ChatService.hasDanglingClose(object)
       ) {
         facts.push({ subject, relation, object });
@@ -915,6 +965,114 @@ escribas nada después del delimitador.`
     // arriba no pudo matchear como completa (ver `createDanglingFactAboutRegex`).
     cleanContent = cleanContent.replace(ChatService.createDanglingFactAboutRegex(), '').trim();
     return { cleanContent, facts };
+  }
+
+  /**
+   * Reconoce `SAVE_ERRAND(usuario, texto)` (Task 4, recados diferidos). Mismo
+   * criterio de captura del destinatario que `createFactAboutRegex`
+   * (espacios, acentos y dígitos sí; coma, paréntesis y salto de línea no).
+   *
+   * Deliberadamente SIN cota `{1,40}` en el propio regex, por la MISMA razón
+   * documentada en `createFactAboutRegex`: un cupo duro ahí no "rechaza" un
+   * destinatario vacío o de más de 40 caracteres, hace que el regex ENTERO
+   * deje de matchear en ese punto — y sin match no hay nada que reemplazar,
+   * el texto crudo sale al chat. Confirmado ejecutando una versión con
+   * `{1,40}` inline contra un destinatario de 50+ caracteres antes de escribir
+   * esta versión: cero matches, `content.replace(...)` no toca nada. La cota
+   * real (reusa `FACT_ABOUT_SUBJECT_MAX_LEN`, mismo valor y mismo motivo que
+   * un nombre de persona) se aplica DESPUÉS, sobre el destinatario ya
+   * capturado, en `extractErrandsFromResponse`.
+   *
+   * El terminador de cierre tiene que aceptar CUALQUIERA de los tres verbos
+   * que el modelo puede emitir en la misma respuesta —no sólo otro
+   * `SAVE_ERRAND(`—: hallazgo verificado antes de dar este regex por bueno
+   * (decisión del controlador #1, mismo tipo de error que ya costó una ronda
+   * en `createFactAboutRegex`). Con `SAVE_ERRAND\s*\(` como único terminador,
+   * una respuesta como `SAVE_ERRAND(lyna, subí el video) SAVE_FACT(likes,
+   * Vagabond)` no satisface el lookahead en el primer `)` (lo que sigue es
+   * `SAVE_FACT(`, sin ser otro `SAVE_ERRAND(`), el motor retrocede y fusiona
+   * ambas llamadas en una sola captura con el texto roto — igual sucede en
+   * el orden inverso y con `SAVE_FACT_ABOUT(` de por medio. Las tres
+   * alternativas (`SAVE_ERRAND`, `SAVE_FACT_ABOUT`, `SAVE_FACT`) cubren los
+   * dos órdenes posibles con cada uno de los otros dos verbos; verificado con
+   * un script aparte antes de este cambio.
+   */
+  private static createErrandRegex(): RegExp {
+    return /SAVE_ERRAND\s*\(\s*([^,()\n]*?)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_ERRAND\s*\(|SAVE_FACT_ABOUT\s*\(|SAVE_FACT\s*\(|$))|$)/gi;
+  }
+
+  /**
+   * Llamada `SAVE_ERRAND(` truncada por el tope de `maxLengthResponse` ANTES
+   * de completar la estructura mínima (falta la coma, o el destinatario y
+   * todo lo demás) — mismo criterio que `createDanglingFactAboutRegex`. El
+   * caso más probable, no el más raro (Decisión del controlador #2): el
+   * prompt pide emitir el verbo al final de la respuesta, así que el corte
+   * cae justo ahí. `[^)]*$` sólo mata una llamada que llega hasta el FIN de
+   * la cadena sin ningún `)` de por medio — si hubiera un `)` en algún punto
+   * posterior, `createErrandRegex` ya la habría consumido antes de llegar
+   * acá.
+   */
+  private static createDanglingErrandRegex(): RegExp {
+    return /SAVE_ERRAND\s*\([^)]*$/gi;
+  }
+
+  /**
+   * Extrae los recados (`SAVE_ERRAND`, Task 4) y devuelve el texto sin esas
+   * llamadas.
+   *
+   * **Tiene que correr en el mismo bloque que `extractFactsAboutFromResponse`,
+   * ANTES del `SAVE_FACT` clásico** — misma razón de fusión de capturas.
+   * Ver `chat()` para el orden exacto.
+   *
+   * Cuatro condiciones deciden si la captura se ingesta como recado, todas
+   * con su contraparte ya probada en `SAVE_FACT_ABOUT` (Decisión del
+   * controlador #2 — truncado y malformado no son un extra, son el caso
+   * esperado):
+   *   - Destinatario no vacío.
+   *   - Largo del destinatario ≤ `FACT_ABOUT_SUBJECT_MAX_LEN` (reusa la misma
+   *     cota que un nombre de persona; ver el comentario de
+   *     `createErrandRegex` sobre por qué no puede ser un cuantificador del
+   *     propio regex).
+   *   - Texto no vacío.
+   *   - `!/SAVE_(FACT|ERRAND)/i.test(text)` y `!hasDanglingClose(text)` —
+   *     misma señal de captura fusionada que ya usan los otros dos
+   *     extractores.
+   *
+   * Después de la extracción normal, una segunda pasada
+   * (`createDanglingErrandRegex`) borra cualquier `SAVE_ERRAND(` truncado que
+   * el regex principal no pudo reconocer como llamada completa — sin este
+   * paso, esa llamada incompleta saldría cruda al chat en vez de limpiarse.
+   */
+  private extractErrandsFromResponse(content: string): {
+    cleanContent: string;
+    errands: Array<{ forUser: string; text: string }>;
+  } {
+    const errands: Array<{ forUser: string; text: string }> = [];
+    const regex = ChatService.createErrandRegex();
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(content)) !== null) {
+      const forUser = match[1].trim();
+      const text = match[2].trim();
+
+      if (
+        forUser &&
+        forUser.length <= ChatService.FACT_ABOUT_SUBJECT_MAX_LEN &&
+        text &&
+        !/SAVE_(FACT|ERRAND)/i.test(text) &&
+        !ChatService.hasDanglingClose(text)
+      ) {
+        errands.push({ forUser, text });
+      }
+
+      if (match.index === regex.lastIndex) regex.lastIndex++;
+    }
+
+    let cleanContent = content.replace(ChatService.createErrandRegex(), '').trim();
+    // Limpieza de última instancia: una llamada truncada que el regex de
+    // arriba no pudo matchear como completa (ver `createDanglingErrandRegex`).
+    cleanContent = cleanContent.replace(ChatService.createDanglingErrandRegex(), '').trim();
+    return { cleanContent, errands };
   }
 
   /**
