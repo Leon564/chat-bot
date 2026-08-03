@@ -1244,12 +1244,17 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
 });
 
 /**
- * Arma un `BotService` con dobles por defecto para sus 15 dependencias,
+ * Arma un `BotService` con dobles por defecto para todas sus dependencias,
  * permitiendo overridear sólo lo que a cada test le importa (por ahora,
- * `crossContext`). No pasa por `Test.createTestingModule`: al no haber
- * `onModuleInit` de por medio (no se registra el handler real del socket),
- * instanciar directo alcanza y evita repetir el armado completo de
- * providers como en los `describe` de arriba.
+ * `crossContext`). A diferencia de un primer intento con `new BotService(...)`
+ * posicional, esto resuelve por TOKEN vía `Test.createTestingModule` —
+ * mismo mecanismo que los 6 `describe` de arriba —: si en el futuro se
+ * inserta una dependencia nueva en cualquier posición del constructor (p.
+ * ej. Task 5 agrega `ErrandService`), un `new(...)` posicional seguiría
+ * compilando con los casts `as unknown as X` y cablearía el doble
+ * equivocado al parámetro equivocado sin que ningún test lo note. Con DI
+ * por token, en cambio, falta un provider y Nest tira "can't resolve
+ * dependencies" en la cara — ruidoso, no silencioso.
  *
  * `sent` acumula todo lo que pasó por `chatSocketService.sendMessage` —
  * que es exactamente lo que emite `sendBotMessage` — para que los tests de
@@ -1261,11 +1266,11 @@ type CrossContextDouble = {
   getInfo?: () => { enabled: boolean; source: 'env' | 'override' };
 };
 
-const buildBotService = (
+const buildBotService = async (
   overrides: {
     crossContext?: CrossContextDouble;
   } = {},
-): { service: BotService; sent: string[] } => {
+): Promise<{ service: BotService; sent: string[] }> => {
   const sent: string[] = [];
   const socket = {
     onMessage: jest.fn(),
@@ -1285,26 +1290,35 @@ const buildBotService = (
     ...overrides.crossContext,
   };
 
-  const service = new BotService(
-    { get: jest.fn() } as unknown as ConfigService,
-    {} as unknown as ChatService,
-    {} as unknown as MusicService,
-    {} as unknown as AniListService,
-    {
-      sleep: jest.fn().mockResolvedValue(undefined),
-      splitMessageIntoParts: jest.fn((text: string) => [text]),
-    } as unknown as UtilsService,
-    { saveLog: jest.fn().mockResolvedValue(undefined) } as unknown as LoggingService,
-    {} as unknown as MemoryService,
-    socket as unknown as ChatSocketService,
-    { ingestSocial: jest.fn().mockResolvedValue(undefined) } as unknown as GraphIngestService,
-    {} as unknown as GraphCacheService,
-    noopGraphService as unknown as GraphService,
-    { describe: jest.fn().mockResolvedValue([]) } as unknown as GraphUserService,
-    { record: jest.fn().mockResolvedValue(undefined) } as unknown as UsageService,
-    { check: jest.fn().mockReturnValue(true) } as unknown as RateLimitService,
-    crossContext as unknown as CrossContextSettingsService,
-  );
+  const moduleRef = await Test.createTestingModule({
+    providers: [
+      BotService,
+      { provide: ConfigService, useValue: { get: jest.fn() } },
+      { provide: ChatService, useValue: {} },
+      { provide: MusicService, useValue: {} },
+      { provide: AniListService, useValue: {} },
+      {
+        provide: UtilsService,
+        useValue: {
+          sleep: jest.fn().mockResolvedValue(undefined),
+          splitMessageIntoParts: jest.fn((text: string) => [text]),
+        },
+      },
+      { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
+      { provide: MemoryService, useValue: {} },
+      { provide: ChatSocketService, useValue: socket },
+      { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
+      { provide: GraphCacheService, useValue: {} },
+      { provide: GraphService, useValue: noopGraphService },
+      { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
+      { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+      { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+      { provide: CrossContextSettingsService, useValue: crossContext },
+    ],
+  }).compile();
+
+  // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
+  const service = moduleRef.get<BotService>(BotService);
 
   return { service, sent };
 };
@@ -1312,7 +1326,7 @@ const buildBotService = (
 describe('!contextocruzado', () => {
   it('rechaza a quien no es admin y no toca el interruptor', async () => {
     const setOverride = jest.fn();
-    const { service, sent } = buildBotService({
+    const { service, sent } = await buildBotService({
       crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
     });
 
@@ -1324,7 +1338,7 @@ describe('!contextocruzado', () => {
 
   it('un admin lo enciende', async () => {
     const setOverride = jest.fn();
-    const { service } = buildBotService({
+    const { service } = await buildBotService({
       crossContext: { setOverride, getInfo: () => ({ enabled: true, source: 'override' }) },
     });
 
@@ -1336,7 +1350,7 @@ describe('!contextocruzado', () => {
 
   it('reset devuelve el control al .env', async () => {
     const setOverride = jest.fn();
-    const { service } = buildBotService({
+    const { service } = await buildBotService({
       crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
     });
 
@@ -1346,7 +1360,7 @@ describe('!contextocruzado', () => {
   });
 
   it('devuelve false para un mensaje que no es el comando', async () => {
-    const { service } = buildBotService({});
+    const { service } = await buildBotService({});
     expect(await service['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
   });
 });
