@@ -83,7 +83,11 @@ export const RETURNING_AFTER_DAYS = 14;
  * guard deja de reconocer el verbo colgando en el otro lado, en silencio —
  * sin que ningún test de tipos lo detecte. 'preguntó por' está acá
  * ÚNICAMENTE por `buildOtherLine` (la línea propia usa 'justo preguntó por',
- * ya cubierta abajo); no lo borres pensando que es un duplicado inútil.
+ * ya cubierta abajo); no lo borres pensando que es un duplicado inútil. El
+ * riesgo más probable no es renombrar una frase existente, sino agregar una
+ * CUARTA frase nueva a `buildOtherLine` (o a `render()`) sin sumar su
+ * entrada acá: el bug reaparece para esa frase puntual y ningún test
+ * existente lo va a notar, porque sólo cubren las tres frases actuales.
  */
 const DANGLING_SUFFIXES = [
   'le gusta',
@@ -203,7 +207,8 @@ export class GraphContextService {
     // apareciendo, tal cual, en ese arreglo -- es lo que le permite a
     // `truncateTo` reconocer el verbo colgando y limpiarlo en vez de dejarlo
     // sin objeto. Cambiar la redacción acá sin tocar `DANGLING_SUFFIXES`
-    // reabre el bug que este comentario documenta.
+    // reabre el bug que este comentario documenta -- y lo mismo si el día de
+    // mañana se agrega una CUARTA frase acá sin sumarla también allá.
     const segments: string[] = [];
     if (asked.length > 0) segments.push(`preguntó por ${asked.join(', ')}`);
     if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);

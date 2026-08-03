@@ -769,22 +769,33 @@ describe('GraphContextService', () => {
         expect(line).not.toContain('Z');
       });
 
-      it('si el usuario mencionado tiene además datos propios cortos, esos SÍ sobreviven aunque el degenerado desaparezca', async () => {
-        // Variante con más de un segmento: uno corto (sobrevive) y uno
-        // gigante en otra sección. Confirma que el drop es "la oración
-        // entera si queda vacía", no "cualquier truncado agresivo" -- acá
-        // el label corto ("Vagabond") sí debería seguir presente si el
-        // presupuesto le alcanza, y sólo se cae si el conjunto entero no
-        // entra en MAX_CHARS_OTHER de forma no vacía.
+      it('cuando UNA sección degenera y desaparece, la otra sección corta de la MISMA oración sobrevive intacta', async () => {
+        // A diferencia de los tres tests de arriba (un solo segmento, la
+        // oración entera se cae), acá `lyna` tiene DOS secciones en la MISMA
+        // llamada: `asked_about` (corta, "Vagabond") y `likes` (el label
+        // gigante, que fuerza el recorte). El orden de armado de
+        // `buildOtherLine` pone "preguntó por" ANTES que "le gusta", así que
+        // el recorte cae dentro/después de la sección "le gusta" -- el
+        // backtrack al separador de ítem completo ("; ") descarta la sección
+        // gigante ENTERA, dejando "preguntó por Vagabond" intacta. Esto es
+        // lo que separa el guard "quirúrgico" (vacía sólo si no queda NADA)
+        // de uno que vaciara de más (si CUALQUIER sección degenera, sin
+        // mirar si otra sobrevivió) -- ver el mutante probado en el reporte.
         const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
         const corta = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Vagabond' });
-        await graph.upsertEdge({ from: leon._id, to: corta._id, type: 'likes', source: 'fact' });
+        const gigante = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: labelGigante });
         await graph.upsertEdge({ from: lyna._id, to: corta._id, type: 'asked_about', source: 'fact' });
+        await graph.upsertEdge({ from: lyna._id, to: gigante._id, type: 'likes', source: 'fact' });
 
         const line = await service.build('leon', 'hola lyna');
 
+        // La sección corta sobrevive completa...
         expect(line).toContain('Sobre lyna: preguntó por Vagabond');
+        // ...y la sección degenerada no dejó ningún rastro: ni el label
+        // gigante a medias, ni el verbo "le gusta" colgando sin objeto.
+        expect(line).not.toContain('Z');
+        expect(line).not.toContain('le gusta');
       });
     });
   });
