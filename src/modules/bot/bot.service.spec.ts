@@ -14,6 +14,7 @@ import { GraphService, Candidate } from '../graph/graph.service';
 import { GraphUserService, MAX_FACTS_SHOWN } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 /**
  * Stub de `GraphService` para los describes que no ejercitan la
@@ -26,6 +27,18 @@ const noopGraphService = {
   collaborative: jest.fn().mockResolvedValue([]),
   normalizeKey: jest.fn((s: string) => (s ?? '').toString().toLowerCase()),
   upsertEdge: jest.fn().mockResolvedValue(undefined),
+};
+
+/**
+ * Doble por defecto de `CrossContextSettingsService` para los describes de
+ * este archivo que no ejercitan el contexto cruzado (todos salvo el propio
+ * describe de `!contextocruzado`, al final): apagado y sin comportamiento,
+ * sólo para satisfacer la inyección del constructor de `BotService`.
+ */
+const noopCrossContextSettings = {
+  isEnabled: jest.fn().mockReturnValue(false),
+  setOverride: jest.fn(),
+  getInfo: jest.fn().mockReturnValue({ enabled: false, source: 'env' }),
 };
 
 /**
@@ -115,6 +128,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: usage },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -332,6 +346,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -486,6 +501,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -687,6 +703,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: GraphUserService, useValue: graphUser },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -867,6 +884,7 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: rateLimit },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -1044,6 +1062,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
           provide: RateLimitService,
           useValue: { check: jest.fn().mockReturnValue(true), shouldNotifyRejection: jest.fn().mockReturnValue(true) },
         },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
       ],
     }).compile();
 
@@ -1221,5 +1240,113 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
       expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-zero-id' }));
       expect(graph.upsertEdge).toHaveBeenCalledWith(expect.objectContaining({ to: 'fate-id' }));
     });
+  });
+});
+
+/**
+ * Arma un `BotService` con dobles por defecto para sus 15 dependencias,
+ * permitiendo overridear sólo lo que a cada test le importa (por ahora,
+ * `crossContext`). No pasa por `Test.createTestingModule`: al no haber
+ * `onModuleInit` de por medio (no se registra el handler real del socket),
+ * instanciar directo alcanza y evita repetir el armado completo de
+ * providers como en los `describe` de arriba.
+ *
+ * `sent` acumula todo lo que pasó por `chatSocketService.sendMessage` —
+ * que es exactamente lo que emite `sendBotMessage` — para que los tests de
+ * un solo comando (`!contextocruzado`) no necesiten un mock de socket propio.
+ */
+type CrossContextDouble = {
+  isEnabled?: () => boolean;
+  setOverride?: (value: boolean | null) => void;
+  getInfo?: () => { enabled: boolean; source: 'env' | 'override' };
+};
+
+const buildBotService = (
+  overrides: {
+    crossContext?: CrossContextDouble;
+  } = {},
+): { service: BotService; sent: string[] } => {
+  const sent: string[] = [];
+  const socket = {
+    onMessage: jest.fn(),
+    sendMessage: jest.fn((text: string) => {
+      sent.push(text);
+    }),
+    sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
+    deleteMessage: jest.fn(),
+    getOnlineUsers: jest.fn().mockResolvedValue([]),
+    username: 'Aria',
+  };
+
+  const crossContext = {
+    isEnabled: jest.fn().mockReturnValue(false),
+    setOverride: jest.fn(),
+    getInfo: jest.fn().mockReturnValue({ enabled: false, source: 'env' }),
+    ...overrides.crossContext,
+  };
+
+  const service = new BotService(
+    { get: jest.fn() } as unknown as ConfigService,
+    {} as unknown as ChatService,
+    {} as unknown as MusicService,
+    {} as unknown as AniListService,
+    {
+      sleep: jest.fn().mockResolvedValue(undefined),
+      splitMessageIntoParts: jest.fn((text: string) => [text]),
+    } as unknown as UtilsService,
+    { saveLog: jest.fn().mockResolvedValue(undefined) } as unknown as LoggingService,
+    {} as unknown as MemoryService,
+    socket as unknown as ChatSocketService,
+    { ingestSocial: jest.fn().mockResolvedValue(undefined) } as unknown as GraphIngestService,
+    {} as unknown as GraphCacheService,
+    noopGraphService as unknown as GraphService,
+    { describe: jest.fn().mockResolvedValue([]) } as unknown as GraphUserService,
+    { record: jest.fn().mockResolvedValue(undefined) } as unknown as UsageService,
+    { check: jest.fn().mockReturnValue(true) } as unknown as RateLimitService,
+    crossContext as unknown as CrossContextSettingsService,
+  );
+
+  return { service, sent };
+};
+
+describe('!contextocruzado', () => {
+  it('rechaza a quien no es admin y no toca el interruptor', async () => {
+    const setOverride = jest.fn();
+    const { service, sent } = buildBotService({
+      crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
+    });
+
+    await service['handleCrossContextCommand']('!contextocruzado on', 'lyna', 'user');
+
+    expect(setOverride).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Solo admins');
+  });
+
+  it('un admin lo enciende', async () => {
+    const setOverride = jest.fn();
+    const { service } = buildBotService({
+      crossContext: { setOverride, getInfo: () => ({ enabled: true, source: 'override' }) },
+    });
+
+    const handled = await service['handleCrossContextCommand']('!contextocruzado on', 'leon', 'admin');
+
+    expect(handled).toBe(true);
+    expect(setOverride).toHaveBeenCalledWith(true);
+  });
+
+  it('reset devuelve el control al .env', async () => {
+    const setOverride = jest.fn();
+    const { service } = buildBotService({
+      crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
+    });
+
+    await service['handleCrossContextCommand']('!contextocruzado reset', 'leon', 'admin');
+
+    expect(setOverride).toHaveBeenCalledWith(null);
+  });
+
+  it('devuelve false para un mensaje que no es el comando', async () => {
+    const { service } = buildBotService({});
+    expect(await service['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
   });
 });

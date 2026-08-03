@@ -19,6 +19,7 @@ import {
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
@@ -75,6 +76,7 @@ export class BotService implements OnModuleInit {
     private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
     private readonly rateLimitService: RateLimitService,
+    private readonly crossContextSettings: CrossContextSettingsService,
   ) {}
 
   async onModuleInit() {
@@ -115,6 +117,10 @@ export class BotService implements OnModuleInit {
     // Handled before the trigger gating so admins don't need to mention the
     // bot for the command to work.
     if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
+
+    // Interruptor de emergencia del contexto cruzado. Mismo motivo que
+    // !personality para ir antes del filtro de menciones.
+    if (await this.handleCrossContextCommand(content, authorUsername, authorRole)) return;
 
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
@@ -899,6 +905,61 @@ export class BotService implements OnModuleInit {
     this.sendBotMessage(
       `@${authorUsername} Uso: !personality default | unfiltered | reset | status`,
     );
+    return true;
+  }
+
+  // ─── Cross-context command (admins) ──────────────────────────────────────
+
+  /**
+   * `!contextocruzado on|off|reset|status`. Calcado de
+   * `handlePersonalityCommand`: por regex y sin gastar una llamada al modelo,
+   * y va antes del filtro de menciones para que un admin no tenga que
+   * nombrar al bot para apagar la feature. Ese detalle importa acá más que en
+   * personalidad — es el interruptor de emergencia.
+   */
+  private async handleCrossContextCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!(?:contextocruzado|crosscontext)(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar el contexto cruzado.`);
+      return true;
+    }
+
+    if (sub === 'on' || sub === 'off') {
+      this.crossContextSettings.setOverride(sub === 'on');
+      this.sendBotMessage(
+        `@${authorUsername} ✅ Contexto cruzado ${sub === 'on' ? 'activado' : 'desactivado'}.`,
+      );
+      console.log(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.crossContextSettings.setOverride(null);
+      const info = this.crossContextSettings.getInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Contexto cruzado reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
+      );
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.crossContextSettings.getInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 🔗 Contexto cruzado: ${info.enabled ? 'activado' : 'desactivado'}${note}.`,
+      );
+      return true;
+    }
+
+    this.sendBotMessage(`@${authorUsername} Uso: !contextocruzado on | off | reset | status`);
     return true;
   }
 

@@ -43,6 +43,12 @@ export default () => ({
     // nunca se limitan. RATE_LIMIT_PER_HOUR=0 desactiva el límite por
     // completo (todos pasan) — interruptor de emergencia sin tocar código.
     rateLimitPerHour: parseIntEnv(process.env.RATE_LIMIT_PER_HOUR, 20),
+    // Contexto cruzado entre usuarios. Apagado por defecto: es opt-in.
+    // Enciende tres capacidades a la vez — que el bot lea del grafo de OTROS
+    // usuarios mencionados, que acepte hechos sobre terceros, y los recados
+    // diferidos. Se puede mover en caliente con !contextocruzado (admin), sin
+    // reiniciar — mismo rol de interruptor de emergencia que CACHE_ENABLED.
+    crossUserContext: process.env.CROSS_USER_CONTEXT === 'true',
   },
 
   // Music Configuration
