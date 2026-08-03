@@ -74,6 +74,16 @@ export const RETURNING_AFTER_DAYS = 14;
  * medias (p. ej. "...lo último que miró fue" sin nada después) cuando el
  * recorte por límite de palabra cae justo ahí — eso confundiría al modelo
  * más que directamente omitir la sección.
+ *
+ * ACOPLAMIENTO OCULTO con `buildOtherLine`: esta lista también se usa (vía
+ * `truncateTo`) para recortar la oración cruzada sobre OTRO usuario, que
+ * arma sus propias frases ('le gusta', 'ya le recomendé', 'preguntó por')
+ * de forma independiente en vez de reusar este arreglo. Si alguien cambia
+ * la redacción de una frase en un solo lado (acá o en `buildOtherLine`), el
+ * guard deja de reconocer el verbo colgando en el otro lado, en silencio —
+ * sin que ningún test de tipos lo detecte. 'preguntó por' está acá
+ * ÚNICAMENTE por `buildOtherLine` (la línea propia usa 'justo preguntó por',
+ * ya cubierta abajo); no lo borres pensando que es un duplicado inútil.
  */
 const DANGLING_SUFFIXES = [
   'le gusta',
@@ -83,6 +93,7 @@ const DANGLING_SUFFIXES = [
   'lo último que miró fue',
   'justo preguntó por',
   'su gusto más fuerte es',
+  'preguntó por',
 ];
 
 /** Tipos de nodo que puede mencionar una pregunta (nunca 'user'). */
@@ -187,6 +198,12 @@ export class GraphContextService {
     const likes = edges.filter((e) => e.type === 'likes').map((e) => e.label);
     const recommended = edges.filter((e) => e.type === 'recommended_to').map((e) => e.label);
 
+    // ACOPLAMIENTO con `DANGLING_SUFFIXES`: estas tres frases literales
+    // ('preguntó por', 'le gusta', 'ya le recomendé') tienen que seguir
+    // apareciendo, tal cual, en ese arreglo -- es lo que le permite a
+    // `truncateTo` reconocer el verbo colgando y limpiarlo en vez de dejarlo
+    // sin objeto. Cambiar la redacción acá sin tocar `DANGLING_SUFFIXES`
+    // reabre el bug que este comentario documenta.
     const segments: string[] = [];
     if (asked.length > 0) segments.push(`preguntó por ${asked.join(', ')}`);
     if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);
@@ -194,7 +211,21 @@ export class GraphContextService {
     if (segments.length === 0) return '';
 
     const label = other.label || other.key;
-    return this.truncateTo(`Sobre ${label}: ${segments.join('; ')}.`, MAX_CHARS_OTHER);
+    const prefix = `Sobre ${label}`;
+    const truncated = this.truncateTo(`${prefix}: ${segments.join('; ')}.`, MAX_CHARS_OTHER);
+
+    // A diferencia de la línea principal (que nunca llega a `truncate` sin
+    // al menos un segmento real, por el corte temprano de `render`), acá SÍ
+    // puede pasar que el guard de `DANGLING_SUFFIXES` deje la oración
+    // pelada -- un solo edge con un label larguísimo puede consumir todo
+    // `MAX_CHARS_OTHER`, y una vez que el guard le saca el verbo colgando no
+    // queda nada más a lo que volver. Inyectar "Sobre lyna" solo (sin
+    // ningún dato) en el prompt es peor que no mencionar a lyna en
+    // absoluto: el modelo leería una afirmación vacía con la misma
+    // autoridad que una real.
+    if (truncated === prefix || truncated === `${prefix}:`) return '';
+
+    return truncated;
   }
 
   /**

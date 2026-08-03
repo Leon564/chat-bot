@@ -640,10 +640,24 @@ describe('GraphContextService', () => {
     it('la oración cruzada no reduce lo que entra en la línea principal', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+
+      // Labels calibrados para que `sinCruce` caiga DENTRO de la ventana
+      // (MAX_CHARS - MAX_CHARS_OTHER, MAX_CHARS] -- es decir, cerca del
+      // tope de la línea principal pero sin llegar a truncarse ella sola.
+      // Por debajo de esa ventana (p. ej. labels cortos), la línea principal
+      // queda tan lejos de MAX_CHARS que un mutante que mezclara todo en un
+      // solo `truncate` compartido igual pasaría en verde -- no hay
+      // presupuesto real en juego que el mutante pueda pisar. Por encima
+      // (labels demasiado largos), la línea principal ya se trunca sola y
+      // dejaría de ser un prefijo estable para comparar. Cada label es un
+      // único token sin espacios internos (para que el recorte por palabra,
+      // si el mutante lo fuerza, no tenga otro lugar más cercano donde
+      // volver que dentro de la propia línea principal).
+      const labelLen = 57;
       for (let i = 0; i < MAX_EDGES; i++) {
-        const w = await graph.upsertNode({
-          type: 'work', key: `anilist:${i}`, label: `Obra Con Título Largo Número ${i}`,
-        });
+        const base = `Obra${i}`;
+        const label = base + 'X'.repeat(labelLen - base.length);
+        const w = await graph.upsertNode({ type: 'work', key: `anilist:${i}`, label });
         await graph.upsertEdge({ from: leon._id, to: w._id, type: 'likes', source: 'fact' });
       }
       const csm = await graph.upsertNode({ type: 'work', key: 'anilist:99', label: 'Chainsaw Man' });
@@ -653,6 +667,13 @@ describe('GraphContextService', () => {
       const sinCruce = await service.build('leon', 'hola lyna');
       crossEnabled = true;
       const conCruce = await service.build('leon', 'hola lyna');
+
+      // Guardia del fixture: si alguien cambia MAX_CHARS/MAX_CHARS_OTHER o
+      // MAX_EDGES sin ajustar `labelLen`, esta aserción avisa que el
+      // fixture salió de la ventana que hace detectable el mutante de
+      // presupuesto compartido -- en vez de dejar que el test seguido
+      // pasara en verde por una razón distinta a la que dice cubrir.
+      expect(sinCruce.length).toBeGreaterThan(MAX_CHARS - MAX_CHARS_OTHER);
 
       // La línea principal es un prefijo exacto de la versión con cruce: la
       // segunda oración se AGREGA, no compite por los MAX_CHARS existentes.
@@ -674,6 +695,14 @@ describe('GraphContextService', () => {
       }
 
       const line = await service.build('leon', 'hola lyna');
+
+      // Antes de recortar por `indexOf`, hay que probar que la oración
+      // cruzada REALMENTE está: si `buildOtherLine` no existiera,
+      // `indexOf` daría -1 y `slice(-1)` tomaría el último carácter de
+      // `line` -- trivialmente <= MAX_CHARS_OTHER, sin haber ejercitado
+      // nada de lo que este test dice cubrir.
+      expect(line).toContain('Sobre lyna:');
+
       const cruzada = line.slice(line.indexOf('Sobre lyna:'));
 
       expect(cruzada.length).toBeLessThanOrEqual(MAX_CHARS_OTHER);
@@ -689,6 +718,74 @@ describe('GraphContextService', () => {
 
       expect(line).toContain('Sobre lyna:');
       expect(line).toContain('Chainsaw Man');
+    });
+
+    describe('la oración cruzada nunca queda como un verbo colgando sin objeto', () => {
+      // Un único edge con un label larguísimo (un solo token, sin espacios
+      // internos) fuerza a que el recorte por límite de palabra caiga justo
+      // después del verbo/preposición de la sección -- exactamente el caso
+      // que el guard de DANGLING_SUFFIXES existe para limpiar. Con un solo
+      // segmento, no queda ningún separador de ítem previo al que volver,
+      // así que limpiar el verbo colgando deja la oración entera sin
+      // contenido: el resultado correcto es que la oración cruzada
+      // desaparezca del todo, no que quede "Sobre lyna" pelado.
+      const labelGigante = 'Z'.repeat(300);
+
+      it('con "le gusta" (ya estaba en DANGLING_SUFFIXES, pero dejaba "Sobre lyna" sin contenido)', async () => {
+        await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+        const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
+        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'likes', source: 'fact' });
+
+        const line = await service.build('leon', 'hola lyna');
+
+        // La oración entera desapareció -- ni "Sobre lyna" pelado, ni el
+        // verbo colgando, ni el label a medias.
+        expect(line).not.toContain('Sobre lyna');
+        expect(line).not.toContain('Z');
+      });
+
+      it('con "preguntó por" (frase nueva, no estaba en DANGLING_SUFFIXES)', async () => {
+        await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+        const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
+        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'asked_about', source: 'fact' });
+
+        const line = await service.build('leon', 'hola lyna');
+
+        expect(line).not.toContain('Sobre lyna');
+        expect(line).not.toContain('Z');
+      });
+
+      it('con "ya le recomendé"', async () => {
+        await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+        const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
+        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'recommended_to', source: 'fact' });
+
+        const line = await service.build('leon', 'hola lyna');
+
+        expect(line).not.toContain('Sobre lyna');
+        expect(line).not.toContain('Z');
+      });
+
+      it('si el usuario mencionado tiene además datos propios cortos, esos SÍ sobreviven aunque el degenerado desaparezca', async () => {
+        // Variante con más de un segmento: uno corto (sobrevive) y uno
+        // gigante en otra sección. Confirma que el drop es "la oración
+        // entera si queda vacía", no "cualquier truncado agresivo" -- acá
+        // el label corto ("Vagabond") sí debería seguir presente si el
+        // presupuesto le alcanza, y sólo se cae si el conjunto entero no
+        // entra en MAX_CHARS_OTHER de forma no vacía.
+        const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+        const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+        const corta = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Vagabond' });
+        await graph.upsertEdge({ from: leon._id, to: corta._id, type: 'likes', source: 'fact' });
+        await graph.upsertEdge({ from: lyna._id, to: corta._id, type: 'asked_about', source: 'fact' });
+
+        const line = await service.build('leon', 'hola lyna');
+
+        expect(line).toContain('Sobre lyna: preguntó por Vagabond');
+      });
     });
   });
 });
