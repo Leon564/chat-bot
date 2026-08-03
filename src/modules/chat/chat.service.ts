@@ -735,9 +735,22 @@ escribas nada después del delimitador.`
    * la mayoría. Hacer ese grupo permisivo rompería el caso de dos argumentos,
    * porque un objeto legítimo puede contener comas.
    *
-   * El usuario se captura con `[^,()\n]{1,40}`: acepta espacios, acentos y
+   * El usuario se captura con `[^,()\n]*?`: acepta espacios, acentos y
    * dígitos (nombres reales del backend), y excluye coma, paréntesis y salto
    * de línea, que son los delimitadores de la propia llamada.
+   *
+   * Deliberadamente SIN cota `{1,40}` en el propio regex (ronda de revisión
+   * 1): un cupo duro ahí no "rechaza" un sujeto vacío o de más de 40
+   * caracteres — hace que el regex ENTERO deje de matchear en ese punto
+   * (porque la coma que cierra el sujeto no aparece dentro de la ventana
+   * permitida), y sin match no hay nada que reemplazar: el texto crudo sale
+   * al chat. Confirmado ejecutando el regex viejo contra
+   * `SAVE_FACT_ABOUT(, likes, Berserk)` (sujeto vacío) y contra un sujeto de
+   * 50+ caracteres: ambos casos, cero matches, texto intacto. La cota real
+   * (`FACT_ABOUT_SUBJECT_MAX_LEN`) se aplica DESPUÉS, sobre el sujeto ya
+   * capturado, en `extractFactsAboutFromResponse` — así el regex siempre
+   * matchea la llamada completa (garantizando la limpieza) y sólo la
+   * validez del HECHO depende del largo.
    *
    * Hallazgo verificado durante el TDD de esta tarea (no estaba en el
    * brief): el lookahead de cierre no puede exigir SÓLO otro
@@ -754,7 +767,80 @@ escribas nada después del delimitador.`
    * un `SAVE_FACT(` liso) lo resuelve en los dos órdenes.
    */
   private static createFactAboutRegex(): RegExp {
-    return /SAVE_FACT_ABOUT\s*\(\s*([^,()\n]{1,40}?)\s*,\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT(?:_ABOUT)?\s*\(|$))|$)/gi;
+    return /SAVE_FACT_ABOUT\s*\(\s*([^,()\n]*?)\s*,\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT(?:_ABOUT)?\s*\(|$))|$)/gi;
+  }
+
+  /**
+   * Tope real de largo del sujeto de un `SAVE_FACT_ABOUT` (revisión de
+   * código, ronda 1). Ya no vive como cuantificador `{1,40}` dentro del
+   * propio regex — ver el comentario de `createFactAboutRegex` sobre por
+   * qué eso rechazaba matcheando NADA en vez de rechazar el hecho.
+   */
+  private static readonly FACT_ABOUT_SUBJECT_MAX_LEN = 40;
+
+  /**
+   * Llamada truncada a mitad de camino por el tope de `maxLengthResponse` —
+   * el caso más probable, no el más raro, porque el prompt pide emitir el
+   * verbo al final de la respuesta (mismo motivo que ya documentó
+   * `createSaveFactRegex` para `SAVE_FACT`). Con TRES argumentos en vez de
+   * dos, la ventana en la que el corte cae ANTES de completar la estructura
+   * mínima (sujeto + coma + relación + coma + objeto) es más grande que la
+   * de `SAVE_FACT`: `createFactAboutRegex` exige las dos comas para
+   * matchear, así que `SAVE_FACT_ABOUT(lyna, likes` (falta la segunda coma
+   * y el objeto) o incluso `SAVE_FACT_ABOUT(lyna` (falta todo lo demás) NO
+   * matchean nada — sin este paso, ese texto crudo sale tal cual al chat.
+   * Confirmado ejecutando `createFactAboutRegex()` contra ambos casos antes
+   * de agregar esta limpieza: cero matches, `content.replace(...)` no toca
+   * nada.
+   *
+   * `[^)]*$` sólo mata una llamada `SAVE_FACT_ABOUT(` que llega hasta el
+   * FIN de la cadena sin ningún `)` de por medio — si hubiera un `)` en
+   * algún punto posterior, `createFactAboutRegex` ya la habría
+   * consumido (bien formada o con objeto colgante, ver
+   * `FACT_ABOUT_SUBJECT_MAX_LEN`/`hasDanglingClose`) antes de llegar acá, así
+   * que esta limpieza nunca compite con esa extracción — sólo recoge lo que
+   * de verdad quedó incompleto.
+   */
+  private static createDanglingFactAboutRegex(): RegExp {
+    return /SAVE_FACT_ABOUT\s*\([^)]*$/gi;
+  }
+
+  /**
+   * Señal de que el objeto capturado se "comió" texto que no le
+   * pertenece — un `)` de más respecto a los `(` que trae el propio objeto
+   * (revisión de código, ronda 1, Important #2). Pasa cuando el lookahead de
+   * cierre de `createSaveFactRegex`/`createFactAboutRegex` no encuentra
+   * ningún punto de corte válido (lo que sigue no es ni otra llamada
+   * reconocida ni el fin de la cadena) y el motor retrocede hasta el final
+   * de la respuesta, tragándose de paso cualquier prosa suelta después del
+   * `)` que en realidad cerraba la llamada.
+   *
+   * Reproducido antes de escribir este guard: con
+   * `SAVE_FACT(likes, Vagabond) bla bla. SAVE_FACT_ABOUT(lyna, likes,
+   * Berserk)`, al sacar primero el `SAVE_FACT_ABOUT` (orden que exige esta
+   * misma tarea) el `SAVE_FACT` que queda detrás ("SAVE_FACT(likes,
+   * Vagabond) bla bla.") ya NO tiene ningún `SAVE_FACT` textual más adelante
+   * que lo salve vía `!/SAVE_FACT/i.test(object)` — el objeto capturado
+   * termina siendo `"Vagabond) bla bla."`, que `ingestFact` habría escrito
+   * tal cual en el grafo. Antes de esta tarea esa prosa colgante SIEMPRE
+   * fusionaba con OTRA llamada `SAVE_FACT` real más adelante (el único caso
+   * que existía en la suite), y esa llamada dejaba la subcadena "SAVE_FACT"
+   * dentro del objeto — la guarda vieja alcanzaba por accidente. Sacar
+   * `SAVE_FACT_ABOUT` antes rompe esa casualidad para esta dirección
+   * puntual (verbo de terceros al final), así que hace falta una señal
+   * genuina, no la ausencia casual de otro verbo.
+   *
+   * Un objeto con paréntesis internos balanceados ("Attack on Titan (2013)")
+   * tiene la MISMA cantidad de `(` que de `)`; un objeto sano sin paréntesis
+   * tiene cero de cada uno; un objeto truncado sin cierre nunca llegó a ver
+   * ningún `)` (cero de cada uno también). Sólo la fusión rota deja una
+   * cuenta de `)` mayor a la de `(` — es la única señal estructural
+   * disponible sin necesitar saber de antemano qué había después.
+   */
+  private static hasDanglingClose(object: string): boolean {
+    const opens = (object.match(/\(/g) ?? []).length;
+    const closes = (object.match(/\)/g) ?? []).length;
+    return closes > opens;
   }
 
   /**
@@ -766,6 +852,69 @@ escribas nada después del delimitador.`
    */
   private static hasSaveFact(content: string): boolean {
     return ChatService.createSaveFactRegex().test(content);
+  }
+
+  /**
+   * Extrae los hechos sobre terceros (`SAVE_FACT_ABOUT`, Task 3) y devuelve
+   * el texto sin esas llamadas.
+   *
+   * **Tiene que correr ANTES de `extractFactsFromResponse`.** No es una
+   * preferencia de estilo: el regex de `SAVE_FACT` cierra su captura con un
+   * lookahead que exige fin de respuesta u otro `SAVE_FACT(`. Con un
+   * `SAVE_FACT_ABOUT(` en el medio ese lookahead no se cumple, el motor
+   * retrocede y FUSIONA las dos llamadas en una sola captura con el objeto
+   * roto. Sacando los `SAVE_FACT_ABOUT` primero, las dos formas nunca
+   * coexisten en la misma cadena y cada regex ve exactamente lo suyo.
+   *
+   * Tres condiciones (además de sujeto/relación/objeto no vacíos) deciden si
+   * la captura se ingesta como hecho — las tres agregadas/corregidas en la
+   * ronda de revisión 1, cada una con su reproducción documentada donde vive
+   * la lógica:
+   *   - Largo del sujeto ≤ `FACT_ABOUT_SUBJECT_MAX_LEN` (ver el comentario de
+   *     `createFactAboutRegex` sobre por qué esto no puede ser un
+   *     cuantificador del propio regex).
+   *   - `!/SAVE_FACT/i.test(object)` — misma señal de captura no confiable
+   *     que usa `extractFactsFromResponse`.
+   *   - `!hasDanglingClose(object)` — ver su comentario (Important #2).
+   *
+   * Después de la extracción normal, una segunda pasada de limpieza
+   * (`createDanglingFactAboutRegex`) borra cualquier `SAVE_FACT_ABOUT(`
+   * truncado que el regex principal no pudo reconocer como llamada completa
+   * (falta alguna coma) — sin este paso, esa llamada incompleta saldría
+   * cruda al chat en vez de limpiarse.
+   */
+  private extractFactsAboutFromResponse(content: string): {
+    cleanContent: string;
+    facts: Array<{ subject: string; relation: string; object: string }>;
+  } {
+    const facts: Array<{ subject: string; relation: string; object: string }> = [];
+    const regex = ChatService.createFactAboutRegex();
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(content)) !== null) {
+      const subject = match[1].trim();
+      const relation = match[2].trim().toLowerCase();
+      const object = match[3].trim();
+
+      if (
+        subject &&
+        subject.length <= ChatService.FACT_ABOUT_SUBJECT_MAX_LEN &&
+        relation &&
+        object &&
+        !/SAVE_FACT/i.test(object) &&
+        !ChatService.hasDanglingClose(object)
+      ) {
+        facts.push({ subject, relation, object });
+      }
+
+      if (match.index === regex.lastIndex) regex.lastIndex++;
+    }
+
+    let cleanContent = content.replace(ChatService.createFactAboutRegex(), '').trim();
+    // Limpieza de última instancia: una llamada truncada que el regex de
+    // arriba no pudo matchear como completa (ver `createDanglingFactAboutRegex`).
+    cleanContent = cleanContent.replace(ChatService.createDanglingFactAboutRegex(), '').trim();
+    return { cleanContent, facts };
   }
 
   /**
@@ -785,43 +934,6 @@ escribas nada después del delimitador.`
    * puede volverse silenciosamente en un resumen que nunca se genera sólo
    * porque el modelo también emitió un hecho en la misma respuesta.
    */
-  /**
-   * Extrae los hechos sobre terceros (`SAVE_FACT_ABOUT`, Task 3) y devuelve
-   * el texto sin esas llamadas.
-   *
-   * **Tiene que correr ANTES de `extractFactsFromResponse`.** No es una
-   * preferencia de estilo: el regex de `SAVE_FACT` cierra su captura con un
-   * lookahead que exige fin de respuesta u otro `SAVE_FACT(`. Con un
-   * `SAVE_FACT_ABOUT(` en el medio ese lookahead no se cumple, el motor
-   * retrocede y FUSIONA las dos llamadas en una sola captura con el objeto
-   * roto. Sacando los `SAVE_FACT_ABOUT` primero, las dos formas nunca
-   * coexisten en la misma cadena y cada regex ve exactamente lo suyo.
-   */
-  private extractFactsAboutFromResponse(content: string): {
-    cleanContent: string;
-    facts: Array<{ subject: string; relation: string; object: string }>;
-  } {
-    const facts: Array<{ subject: string; relation: string; object: string }> = [];
-    const regex = ChatService.createFactAboutRegex();
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(content)) !== null) {
-      const subject = match[1].trim();
-      const relation = match[2].trim().toLowerCase();
-      const object = match[3].trim();
-
-      // Misma señal de captura no confiable que usa `extractFactsFromResponse`.
-      if (subject && relation && object && !/SAVE_FACT/i.test(object)) {
-        facts.push({ subject, relation, object });
-      }
-
-      if (match.index === regex.lastIndex) regex.lastIndex++;
-    }
-
-    const cleanContent = content.replace(ChatService.createFactAboutRegex(), '').trim();
-    return { cleanContent, facts };
-  }
-
   private extractFactsFromResponse(content: string): {
     cleanContent: string;
     facts: Array<{ relation: string; object: string }>;
@@ -850,7 +962,20 @@ escribas nada después del delimitador.`
       // arrastra literal "SAVE_FACT(likes, ..." sin cerrar — sobre todo
       // porque la Fase 5 camina estas aristas para la recomendación
       // colaborativa: construir sobre datos sucios se paga después.
-      if (relation && object && !/SAVE_FACT/i.test(object)) {
+      //
+      // Ronda de revisión 1, Important #2 (Task 3): `!hasDanglingClose`
+      // cubre un caso que la señal de arriba NO detectaba — desde que
+      // `SAVE_FACT_ABOUT` se extrae y se borra ANTES de que este regex
+      // corra, la prosa colgante después de un `SAVE_FACT` ya no tiene
+      // garantizado un `SAVE_FACT_ABOUT` textual más adelante que la
+      // "salve" por accidente (dejando la subcadena "SAVE_FACT" dentro del
+      // objeto fusionado). Sin este guard, `SAVE_FACT(likes, Vagabond) bla
+      // bla. SAVE_FACT_ABOUT(lyna, likes, Berserk)` — con el verbo de
+      // terceros ya extraído — deja el objeto fusionado en "Vagabond) bla
+      // bla." (sin ningún "SAVE_FACT" textual adentro) y se ingestaba tal
+      // cual. Ver el comentario de `hasDanglingClose` para la reproducción
+      // completa.
+      if (relation && object && !/SAVE_FACT/i.test(object) && !ChatService.hasDanglingClose(object)) {
         facts.push({ relation, object });
       }
 

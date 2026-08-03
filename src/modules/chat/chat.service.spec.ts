@@ -514,7 +514,11 @@ describe('ChatService — instrumentación de tokens', () => {
       // sí mismo en tercera persona en cada mensaje.
       it('rechaza un SAVE_FACT_ABOUT cuyo sujeto es el propio bot (mismo nombre, sin importar mayúsculas)', async () => {
         crossEnabled = true;
-        mockCompletion('Ok. SAVE_FACT_ABOUT(Aria, likes, el K-pop)');
+        // Fixtures que DIFIEREN en capitalización a propósito (revisión de
+        // código, minor): antes `botName` y el sujeto capturado eran ambos
+        // 'Aria' -- comparación estricta hubiera pasado igual y el test no
+        // ejercitaba "sin importar mayúsculas" pese a decirlo en el título.
+        mockCompletion('Ok. SAVE_FACT_ABOUT(ARIA, likes, el K-pop)');
 
         const out = await service.chat('bot, algo', 'Aria', 'leon');
 
@@ -532,6 +536,85 @@ describe('ChatService — instrumentación de tokens', () => {
 
         expect(graphIngest.ingestFactAbout).toHaveBeenCalledTimes(1);
         expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+      });
+    });
+
+    // ─── Revisión de código, ronda 1 ────────────────────────────────────────
+
+    describe('una llamada truncada o malformada nunca sale cruda al chat (Important #1)', () => {
+      // El propio código documenta este como EL caso más probable (no el más
+      // raro): el prompt pide emitir el verbo al final de la respuesta, y el
+      // tope de `maxLengthResponse` corta justo ahí. Con TRES argumentos en
+      // vez de dos, la ventana en la que el corte cae ANTES de completar la
+      // estructura mínima es más grande que la de SAVE_FACT.
+      it('truncada antes de completar el objeto (falta la segunda coma) — se limpia, no se ingesta', async () => {
+        crossEnabled = true;
+        mockCompletion('Buenisimo. SAVE_FACT_ABOUT(lyna, likes');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_FACT_ABOUT');
+        expect(out).toBe('Buenisimo.');
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+
+      it('truncada justo después del sujeto (falta relación y objeto) — se limpia, no se ingesta', async () => {
+        crossEnabled = true;
+        mockCompletion('Buenisimo. SAVE_FACT_ABOUT(lyna');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_FACT_ABOUT');
+        expect(out).toBe('Buenisimo.');
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+
+      it('sujeto de más de 40 caracteres — se limpia del texto, se descarta como hecho', async () => {
+        crossEnabled = true;
+        const sujetoLargo = 'EsteEsUnSujetoConMasDeCuarentaCaracteresDeVerdad';
+        expect(sujetoLargo.length).toBeGreaterThan(40);
+        mockCompletion(`Buenisimo. SAVE_FACT_ABOUT(${sujetoLargo}, likes, Berserk)`);
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_FACT_ABOUT');
+        expect(out).not.toContain(sujetoLargo);
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+
+      it('sujeto vacío, SAVE_FACT_ABOUT(, likes, X) — se limpia del texto, se descarta como hecho', async () => {
+        crossEnabled = true;
+        mockCompletion('Buenisimo. SAVE_FACT_ABOUT(, likes, Berserk)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).not.toContain('SAVE_FACT_ABOUT');
+        expect(out).toBe('Buenisimo.');
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('la prosa colgante después de un SAVE_FACT no se ingesta como basura (Important #2)', () => {
+      // Sin el pre-borrado de SAVE_FACT_ABOUT, esta captura fusionada habría
+      // contenido la subcadena "SAVE_FACT" (de la llamada de terceros más
+      // adelante) y el guard `!/SAVE_FACT/i.test(object)` la habría
+      // descartado por esa vía. Con el pre-borrado (que esta misma tarea
+      // exige, Important #3 del brief), esa protección accidental
+      // desaparece para este caso puntual -- hace falta `hasDanglingClose`.
+      it('SAVE_FACT(likes, Vagabond) bla bla. SAVE_FACT_ABOUT(lyna, likes, Berserk) — el SAVE_FACT no ingesta el sobrante como objeto', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_FACT(likes, Vagabond) bla bla. SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        // El hecho de terceros real sigue ingestándose sin problema.
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+        // El SAVE_FACT NUNCA puede terminar ingestando la prosa colgante
+        // ("Vagabond) bla bla.") como objeto -- se prefiere perder el hecho
+        // (igual que ya hacía el caso de dos SAVE_FACT con prosa entre
+        // medio) a escribir basura en el grafo.
+        expect(graphIngest.ingestFact).not.toHaveBeenCalled();
+        expect(out).not.toContain('SAVE_FACT');
       });
     });
   });
