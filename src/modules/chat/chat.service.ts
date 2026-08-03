@@ -10,6 +10,7 @@ import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
 import { GraphIngestService, FACT_RELATIONS } from '../graph/graph-ingest.service';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -51,6 +52,7 @@ export class ChatService {
     private readonly intentRouter: IntentRouterService,
     private readonly graphContext: GraphContextService,
     private readonly graphIngest: GraphIngestService,
+    private readonly crossContext: CrossContextSettingsService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -93,6 +95,7 @@ export class ChatService {
     const systemPrompt = this.promptBuilder.build({
       botName, username, maxLength: maxResponseLength ?? 200,
       personality, useMemory, now: new Date(), blocks,
+      crossContext: this.crossContext.isEnabled(),
     });
 
     // Optimized payload structure to reduce token usage
@@ -238,6 +241,46 @@ export class ChatService {
       // hace la extracción (una sola fuente de verdad, ver
       // `createSaveFactRegex`), así que cualquier variante que el regex
       // reconozca también dispara la limpieza.
+      // Hechos sobre terceros (Task 3, contexto cruzado). Corre SIEMPRE que la
+      // memoria esté activa, encendido o no el flag: con el flag apagado no
+      // se ingesta nada, pero el texto igual se limpia — si no, la llamada
+      // cruda saldría al chat.
+      //
+      // Tiene que correr ANTES del bloque de SAVE_FACT de abajo. No es una
+      // preferencia de estilo: el regex de SAVE_FACT cierra su captura con un
+      // lookahead que exige fin de respuesta u otro SAVE_FACT(. Con un
+      // SAVE_FACT_ABOUT( en el medio ese lookahead no se cumple, el motor
+      // retrocede y FUSIONA las dos llamadas en una sola captura con el
+      // objeto roto. Sacando los SAVE_FACT_ABOUT primero, las dos formas
+      // nunca coexisten en la misma cadena y cada regex ve exactamente lo
+      // suyo.
+      if (useMemory) {
+        const about = this.extractFactsAboutFromResponse(content);
+        if (about.facts.length > 0 || about.cleanContent !== content) {
+          content = about.cleanContent;
+        }
+        if (this.crossContext.isEnabled()) {
+          for (const fact of about.facts) {
+            // Nunca se ingiere un hecho cuyo sujeto sea el propio bot: el
+            // nodo `user` del bot es alcanzable como "otro usuario
+            // mencionado" en la lectura cruzada (Task 2), y hoy es
+            // inofensivo sólo porque nunca acumula relaciones de las que esa
+            // lectura lee. Un SAVE_FACT_ABOUT(<bot>, likes, X) rompería esa
+            // invariante: el bot terminaría hablando de sí mismo en tercera
+            // persona en cada mensaje.
+            if (
+              botName &&
+              ChatService.normalizeAuthorName(fact.subject) === ChatService.normalizeAuthorName(botName)
+            ) {
+              continue;
+            }
+            void this.graphIngest
+              .ingestFactAbout(fact.subject, fact.relation, fact.object)
+              .catch(() => {});
+          }
+        }
+      }
+
       if (useMemory && ChatService.hasSaveFact(content)) {
         const factResults = this.extractFactsFromResponse(content);
         content = factResults.cleanContent;
@@ -680,6 +723,41 @@ escribas nada después del delimitador.`
   }
 
   /**
+   * Reconoce `SAVE_FACT_ABOUT(usuario, relación, objeto)` — hechos sobre otra
+   * persona (contexto cruzado, Task 3).
+   *
+   * Verbo aparte y NO una tercera captura opcional dentro de
+   * `createSaveFactRegex`, por una razón medible: ese regex captura la
+   * relación con `([a-z_]+)`, así que con `SAVE_FACT(Sleepy Ash, likes, X)`
+   * matchea "Sleepy", exige una coma, encuentra "Ash" y el regex ENTERO deja
+   * de matchear — `hasSaveFact` da false y el texto crudo sale al chat sin
+   * limpiar. Pasa con cualquier nombre con espacio, dígito o acento, que son
+   * la mayoría. Hacer ese grupo permisivo rompería el caso de dos argumentos,
+   * porque un objeto legítimo puede contener comas.
+   *
+   * El usuario se captura con `[^,()\n]{1,40}`: acepta espacios, acentos y
+   * dígitos (nombres reales del backend), y excluye coma, paréntesis y salto
+   * de línea, que son los delimitadores de la propia llamada.
+   *
+   * Hallazgo verificado durante el TDD de esta tarea (no estaba en el
+   * brief): el lookahead de cierre no puede exigir SÓLO otro
+   * `SAVE_FACT_ABOUT(` como terminador válido. Cuando la respuesta trae
+   * `SAVE_FACT_ABOUT(lyna, likes, Berserk) SAVE_FACT(likes, Vagabond)` (un
+   * `SAVE_FACT` de dos argumentos justo después), el primer `)` no satisface
+   * ese lookahead (lo que sigue es `SAVE_FACT(`, sin `_ABOUT`) y el motor
+   * retrocede hasta fusionar AMBAS llamadas en una sola captura con el
+   * objeto roto ("Berserk) SAVE_FACT(likes, Vagabond") — exactamente el
+   * mismo síntoma que la Task 4 ya documentó para dos `SAVE_FACT` seguidos
+   * de prosa. Confirmado con un script aparte antes de tocar el regex:
+   * `SAVE_FACT_ABOUT\s*\(` como único terminador deja el objeto fusionado;
+   * `SAVE_FACT(?:_ABOUT)?\s*\(` (acepta tanto otro `SAVE_FACT_ABOUT(` como
+   * un `SAVE_FACT(` liso) lo resuelve en los dos órdenes.
+   */
+  private static createFactAboutRegex(): RegExp {
+    return /SAVE_FACT_ABOUT\s*\(\s*([^,()\n]{1,40}?)\s*,\s*([a-z_]+)\s*,\s*([\s\S]+?)(?:\)(?=\s*(?:SAVE_FACT(?:_ABOUT)?\s*\(|$))|$)/gi;
+  }
+
+  /**
    * Guarda que decide si `content` amerita correr la extracción/limpieza de
    * SAVE_FACT. Deriva del mismo regex que hace la extracción (`.test()` sobre
    * una instancia fresca de `createSaveFactRegex()`) para que guarda y regex
@@ -707,6 +785,43 @@ escribas nada después del delimitador.`
    * puede volverse silenciosamente en un resumen que nunca se genera sólo
    * porque el modelo también emitió un hecho en la misma respuesta.
    */
+  /**
+   * Extrae los hechos sobre terceros (`SAVE_FACT_ABOUT`, Task 3) y devuelve
+   * el texto sin esas llamadas.
+   *
+   * **Tiene que correr ANTES de `extractFactsFromResponse`.** No es una
+   * preferencia de estilo: el regex de `SAVE_FACT` cierra su captura con un
+   * lookahead que exige fin de respuesta u otro `SAVE_FACT(`. Con un
+   * `SAVE_FACT_ABOUT(` en el medio ese lookahead no se cumple, el motor
+   * retrocede y FUSIONA las dos llamadas en una sola captura con el objeto
+   * roto. Sacando los `SAVE_FACT_ABOUT` primero, las dos formas nunca
+   * coexisten en la misma cadena y cada regex ve exactamente lo suyo.
+   */
+  private extractFactsAboutFromResponse(content: string): {
+    cleanContent: string;
+    facts: Array<{ subject: string; relation: string; object: string }>;
+  } {
+    const facts: Array<{ subject: string; relation: string; object: string }> = [];
+    const regex = ChatService.createFactAboutRegex();
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(content)) !== null) {
+      const subject = match[1].trim();
+      const relation = match[2].trim().toLowerCase();
+      const object = match[3].trim();
+
+      // Misma señal de captura no confiable que usa `extractFactsFromResponse`.
+      if (subject && relation && object && !/SAVE_FACT/i.test(object)) {
+        facts.push({ subject, relation, object });
+      }
+
+      if (match.index === regex.lastIndex) regex.lastIndex++;
+    }
+
+    const cleanContent = content.replace(ChatService.createFactAboutRegex(), '').trim();
+    return { cleanContent, facts };
+  }
+
   private extractFactsFromResponse(content: string): {
     cleanContent: string;
     facts: Array<{ relation: string; object: string }>;

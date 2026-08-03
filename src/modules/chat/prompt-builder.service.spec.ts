@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { PromptBuilderService, ALL_BLOCKS, PromptInput } from './prompt-builder.service';
+import { PromptBuilderService, ALL_BLOCKS, PromptInput, PromptBlock } from './prompt-builder.service';
 
 const baseInput = (over: Partial<PromptInput> = {}): PromptInput => ({
   botName: 'Aria',
@@ -111,6 +111,23 @@ describe('PromptBuilderService', () => {
       const salida = service.build(baseInput({ blocks: otros, useMemory: true }));
       expect(salida).not.toContain('SAVE_FACT');
       expect(salida).not.toContain('SISTEMA DE MEMORIA');
+    });
+  });
+
+  describe('tramo de terceros (Task 3, contexto cruzado — SAVE_FACT_ABOUT)', () => {
+    it('el tramo de terceros sólo aparece con crossContext', () => {
+      const base = {
+        botName: 'aria',
+        username: 'leon',
+        maxLength: 200,
+        personality: 'default' as const,
+        useMemory: true,
+        now: new Date('2026-08-02T12:00:00Z'),
+        blocks: ['SAVE_FACT'] as PromptBlock[],
+      };
+
+      expect(service.build({ ...base, crossContext: false })).not.toContain('SAVE_FACT_ABOUT');
+      expect(service.build({ ...base, crossContext: true })).toContain('SAVE_FACT_ABOUT');
     });
   });
 });

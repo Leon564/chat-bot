@@ -17,11 +17,15 @@ import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 const respuesta = (content: string, prompt = 100, completion = 20) => ({
   choices: [{ message: { content } }],
   usage: { prompt_tokens: prompt, completion_tokens: completion },
 });
+
+/** Atajo para mockear la respuesta del modelo cuando sólo importa el `content`. */
+const mockCompletion = (content: string) => crearMock.mockResolvedValue(respuesta(content));
 
 describe('ChatService — instrumentación de tokens', () => {
   let service: ChatService;
@@ -30,9 +34,14 @@ describe('ChatService — instrumentación de tokens', () => {
   let builder: { build: jest.Mock };
   let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
   let graphContext: { build: jest.Mock };
-  let graphIngest: { ingestFact: jest.Mock };
+  let graphIngest: { ingestFact: jest.Mock; ingestFactAbout: jest.Mock };
   let logging: { getLastMessages: jest.Mock };
   let configValues: Record<string, unknown>;
+  // Flag de contexto cruzado (Task 3): `let` de nivel de describe, en false
+  // por defecto, para que los tests de SAVE_FACT_ABOUT lo enciendan/apaguen
+  // sin afectar al resto de la suite (mismo patrón que usó la Task 2 para
+  // `graph-context.service.spec.ts`).
+  let crossEnabled: boolean;
 
   beforeEach(async () => {
     crearMock.mockReset();
@@ -47,7 +56,11 @@ describe('ChatService — instrumentación de tokens', () => {
       isSimpleGreeting: jest.fn().mockReturnValue(false),
     };
     graphContext = { build: jest.fn().mockResolvedValue('') };
-    graphIngest = { ingestFact: jest.fn().mockResolvedValue(undefined) };
+    graphIngest = {
+      ingestFact: jest.fn().mockResolvedValue(undefined),
+      ingestFactAbout: jest.fn().mockResolvedValue(undefined),
+    };
+    crossEnabled = false;
     // Único autor por defecto: 'Nico'. Los tests de validación de sujeto
     // (Important #2) pisan esto para incluir a otros autores que sus hechos
     // de prueba necesiten.
@@ -79,6 +92,7 @@ describe('ChatService — instrumentación de tokens', () => {
         { provide: IntentRouterService, useValue: router },
         { provide: GraphContextService, useValue: graphContext },
         { provide: GraphIngestService, useValue: graphIngest },
+        { provide: CrossContextSettingsService, useValue: { isEnabled: () => crossEnabled } },
       ],
     }).compile();
 
@@ -428,6 +442,96 @@ describe('ChatService — instrumentación de tokens', () => {
         expect(graphIngest.ingestFact).toHaveBeenCalledTimes(2);
         expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(1, 'Nico', 'likes', 'Berserk');
         expect(graphIngest.ingestFact).toHaveBeenNthCalledWith(2, 'Nico', 'likes', 'Vagabond');
+      });
+    });
+  });
+
+  describe('SAVE_FACT_ABOUT (Task 3, contexto cruzado — hechos sobre terceros)', () => {
+    beforeEach(() => {
+      configValues['bot.useMemory'] = true;
+    });
+
+    it('con el flag encendido, ingesta el hecho sobre el tercero', async () => {
+      crossEnabled = true;
+      mockCompletion('Listo. SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+      const out = await service.chat('bot, a lyna le gusta berserk', 'aria', 'leon');
+
+      expect(out).not.toContain('SAVE_FACT_ABOUT');
+      expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+    });
+
+    it('con el flag apagado NO ingesta, pero igual limpia el texto', async () => {
+      crossEnabled = false;
+      mockCompletion('Listo. SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+      const out = await service.chat('bot, a lyna le gusta berserk', 'aria', 'leon');
+
+      expect(out).not.toContain('SAVE_FACT_ABOUT');
+      expect(out).not.toContain('lyna, likes');
+      expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+    });
+
+    it('acepta un nombre con espacios, acentos y dígitos', async () => {
+      crossEnabled = true;
+      mockCompletion('Ok. SAVE_FACT_ABOUT(Sleepy Ash2, likes, Vagabond)');
+
+      await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('Sleepy Ash2', 'likes', 'Vagabond');
+    });
+
+    it('convive con un SAVE_FACT de dos argumentos en la misma respuesta', async () => {
+      crossEnabled = true;
+      mockCompletion('SAVE_FACT_ABOUT(lyna, likes, Berserk) SAVE_FACT(likes, Vagabond)');
+
+      const out = await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+      expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Vagabond');
+      expect(out).not.toContain('SAVE_FACT');
+    });
+
+    it('el orden inverso también funciona', async () => {
+      crossEnabled = true;
+      mockCompletion('SAVE_FACT(likes, Vagabond) SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+      const out = await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+      expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Vagabond');
+      expect(out).not.toContain('SAVE_FACT');
+    });
+
+    describe('el bot nunca puede ser sujeto de un hecho sobre terceros', () => {
+      // No está en el brief: es una decisión del controlador (ver
+      // task-3-brief.md, decisiones del controlador #2). El nodo `user` del
+      // bot es un candidato válido a "otro usuario mencionado" en la lectura
+      // cruzada (Task 2) y hoy es inofensivo sólo porque nunca acumula
+      // relaciones de las que esa lectura lee. Sin este rechazo,
+      // SAVE_FACT_ABOUT(<bot>, likes, X) le escribiría un `likes` al nodo del
+      // bot y, a partir de ahí, la lectura cruzada haría que el bot hable de
+      // sí mismo en tercera persona en cada mensaje.
+      it('rechaza un SAVE_FACT_ABOUT cuyo sujeto es el propio bot (mismo nombre, sin importar mayúsculas)', async () => {
+        crossEnabled = true;
+        mockCompletion('Ok. SAVE_FACT_ABOUT(Aria, likes, el K-pop)');
+
+        const out = await service.chat('bot, algo', 'Aria', 'leon');
+
+        expect(out).not.toContain('SAVE_FACT_ABOUT');
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+
+      it('un hecho sobre un tercero real (no el bot) en la misma respuesta sí se ingesta', async () => {
+        crossEnabled = true;
+        mockCompletion(
+          'Ok. SAVE_FACT_ABOUT(Aria, likes, el K-pop) SAVE_FACT_ABOUT(lyna, likes, Berserk)',
+        );
+
+        await service.chat('bot, algo', 'Aria', 'leon');
+
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledTimes(1);
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
       });
     });
   });

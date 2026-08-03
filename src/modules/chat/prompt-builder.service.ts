@@ -30,6 +30,13 @@ export interface PromptInput {
   useMemory: boolean;
   now: Date;
   blocks: PromptBlock[];
+  /**
+   * Contexto cruzado (Task 3): enciende el tramo de `SAVE_FACT_ABOUT` en
+   * `blockSaveFact`. Opcional (no obligatorio, a diferencia del spec
+   * original) — así ningún `PromptInput` armado a mano en los tests
+   * existentes necesita tocarse; ausente se trata como `false`.
+   */
+  crossContext?: boolean;
 }
 
 /**
@@ -156,6 +163,19 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 
   private blockSaveFact(input: PromptInput): string {
     if (!input.useMemory) return '';
+
+    // El tramo de terceros SÓLO se incluye con el flag encendido: si no, se
+    // pagarían tokens en cada mensaje explicando una sintaxis que el parseo
+    // va a descartar (Task 3, contexto cruzado).
+    const terceros = input.crossContext
+      ? `
+
+Si ${input.username} revela algo sobre OTRA persona de la sala, usá:
+SAVE_FACT_ABOUT(usuario, relación, objeto)
+Ejemplo: "a lyna le encanta Berserk" → SAVE_FACT_ABOUT(lyna, likes, Berserk)
+Usá el nombre tal como aparece en el chat. Si no sabés de quién hablan, no lo emitas.`
+      : '';
+
     return `SISTEMA DE MEMORIA:
 Si ${input.username} revela algo sobre sus gustos, agregá al final de tu respuesta:
 SAVE_FACT(relación, objeto)
@@ -172,7 +192,7 @@ Ejemplos:
 "Me encanta Attack on Titan" → SAVE_FACT(likes, Attack on Titan)
 "No soporto el ecchi" → SAVE_FACT(dislikes, ecchi)
 
-NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.`;
+NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${terceros}`;
   }
 
   /**

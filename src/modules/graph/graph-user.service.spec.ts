@@ -10,11 +10,19 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
 import { GraphUserService, MAX_FACTS_SHOWN } from './graph-user.service';
+import { GraphIngestService } from './graph-ingest.service';
+import { UtilsService } from '../../common/utils/utils.service';
 
 describe('GraphUserService', () => {
   let connection: Connection;
   let service: GraphUserService;
   let graph: GraphService;
+  // Sólo para el describe de Task 3 (contexto cruzado): sembrar exactamente
+  // lo que deja `ingestFactAbout` cuando alguien habla de un tercero, en vez
+  // de escribir la arista a mano con `graph.upsertEdge` — así el test
+  // verifica la contención real (`!olvida`/`!quesabes` sobre lo que
+  // `GraphIngestService` efectivamente persiste), no una simulación aparte.
+  let ingest: GraphIngestService;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -25,12 +33,13 @@ describe('GraphUserService', () => {
           { name: GraphEdge.name, schema: GraphEdgeSchema },
         ]),
       ],
-      providers: [GraphService, GraphUserService],
+      providers: [GraphService, GraphUserService, GraphIngestService, UtilsService],
     }).compile();
 
     connection = moduleRef.get<Connection>(getConnectionToken());
     service = moduleRef.get<GraphUserService>(GraphUserService);
     graph = moduleRef.get<GraphService>(GraphService);
+    ingest = moduleRef.get<GraphIngestService>(GraphIngestService);
     await syncAllIndexes(connection);
   });
 
@@ -309,6 +318,32 @@ describe('GraphUserService', () => {
       expect(await service.findForgettable('Nico', '')).toEqual([]);
       expect(await service.findForgettable('Nico', 'ab')).toEqual([]);
       expect(findNodeSpy.mock.calls.length).toBe(llamadasPrevias);
+    });
+  });
+
+  // ─── Contexto cruzado (Task 3) — !olvida/!quesabes alcanzan lo que otro plantó ──
+
+  describe('contención de riesgo: hechos sin atribución sembrados por OTRA persona', () => {
+    it('!olvida borra un hecho que plantó OTRA persona sobre uno', async () => {
+      await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      // Exactamente lo que deja `ingestFactAbout` cuando leon habla de lyna.
+      await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
+      const lyna = await graph.findNode('user', 'lyna');
+      expect(await graph.countEdgesFrom(lyna!._id)).toBe(1);
+
+      const borradas = await service.forget('lyna', 'Berserk');
+
+      expect(borradas).toBeGreaterThan(0);
+      expect(await graph.countEdgesFrom(lyna!._id)).toBe(0);
+    });
+
+    it('!quesabes se lo muestra antes de que lo borre', async () => {
+      await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
+
+      const hechos = await service.describe('lyna');
+
+      expect(JSON.stringify(hechos)).toContain('Berserk');
     });
   });
 });
