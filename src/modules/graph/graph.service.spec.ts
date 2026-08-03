@@ -722,4 +722,20 @@ describe('GraphService — nodos', () => {
       expect(after!.props.marca).toBe('segunda');
     });
   });
+
+  describe('findUserNodesByKeys', () => {
+    it('resuelve varios usuarios en una sola consulta y preserva acentos', async () => {
+      await service.upsertNode({ type: 'user', key: 'Lyna', label: 'Lyna' });
+      await service.upsertNode({ type: 'user', key: 'José', label: 'José' });
+      await service.upsertNode({ type: 'user', key: 'Jose', label: 'Jose' });
+
+      const found = await service.findUserNodesByKeys(['lyna', 'josé', 'nadie']);
+
+      expect(found.map((n) => n.label).sort()).toEqual(['José', 'Lyna']);
+    });
+
+    it('devuelve [] con una lista vacía y sin tocar Mongo', async () => {
+      expect(await service.findUserNodesByKeys([])).toEqual([]);
+    });
+  });
 });

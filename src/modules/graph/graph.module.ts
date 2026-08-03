@@ -5,6 +5,7 @@ import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.sche
 import { GraphMigration, GraphMigrationSchema } from '../../common/schemas/graph-migration.schema';
 import { Memory, MemorySchema } from '../../common/schemas/memory.schema';
 import { UtilsModule } from '../../common/utils/utils.module';
+import { CrossContextModule } from '../../common/settings/cross-context.module';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
@@ -32,6 +33,7 @@ import { GraphUserService } from './graph-user.service';
       { name: Memory.name, schema: MemorySchema },
     ]),
     UtilsModule,
+    CrossContextModule,
   ],
   providers: [
     GraphService,

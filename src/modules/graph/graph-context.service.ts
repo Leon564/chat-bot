@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphService, TopEdge, Candidate, MIN_CANDIDATES, MAX_CANDIDATES } from './graph.service';
 import { GraphNodeDocument, LastNodeProp, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 /**
  * Cuántas aristas como máximo entran a la línea de contexto. Se aplica en la
@@ -17,8 +18,36 @@ export const MAX_EDGES = 6;
  */
 export const MAX_CHARS = 400;
 
+/**
+ * Tope propio de la oración sobre OTRO usuario. Deliberadamente separado de
+ * `MAX_CHARS`: la línea principal ya viene ajustada (la entrega de la fase 5b
+ * documenta que las candidatas de la colaborativa empujan afuera la
+ * continuidad conversacional). Si la parte del otro usuario compitiera por
+ * esos mismos 400, agrandaría un problema que ya existe en vez de agregar una
+ * capacidad.
+ */
+export const MAX_CHARS_OTHER = 150;
+
+/** Cuántas aristas del OTRO usuario entran, como mucho. */
+export const MAX_EDGES_OTHER = 4;
+
 /** Relaciones que alimentan la línea de contexto, en el orden en que se agrupan al renderizar. */
 const CONTEXT_EDGE_TYPES: EdgeType[] = ['likes', 'recommended_to', 'interacts_with'];
+
+/**
+ * Relaciones que se leen del otro usuario, en orden de renderizado.
+ *
+ * Incluye `asked_about`, que NO está en `CONTEXT_EDGE_TYPES` — se viene
+ * escribiendo desde la fase 4b vía `SAVE_FACT` y nunca se leyó en ninguna
+ * línea. Es justo lo que responde el caso de uso: "de qué hablaste con Lyna"
+ * ES por qué obras preguntó. Se agrega SÓLO acá a propósito: sumarlo a la
+ * línea del propio usuario cambiaría el comportamiento de todos los usuarios,
+ * lo que es otro cambio y no éste (ver "Fuera de alcance" en el spec).
+ */
+const CROSS_CONTEXT_EDGE_TYPES: EdgeType[] = ['asked_about', 'likes', 'recommended_to'];
+
+/** Máximo de palabras que puede tener un nombre de usuario al buscarlo en el mensaje. */
+const MAX_USER_NGRAM_SIZE = 3;
 
 /**
  * Ventana dentro de la cual `props.lastNode` todavía cuenta como "lo último
@@ -86,7 +115,10 @@ const CANDIDATE_CAP = 40;
 export class GraphContextService {
   private readonly logger = new Logger(GraphContextService.name);
 
-  constructor(private readonly graph: GraphService) {}
+  constructor(
+    private readonly graph: GraphService,
+    private readonly crossContext: CrossContextSettingsService,
+  ) {}
 
   async build(username: string, message: string): Promise<string> {
     try {
@@ -100,16 +132,16 @@ export class GraphContextService {
       const previousMessageAt = this.resolvePreviousMessageAt(userNode);
       const returningNote = this.resolveReturningNote(edges, previousMessageAt);
 
-      // Alguien que vuelve después de mucho tiempo pero no tiene ningún
-      // `likes`/`recommended_to`/`interacts_with` ni `lastNode` reciente
-      // igual merece la nota de regreso — sin esta condición extra, el corte
-      // temprano de abajo la descartaría en silencio junto con el resto.
-      if (edges.length === 0 && !lastNode && !returningNote) return '';
+      // Se calcula ANTES del corte temprano de abajo: alguien sin datos
+      // propios que pregunta por otra persona igual merece la respuesta. Si
+      // esto se calculara después, "leon" (recién llegado, sin aristas)
+      // preguntando por Lyna recibiría '' y la feature parecería rota justo
+      // en el caso más común de estrenarla.
+      const otherLine = await this.buildOtherLine(username, message);
+
+      if (edges.length === 0 && !lastNode && !returningNote && !otherLine) return '';
 
       const highlight = await this.resolveHighlight(message, edges);
-      // Sólo lectura, igual que el resto de este método: si el usuario no
-      // tiene ningún `likes` hacia una obra, `collaborative` devuelve vacío
-      // sin tocar Mongo de más (ver el corte temprano en `GraphService`).
       const candidates = await this.graph.collaborative(userNode._id, MAX_CANDIDATES);
 
       const line = this.render(
@@ -120,11 +152,95 @@ export class GraphContextService {
         candidates,
         returningNote,
       );
-      return this.truncate(line);
+
+      // La oración cruzada se CONCATENA después del truncado de la principal,
+      // con su propio tope. Nunca entra al mismo `truncate`.
+      return [this.truncate(line), otherLine].filter((part) => part.length > 0).join(' ');
     } catch (err) {
       this.logger.warn(`build falló, se sigue sin contexto extra: ${(err as Error).message}`);
       return '';
     }
+  }
+
+  /**
+   * La oración sobre OTRO usuario mencionado en el mensaje. `''` cuando el
+   * flag está apagado, cuando el mensaje no nombra a nadie conocido, o cuando
+   * el nombrado no tiene ninguna relación que contar.
+   *
+   * Un solo usuario por mensaje, a propósito: acota el costo (una consulta
+   * extra, no N) y acota el largo del prompt.
+   */
+  private async buildOtherLine(selfUsername: string, message: string): Promise<string> {
+    if (!this.crossContext.isEnabled()) return '';
+
+    const other = await this.resolveMentionedUser(selfUsername, message);
+    if (!other) return '';
+
+    const edges = await this.graph.topEdges(
+      other._id,
+      CROSS_CONTEXT_EDGE_TYPES,
+      MAX_EDGES_OTHER,
+    );
+    if (edges.length === 0) return '';
+
+    const asked = edges.filter((e) => e.type === 'asked_about').map((e) => e.label);
+    const likes = edges.filter((e) => e.type === 'likes').map((e) => e.label);
+    const recommended = edges.filter((e) => e.type === 'recommended_to').map((e) => e.label);
+
+    const segments: string[] = [];
+    if (asked.length > 0) segments.push(`preguntó por ${asked.join(', ')}`);
+    if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);
+    if (recommended.length > 0) segments.push(`ya le recomendé ${recommended.join(', ')}`);
+    if (segments.length === 0) return '';
+
+    const label = other.label || other.key;
+    return this.truncateTo(`Sobre ${label}: ${segments.join('; ')}.`, MAX_CHARS_OTHER);
+  }
+
+  /**
+   * Busca en el mensaje el nombre de un usuario que exista en el grafo,
+   * distinto de quien escribe. Devuelve el match de MÁS palabras — sin eso,
+   * "Sleepy Ash" resolvería a "Sleepy" si ambos existen.
+   *
+   * La normalización va por `normalizeUserKey` (vía
+   * `GraphService.findUserNodesByKeys`), NO por `normalizeKey`: esta última
+   * quita acentos, y para personas eso colapsa cuentas distintas. Usar la
+   * normalización equivocada acá haría que la feature fallara en silencio
+   * sólo para los usuarios con tilde en el nombre — el tipo de bug que nadie
+   * reporta porque parece que "a veces no anda".
+   */
+  private async resolveMentionedUser(
+    selfUsername: string,
+    message: string,
+  ): Promise<GraphNodeDocument | null> {
+    const self = this.graph.normalizeUserKey(selfUsername);
+
+    // `@lyna` y `<@lyna>` (la forma que escribe el backend cuando las
+    // respuestas están desactivadas) tienen que resolver igual que `lyna`.
+    const words = message
+      .replace(/[<>@]/g, ' ')
+      .split(/\s+/)
+      .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+      .filter(Boolean);
+
+    const candidates: string[] = [];
+    for (let size = MAX_USER_NGRAM_SIZE; size >= 1; size--) {
+      for (let i = 0; i + size <= words.length; i++) {
+        candidates.push(words.slice(i, i + size).join(' '));
+      }
+    }
+    if (candidates.length === 0) return null;
+
+    const nodes = await this.graph.findUserNodesByKeys(candidates);
+    const usable = nodes.filter((n) => n.key !== self);
+    if (usable.length === 0) return null;
+
+    // Más palabras gana; a igualdad, el más largo en caracteres.
+    return usable.sort((a, b) => {
+      const wordsA = a.key.split(' ').length;
+      const wordsB = b.key.split(' ').length;
+      return wordsB - wordsA || b.key.length - a.key.length;
+    })[0];
   }
 
   /**
@@ -304,9 +420,13 @@ export class GraphContextService {
    * colgando sin objeto igual que antes.
    */
   private truncate(line: string): string {
-    if (line.length <= MAX_CHARS) return line;
+    return this.truncateTo(line, MAX_CHARS);
+  }
 
-    const sliced = line.slice(0, MAX_CHARS);
+  private truncateTo(line: string, maxChars: number): string {
+    if (line.length <= maxChars) return line;
+
+    const sliced = line.slice(0, maxChars);
     const lastSpace = sliced.lastIndexOf(' ');
     let trimmed = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced;
 

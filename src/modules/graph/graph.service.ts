@@ -406,6 +406,24 @@ export class GraphService {
   }
 
   /**
+   * Resuelve varios nodos `user` por key en UNA sola consulta. Existe para la
+   * lectura cruzada (`GraphContextService`), que arma n-gramas del mensaje
+   * como candidatos a nombre de usuario: hacer un `findNode` por candidato
+   * serían decenas de viajes a Mongo por mensaje.
+   *
+   * Normaliza con `normalizeUserKey` — NUNCA con `normalizeKey`. La diferencia
+   * no es cosmética: `normalizeKey` quita acentos, así que "José" y "Jose"
+   * colapsarían en una sola identidad, y en el backend son dos cuentas
+   * distintas con su propia contraseña.
+   */
+  async findUserNodesByKeys(keys: string[]): Promise<GraphNodeDocument[]> {
+    const normalized = [...new Set(keys.map((k) => this.normalizeUserKey(k)).filter(Boolean))];
+    if (normalized.length === 0) return [];
+
+    return this.nodeModel.find({ type: 'user', key: { $in: normalized } }).exec();
+  }
+
+  /**
    * Cuenta las aristas salientes de un nodo sin traerlas ni borrar nada.
    * Usado para mostrarle a quien pide `!olvida todo` cuántas cosas se
    * borrarían ANTES de que confirme — el conteo sale de la misma condición
