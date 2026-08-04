@@ -170,6 +170,37 @@ describe('ErrandService', () => {
     expect(persistidos).toBe(MAX_PENDING_PER_AUTHOR);
   });
 
+  it('una excepción en la sección crítica NO deja la cola trabada para siempre', async () => {
+    // El modo de falla de mayor consecuencia del diseño de `queue`
+    // (revisión de código, ronda 2): si `runExclusive` alguna vez dejara de
+    // normalizar el resultado de `run` (o de manejar su rechazo), una sola
+    // excepción escapada de `createLocked` dejaría la cola encadenada a una
+    // promesa rechazada PARA SIEMPRE — cada `create` futuro heredaría ese
+    // rechazo sin que `createLocked` vuelva a ejecutarse, en silencio: cada
+    // llamada devolvería `'invalido'` indistinguible de un error transitorio
+    // cualquiera, nunca más se crearía un recado en este proceso, y no habría
+    // ninguna señal de que la cola (no el dato) es lo que quedó roto.
+    //
+    // Se fuerza la excepción en el primer `countDocuments` de `createLocked`
+    // -- lanzar sincrónicamente ahí aborta la construcción del array que arma
+    // `Promise.all`, así que ni siquiera llega a pedirse el segundo conteo;
+    // `createLocked` (función async) envuelve ese throw en un rechazo.
+    const countSpy = jest.spyOn(model, 'countDocuments').mockImplementationOnce(() => {
+      throw new Error('mongo caído');
+    });
+
+    const primero = await service.create('leon', 'lyna', 'este falla adentro');
+    expect(primero).toBe('invalido');
+
+    // Sin restaurar el spy: `mockImplementationOnce` ya se consumió, así que
+    // esta segunda llamada cae en la implementación real de `countDocuments`.
+    // Lo único que decide si pasa o no es si la cola sigue viva.
+    const segundo = await service.create('leon', 'lyna', 'este debe funcionar igual');
+
+    expect(segundo).toBe('ok');
+    countSpy.mockRestore();
+  });
+
   // ─── Important #1 — un recado ya entregado no debe seguir ocupando cupo ──
 
   it('un recado ya entregado (deliveredAt seteado) libera el cupo del autor', async () => {
