@@ -1079,4 +1079,57 @@ describe('ChatService — instrumentación de tokens', () => {
       });
     });
   });
+
+  describe('deliverErrand (Task 5, entrega de recados)', () => {
+    it('arma el prompt sólo con el bloque PERSONA y crossContext en true', async () => {
+      crearMock.mockResolvedValue(respuesta('Che, leon te dejó dicho que subas el video.'));
+
+      await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
+
+      expect(builder.build).toHaveBeenCalledWith(
+        expect.objectContaining({
+          botName: 'Aria',
+          username: 'lyna',
+          useMemory: false,
+          blocks: ['PERSONA'],
+          crossContext: true,
+        }),
+      );
+    });
+
+    it('devuelve el texto que redactó el modelo, recortado', async () => {
+      crearMock.mockResolvedValue(respuesta('  Che, leon te dejó dicho que subas el video.  '));
+
+      const resultado = await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
+
+      expect(resultado).toBe('Che, leon te dejó dicho que subas el video.');
+    });
+
+    it('registra el uso con kind "chat" y el intent "errand"', async () => {
+      crearMock.mockResolvedValue(respuesta('texto', 50, 10));
+
+      await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
+      await dejarCorrer();
+
+      expect(usage.record).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'chat', user: 'lyna', intents: ['errand'] }),
+      );
+    });
+
+    it('devuelve vacío si el modelo responde sin contenido (el llamador manda el texto fijo)', async () => {
+      crearMock.mockResolvedValue({ choices: [{ message: { content: '' } }] });
+
+      const resultado = await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
+
+      expect(resultado).toBe('');
+    });
+
+    it('devuelve vacío si la llamada al modelo lanza una excepción (el llamador manda el texto fijo)', async () => {
+      crearMock.mockRejectedValue(new Error('502'));
+
+      const resultado = await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
+
+      expect(resultado).toBe('');
+    });
+  });
 });

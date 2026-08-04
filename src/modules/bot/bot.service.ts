@@ -20,6 +20,7 @@ import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
@@ -77,6 +78,7 @@ export class BotService implements OnModuleInit {
     private readonly usageService: UsageService,
     private readonly rateLimitService: RateLimitService,
     private readonly crossContextSettings: CrossContextSettingsService,
+    private readonly errandService: ErrandService,
   ) {}
 
   async onModuleInit() {
@@ -131,6 +133,13 @@ export class BotService implements OnModuleInit {
     // delicada de las tres (borra datos), no debe depender de que el
     // dispatcher la deje pasar por casualidad.
     if (await this.handleForgetCommand(content, authorUsername)) return;
+
+    // Entrega de recados. Va antes del filtro de menciones a propósito: el
+    // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
+    // dirigirse al bot. Con el filtro delante, el recado no se entregaría
+    // nunca — que es exactamente lo que le pasa a la nota de regreso de la
+    // fase 5b, documentado y todavía sin arreglar.
+    if (await this.deliverPendingErrand(authorUsername, botUsername)) return;
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -1154,6 +1163,41 @@ export class BotService implements OnModuleInit {
     this.sendBotMessage(
       `@${authorUsername} 🗑️ Borré ${deleted} cosa${deleted !== 1 ? 's' : ''}${detail}.`,
     );
+    return true;
+  }
+
+  // ─── Entrega de recados (Task 5, contexto cruzado) ─────────────────────────
+
+  /**
+   * Entrega UN recado pendiente para quien acaba de escribir. Devuelve true
+   * si entregó algo, para cortar el dispatcher — el mensaje que disparó la
+   * entrega no era para el bot, así que no corresponde además responderlo.
+   *
+   * NO pasa por `rateLimitService.check`: el destinatario no pidió nada, y
+   * dejarlo sin cupo por recados ajenos lo dejaría sin poder hablarle al bot.
+   * El gasto ya está acotado por `MAX_PENDING_PER_AUTHOR`, y el autor sí
+   * gastó su propio cupo al dejar el recado.
+   */
+  private async deliverPendingErrand(
+    authorUsername: string,
+    botUsername: string,
+  ): Promise<boolean> {
+    if (!this.crossContextSettings.isEnabled()) return false;
+
+    const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
+    if (!errand) return false;
+
+    const redactado = await this.chatService
+      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
+      .catch(() => '');
+
+    // El recado ya está marcado como entregado (ver `claimNext`), así que si
+    // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
+    const mensaje = redactado
+      ? `@${authorUsername} ${redactado}`
+      : `@${authorUsername} ${errand.fromLabel} te dejó dicho: ${errand.text}`;
+
+    this.sendBotMessage(mensaje);
     return true;
   }
 

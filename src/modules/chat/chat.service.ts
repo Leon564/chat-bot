@@ -1181,4 +1181,56 @@ escribas nada después del delimitador.`
   setPersonalityOverride(value: BotPersonality | null): void {
     this.personalityOverride = value;
   }
+
+  /**
+   * Una sola llamada al modelo para que diga un recado con su voz. NO pasa
+   * por `chat()` a propósito: ese camino levanta el router, el contexto del
+   * grafo y el historial del usuario, y acá nada de eso aporta — el contenido
+   * ya está decidido. Sólo se necesita la persona.
+   *
+   * Devuelve `''` ante cualquier fallo. El llamador tiene que tener un texto
+   * fijo de respaldo: el recado YA se marcó como entregado antes de llegar
+   * acá, así que si esto se pierde en silencio, se pierde para siempre.
+   */
+  async deliverErrand(
+    botName: string,
+    forUser: string,
+    fromLabel: string,
+    text: string,
+  ): Promise<string> {
+    try {
+      const systemPrompt = this.promptBuilder.build({
+        botName,
+        username: forUser,
+        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 200,
+        personality: this.getPersonality(),
+        useMemory: false,
+        now: new Date(),
+        blocks: ['PERSONA'],
+        crossContext: true,
+      });
+
+      const response = await this.openai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content:
+              `${fromLabel} dejó un recado para ${forUser}: "${text}". ` +
+              `Entregáselo a ${forUser} con tus palabras, en una sola frase corta, ` +
+              `diciendo que viene de ${fromLabel}.`,
+          },
+        ],
+        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        temperature: 0.7,
+        max_tokens: 120,
+      });
+
+      this.registrarUso('chat', response, forUser, ['errand']);
+      return response.choices[0]?.message?.content?.trim() || '';
+    } catch (err) {
+      this.logger.warn(`No se pudo redactar el recado: ${(err as Error)?.message}`);
+      return '';
+    }
+  }
 }

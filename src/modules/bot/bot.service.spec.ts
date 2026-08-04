@@ -15,6 +15,7 @@ import { GraphUserService, MAX_FACTS_SHOWN } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
 
 /**
  * Stub de `GraphService` para los describes que no ejercitan la
@@ -39,6 +40,16 @@ const noopCrossContextSettings = {
   isEnabled: jest.fn().mockReturnValue(false),
   setOverride: jest.fn(),
   getInfo: jest.fn().mockReturnValue({ enabled: false, source: 'env' }),
+};
+
+/**
+ * Doble mínimo de `ErrandService` (Task 5) para los describes de este archivo
+ * que resuelven `BotService` directamente vía `Test.createTestingModule` sin
+ * pasar por `buildBotService` — sólo satisface la inyección del constructor,
+ * ninguno de esos describes ejercita la entrega de recados.
+ */
+const noopErrandService = {
+  claimNext: jest.fn().mockResolvedValue(null),
 };
 
 /**
@@ -129,6 +140,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: UsageService, useValue: usage },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -347,6 +359,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -502,6 +515,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -704,6 +718,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -885,6 +900,7 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
         { provide: RateLimitService, useValue: rateLimit },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -1063,6 +1079,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
           useValue: { check: jest.fn().mockReturnValue(true), shouldNotifyRejection: jest.fn().mockReturnValue(true) },
         },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
       ],
     }).compile();
 
@@ -1245,20 +1262,25 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
 
 /**
  * Arma un `BotService` con dobles por defecto para todas sus dependencias,
- * permitiendo overridear sólo lo que a cada test le importa (por ahora,
- * `crossContext`). A diferencia de un primer intento con `new BotService(...)`
- * posicional, esto resuelve por TOKEN vía `Test.createTestingModule` —
- * mismo mecanismo que los 6 `describe` de arriba —: si en el futuro se
- * inserta una dependencia nueva en cualquier posición del constructor (p.
- * ej. Task 5 agrega `ErrandService`), un `new(...)` posicional seguiría
- * compilando con los casts `as unknown as X` y cablearía el doble
- * equivocado al parámetro equivocado sin que ningún test lo note. Con DI
- * por token, en cambio, falta un provider y Nest tira "can't resolve
- * dependencies" en la cara — ruidoso, no silencioso.
+ * permitiendo overridear sólo lo que a cada test le importa (`crossContext`,
+ * `errands`, `chat`, `rateLimit`). A diferencia de un primer intento con
+ * `new BotService(...)` posicional, esto resuelve por TOKEN vía
+ * `Test.createTestingModule` — mismo mecanismo que los 6 `describe` de
+ * arriba —: si en el futuro se inserta una dependencia nueva en cualquier
+ * posición del constructor, un `new(...)` posicional seguiría compilando con
+ * los casts `as unknown as X` y cablearía el doble equivocado al parámetro
+ * equivocado sin que ningún test lo note. Con DI por token, en cambio, falta
+ * un provider y Nest tira "can't resolve dependencies" en la cara — ruidoso,
+ * no silencioso. (Task 5: agregar `ErrandService` al constructor de
+ * `BotService` es justamente lo que iba a activar esta red.)
  *
  * `sent` acumula todo lo que pasó por `chatSocketService.sendMessage` —
  * que es exactamente lo que emite `sendBotMessage` — para que los tests de
  * un solo comando (`!contextocruzado`) no necesiten un mock de socket propio.
+ *
+ * `errands` se devuelve también, para que los tests de entrega de recados
+ * (Task 5) puedan aserir sobre `claimNext` sin tener que reconstruir el
+ * doble ellos mismos.
  */
 type CrossContextDouble = {
   isEnabled?: () => boolean;
@@ -1266,11 +1288,28 @@ type CrossContextDouble = {
   getInfo?: () => { enabled: boolean; source: 'env' | 'override' };
 };
 
+type ErrandDouble = {
+  claimNext?: jest.Mock;
+};
+
+type ChatDouble = {
+  chat?: jest.Mock;
+  deliverErrand?: jest.Mock;
+};
+
+type RateLimitDouble = {
+  check?: jest.Mock;
+  shouldNotifyRejection?: jest.Mock;
+};
+
 const buildBotService = async (
   overrides: {
     crossContext?: CrossContextDouble;
+    errands?: ErrandDouble;
+    chat?: ChatDouble;
+    rateLimit?: RateLimitDouble;
   } = {},
-): Promise<{ service: BotService; sent: string[] }> => {
+): Promise<{ service: BotService; sent: string[]; errands: { claimNext: jest.Mock } }> => {
   const sent: string[] = [];
   const socket = {
     onMessage: jest.fn(),
@@ -1290,11 +1329,31 @@ const buildBotService = async (
     ...overrides.crossContext,
   };
 
+  // Doble mínimo de `ErrandService` (Task 5): sin recado pendiente por
+  // defecto, para que los describes que no ejercitan la entrega (todos salvo
+  // el propio "entrega de recados") no vean cambio de comportamiento.
+  const errands = {
+    claimNext: jest.fn().mockResolvedValue(null),
+    ...overrides.errands,
+  };
+
+  const chat = {
+    chat: jest.fn().mockResolvedValue(''),
+    deliverErrand: jest.fn().mockResolvedValue(''),
+    ...overrides.chat,
+  };
+
+  const rateLimit = {
+    check: jest.fn().mockReturnValue(true),
+    shouldNotifyRejection: jest.fn().mockReturnValue(true),
+    ...overrides.rateLimit,
+  };
+
   const moduleRef = await Test.createTestingModule({
     providers: [
       BotService,
       { provide: ConfigService, useValue: { get: jest.fn() } },
-      { provide: ChatService, useValue: {} },
+      { provide: ChatService, useValue: chat },
       { provide: MusicService, useValue: {} },
       { provide: AniListService, useValue: {} },
       {
@@ -1312,15 +1371,16 @@ const buildBotService = async (
       { provide: GraphService, useValue: noopGraphService },
       { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
       { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
-      { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
+      { provide: RateLimitService, useValue: rateLimit },
       { provide: CrossContextSettingsService, useValue: crossContext },
+      { provide: ErrandService, useValue: errands },
     ],
   }).compile();
 
   // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
   const service = moduleRef.get<BotService>(BotService);
 
-  return { service, sent };
+  return { service, sent, errands };
 };
 
 describe('!contextocruzado', () => {
@@ -1362,5 +1422,69 @@ describe('!contextocruzado', () => {
   it('devuelve false para un mensaje que no es el comando', async () => {
     const { service } = await buildBotService({});
     expect(await service['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
+  });
+});
+
+describe('entrega de recados', () => {
+  it('entrega aunque el mensaje no mencione al bot', async () => {
+    const { service, sent, errands } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(errands.claimNext).toHaveBeenCalledWith('lyna');
+    expect(sent.join(' ')).toContain('subí el video');
+  });
+
+  it('con el flag apagado ni siquiera consulta recados', async () => {
+    const { service, errands } = await buildBotService({
+      crossContext: { isEnabled: () => false },
+      errands: { claimNext: jest.fn() },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(errands.claimNext).not.toHaveBeenCalled();
+  });
+
+  it('no consume el cupo del destinatario', async () => {
+    const check = jest.fn().mockReturnValue(true);
+    const { service } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'x' }) },
+      rateLimit: { check },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('si el modelo falla, igual entrega el recado con texto fijo', async () => {
+    const { service, sent } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+      chat: { deliverErrand: jest.fn().mockResolvedValue('') },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(sent.join(' ')).toContain('subí el video');
+    expect(sent.join(' ')).toContain('leon');
+  });
+
+  it('no entrega recados a un autor con role bot', async () => {
+    const { service, errands } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn() },
+    });
+
+    await service['handleNewChatMessage']({
+      content: 'hola', authorUsername: 'otrobot', authorRole: 'bot',
+    } as any);
+
+    expect(errands.claimNext).not.toHaveBeenCalled();
   });
 });
