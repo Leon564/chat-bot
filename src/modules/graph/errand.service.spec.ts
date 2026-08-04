@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { MongooseModule, getConnectionToken, getModelToken } from '@nestjs/mongoose';
 import { Connection, Model } from 'mongoose';
 import {
@@ -141,5 +142,108 @@ describe('ErrandService', () => {
     // Exactamente uno gana. Esto se verifica CONTANDO, no leyendo la condición:
     // sin el findOneAndUpdate atómico, los dos leen el mismo documento pendiente.
     expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
+  // ─── Revisión de código (ronda post-entrega) — CRITICAL: los topes son evadibles ──
+
+  it('seis create() concurrentes al mismo autor NUNCA superan el tope por autor (TOCTOU)', async () => {
+    // Reproduce EXACTAMENTE el caso medido por el revisor: una sola
+    // respuesta del modelo con varios SAVE_ERRAND(lyna, ...) dispara varios
+    // `create` para el MISMO autor casi al mismo tiempo. El tope por
+    // destinatario (5) es más alto que el de autor (3) a propósito, para que
+    // esta prueba aísle el tope que falla: sin serializar la sección
+    // crítica (conteo + inserción), un `Promise.all` de 6 creates lee el
+    // mismo conteo (0, 1, 2...) antes de que ninguno haya insertado nada
+    // todavía, y las 6 pasan.
+    const resultados = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => service.create('leon', 'lyna', `recado ${i}`)),
+    );
+
+    const ok = resultados.filter((r) => r === 'ok');
+    const llenos = resultados.filter((r) => r === 'autor_lleno');
+
+    // Determinístico: NUNCA más de MAX_PENDING_PER_AUTHOR, sin importar el
+    // orden en que Mongo resuelva las 6 llamadas concurrentes.
+    expect(ok).toHaveLength(MAX_PENDING_PER_AUTHOR);
+    expect(llenos).toHaveLength(6 - MAX_PENDING_PER_AUTHOR);
+    const persistidos = await connection.collection('bot_errands').countDocuments({});
+    expect(persistidos).toBe(MAX_PENDING_PER_AUTHOR);
+  });
+
+  // ─── Important #1 — un recado ya entregado no debe seguir ocupando cupo ──
+
+  it('un recado ya entregado (deliveredAt seteado) libera el cupo del autor', async () => {
+    for (let i = 0; i < MAX_PENDING_PER_AUTHOR; i++) {
+      expect(await service.create('leon', 'lyna', `r${i}`)).toBe('ok');
+    }
+    // Sin cupo: el cuarto se rechaza.
+    expect(await service.create('leon', 'lyna', 'cuarto, sin cupo')).toBe('autor_lleno');
+
+    // Se entrega uno (claimNext lo marca deliveredAt != null) — eso debe
+    // liberar un cupo del autor, igual que ya libera cupo un vencimiento.
+    const entregado = await service.claimNext('lyna');
+    expect(entregado).not.toBeNull();
+
+    expect(await service.create('leon', 'lyna', 'ahora sí hay cupo')).toBe('ok');
+  });
+
+  // ─── Important #2 — auto-recado (autor === destinatario) sin test ──
+
+  it('rechaza un recado dirigido a uno mismo (autor y destinatario son la misma persona)', async () => {
+    expect(await service.create('leon', 'leon', 'recordame algo')).toBe('invalido');
+    const persistidos = await connection.collection('bot_errands').countDocuments({});
+    expect(persistidos).toBe(0);
+  });
+
+  // ─── Important #3 — los rechazos eran invisibles (ningún log) ──
+
+  describe('logueo de rechazos (antes invisibles: el bot contestaba "listo" y no quedaba rastro)', () => {
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined as never);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('loguea un warn cuando el texto es inválido', async () => {
+      await service.create('leon', 'lyna', '   ');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('invalido'));
+    });
+
+    it('loguea un warn cuando el destinatario no existe', async () => {
+      await service.create('leon', 'fantasma', 'hola');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('usuario_desconocido'));
+    });
+
+    it('loguea un warn cuando el recado es para uno mismo', async () => {
+      await service.create('leon', 'leon', 'recordame algo');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('invalido'));
+    });
+
+    it('loguea un warn cuando se llena el cupo del autor', async () => {
+      for (let i = 0; i < MAX_PENDING_PER_AUTHOR; i++) await service.create('leon', 'lyna', `r${i}`);
+      warnSpy.mockClear();
+
+      await service.create('leon', 'lyna', 'de más');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('autor_lleno'));
+    });
+
+    it('loguea un warn cuando se llena el cupo del destinatario', async () => {
+      for (let i = 0; i < MAX_PENDING_PER_TARGET; i++) {
+        const autor = `autor${i}`;
+        await graph.upsertNode({ type: 'user', key: autor, label: autor });
+        await service.create(autor, 'lyna', `r${i}`);
+      }
+      await graph.upsertNode({ type: 'user', key: 'otro', label: 'otro' });
+      warnSpy.mockClear();
+
+      await service.create('otro', 'lyna', 'de más');
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('destino_lleno'));
+    });
   });
 });
