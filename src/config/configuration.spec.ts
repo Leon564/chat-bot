@@ -69,8 +69,8 @@ describe('configuration — bot.crossUserContext', () => {
   });
 
   it('queda apagado con cualquier otro valor verdadero-parecido', () => {
-    for (const valor of ['1', 'TRUE', 'True', 'yes', 'on', ' true ']) {
-      process.env.CROSS_USER_CONTEXT = valor;
+    for (const value of ['1', 'TRUE', 'True', 'yes', 'on', ' true ']) {
+      process.env.CROSS_USER_CONTEXT = value;
       expect(configuration().bot.crossUserContext).toBe(false);
     }
   });

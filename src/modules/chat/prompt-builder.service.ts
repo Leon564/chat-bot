@@ -166,7 +166,7 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 
     // `botName` es opcional en `PromptInput`: sin este fallback, el tramo de
     // terceros diría literalmente "nunca sobre vos mismo (undefined)".
-    const nombreBot = input.botName || 'vos, el bot';
+    const resolvedBotName = input.botName || 'vos, el bot';
 
     // El tramo de terceros SÓLO se incluye con el flag encendido: si no, se
     // pagarían tokens en cada mensaje explicando una sintaxis que el parseo
@@ -176,11 +176,11 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
     // reglas que el código SÍ aplica y que descarta en silencio — que el
     // sujeto/destinatario tiene que ser alguien ya conocido del grafo
     // (`GraphIngestService.ingestFactAbout` usa `findNode`, no `touchUser`, y
-    // `ErrandService.create` devuelve `usuario_desconocido`) y que no puede
+    // `ErrandService.create` devuelve `unknown_user`) y que no puede
     // ser el propio bot (`ChatService`, y ahora también `ErrandService`). Sin
     // esa señal en el prompt, el modelo seguía emitiendo verbos que se tiran,
     // gastando tokens y prometiéndole al usuario cosas que no pasan.
-    const terceros = input.crossContext
+    const thirdParties = input.crossContext
       ? `
 
 Si ${input.username} revela algo sobre OTRA persona de la sala, usá:
@@ -189,12 +189,12 @@ Ejemplo: "a lyna le encanta Berserk" → SAVE_FACT_ABOUT(lyna, likes, Berserk)
 Las tres relaciones válidas son las mismas de arriba (likes, dislikes, asked_about).
 Usá el nombre tal como aparece en el chat. Si no sabés de quién hablan, no lo emitas.
 El usuario tiene que ser alguien que YA escribió en esta sala: si es alguien de afuera, un personaje o un nombre inventado, no lo emitas.
-Nunca sobre vos mismo (${nombreBot}): no emitas SAVE_FACT_ABOUT con tu propio nombre.
+Nunca sobre vos mismo (${resolvedBotName}): no emitas SAVE_FACT_ABOUT con tu propio nombre.
 
 Si ${input.username} te pide dejarle un mensaje a otra persona para cuando aparezca, usá:
 SAVE_ERRAND(usuario, texto del recado)
 Ejemplo: "cuando lyna te hable recordale que suba el video" → SAVE_ERRAND(lyna, que suba el video)
-Mismas dos reglas para el destinatario: tiene que ser alguien que ya escribió en esta sala, y nunca podés ser vos mismo (${nombreBot}).`
+Mismas dos reglas para el destinatario: tiene que ser alguien que ya escribió en esta sala, y nunca podés ser vos mismo (${resolvedBotName}).`
       : '';
 
     return `SISTEMA DE MEMORIA:
@@ -213,7 +213,7 @@ Ejemplos:
 "Me encanta Attack on Titan" → SAVE_FACT(likes, Attack on Titan)
 "No soporto el ecchi" → SAVE_FACT(dislikes, ecchi)
 
-NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${terceros}`;
+NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${thirdParties}`;
   }
 
   /**

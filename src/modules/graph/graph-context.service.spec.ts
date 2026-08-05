@@ -597,41 +597,41 @@ describe('GraphContextService', () => {
     it('no arma n-gramas sin tope: un mensaje largo no manda cientos de términos en un solo $in', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
-      await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'asked_about', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'asked_about', source: 'fact' });
 
-      const espia = jest.spyOn(graph, 'findUserNodesByKeys');
+      const spy = jest.spyOn(graph, 'findUserNodesByKeys');
       // 200 palabras: lo que el revisor midió en ~600 términos por mensaje,
       // en CADA mensaje, mientras `extractCandidates` (mismo archivo, mismo
       // tipo de trabajo) ya cortaba en 40.
-      const mensajeLargo = Array.from({ length: 200 }, (_, i) => `palabra${i}`).join(' ');
+      const longMessage = Array.from({ length: 200 }, (_, i) => `palabra${i}`).join(' ');
 
-      await service.build('leon', mensajeLargo);
+      await service.build('leon', longMessage);
 
-      expect(espia).toHaveBeenCalled();
-      const terminos = espia.mock.calls[0][0];
+      expect(spy).toHaveBeenCalled();
+      const terms = spy.mock.calls[0][0];
       // Tope duro: 3 tamaños de n-grama sobre a lo sumo MAX_USER_WORDS palabras.
-      expect(terminos.length).toBeLessThanOrEqual(MAX_USER_WORDS * 3);
+      expect(terms.length).toBeLessThanOrEqual(MAX_USER_WORDS * 3);
       // Y muy por debajo de los ~600 de antes — si alguien saca el `.slice`,
       // esta aserción se cae sola.
-      expect(terminos.length).toBeLessThan(100);
-      espia.mockRestore();
+      expect(terms.length).toBeLessThan(100);
+      spy.mockRestore();
     });
 
     it('el tope no rompe la resolución de una mención que aparece tarde en el mensaje corto', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
       const csm = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Chainsaw Man' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
       await graph.upsertEdge({ from: lyna._id, to: csm._id, type: 'asked_about', source: 'fact' });
 
       // 19 palabras de relleno + la mención en la 20.ª: justo en el borde del
       // tope, que es donde un off-by-one se notaría.
-      const relleno = Array.from({ length: 19 }, (_, i) => `bla${i}`).join(' ');
+      const filler = Array.from({ length: 19 }, (_, i) => `bla${i}`).join(' ');
 
-      const line = await service.build('leon', `${relleno} lyna`);
+      const line = await service.build('leon', `${filler} lyna`);
 
       expect(line).toContain('Sobre lyna:');
     });
@@ -639,9 +639,9 @@ describe('GraphContextService', () => {
     it('resuelve un nombre de usuario con acentos', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const jose = await graph.upsertNode({ type: 'user', key: 'José', label: 'José' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: 'Vagabond' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
-      await graph.upsertEdge({ from: jose._id, to: obra._id, type: 'asked_about', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: 'Vagabond' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: jose._id, to: work._id, type: 'asked_about', source: 'fact' });
 
       const line = await service.build('leon', 'que hablaste con José');
 
@@ -650,8 +650,8 @@ describe('GraphContextService', () => {
 
     it('no habla de uno mismo en la segunda oración', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
 
       const line = await service.build('leon', 'leon habló de algo');
 
@@ -662,9 +662,9 @@ describe('GraphContextService', () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       await graph.upsertNode({ type: 'user', key: 'sleepy', label: 'sleepy' });
       const ash = await graph.upsertNode({ type: 'user', key: 'sleepy ash', label: 'Sleepy Ash' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
-      await graph.upsertEdge({ from: ash._id, to: obra._id, type: 'asked_about', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: ash._id, to: work._id, type: 'asked_about', source: 'fact' });
 
       const line = await service.build('leon', 'que sabes de Sleepy Ash');
 
@@ -674,9 +674,9 @@ describe('GraphContextService', () => {
     it('reconoce la mención con @ y con <@...> del backend', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
-      await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'asked_about', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'asked_about', source: 'fact' });
 
       expect(await service.build('leon', 'que onda con @lyna')).toContain('Sobre lyna:');
       expect(await service.build('leon', 'que onda con <@lyna>')).toContain('Sobre lyna:');
@@ -686,7 +686,7 @@ describe('GraphContextService', () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
 
-      // Labels calibrados para que `sinCruce` caiga DENTRO de la ventana
+      // Labels calibrados para que `withoutCross` caiga DENTRO de la ventana
       // (MAX_CHARS - MAX_CHARS_OTHER, MAX_CHARS] -- es decir, cerca del
       // tope de la línea principal pero sin llegar a truncarse ella sola.
       // Por debajo de esa ventana (p. ej. labels cortos), la línea principal
@@ -709,27 +709,27 @@ describe('GraphContextService', () => {
       await graph.upsertEdge({ from: lyna._id, to: csm._id, type: 'asked_about', source: 'fact' });
 
       crossEnabled = false;
-      const sinCruce = await service.build('leon', 'hola lyna');
+      const withoutCross = await service.build('leon', 'hola lyna');
       crossEnabled = true;
-      const conCruce = await service.build('leon', 'hola lyna');
+      const withCross = await service.build('leon', 'hola lyna');
 
       // Guardia del fixture: si alguien cambia MAX_CHARS/MAX_CHARS_OTHER o
       // MAX_EDGES sin ajustar `labelLen`, esta aserción avisa que el
       // fixture salió de la ventana que hace detectable el mutante de
       // presupuesto compartido -- en vez de dejar que el test seguido
       // pasara en verde por una razón distinta a la que dice cubrir.
-      expect(sinCruce.length).toBeGreaterThan(MAX_CHARS - MAX_CHARS_OTHER);
+      expect(withoutCross.length).toBeGreaterThan(MAX_CHARS - MAX_CHARS_OTHER);
 
       // La línea principal es un prefijo exacto de la versión con cruce: la
       // segunda oración se AGREGA, no compite por los MAX_CHARS existentes.
-      expect(conCruce.startsWith(sinCruce)).toBe(true);
+      expect(withCross.startsWith(withoutCross)).toBe(true);
     });
 
     it('la oración cruzada respeta su propio tope', async () => {
       const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
       const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
-      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
       for (let i = 0; i < MAX_EDGES_OTHER; i++) {
         const w = await graph.upsertNode({
           type: 'work',
@@ -748,9 +748,9 @@ describe('GraphContextService', () => {
       // nada de lo que este test dice cubrir.
       expect(line).toContain('Sobre lyna:');
 
-      const cruzada = line.slice(line.indexOf('Sobre lyna:'));
+      const crossPart = line.slice(line.indexOf('Sobre lyna:'));
 
-      expect(cruzada.length).toBeLessThanOrEqual(MAX_CHARS_OTHER);
+      expect(crossPart.length).toBeLessThanOrEqual(MAX_CHARS_OTHER);
     });
 
     it('sirve la oración cruzada aunque quien pregunta no tenga datos propios', async () => {
@@ -774,13 +774,13 @@ describe('GraphContextService', () => {
       // así que limpiar el verbo colgando deja la oración entera sin
       // contenido: el resultado correcto es que la oración cruzada
       // desaparezca del todo, no que quede "Sobre lyna" pelado.
-      const labelGigante = 'Z'.repeat(300);
+      const hugeLabel = 'Z'.repeat(300);
 
       it('con "le gusta" (ya estaba en DANGLING_SUFFIXES, pero dejaba "Sobre lyna" sin contenido)', async () => {
         await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
-        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'likes', source: 'fact' });
+        const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: hugeLabel });
+        await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'likes', source: 'fact' });
 
         const line = await service.build('leon', 'hola lyna');
 
@@ -793,8 +793,8 @@ describe('GraphContextService', () => {
       it('con "preguntó por" (frase nueva, no estaba en DANGLING_SUFFIXES)', async () => {
         await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
-        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'asked_about', source: 'fact' });
+        const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: hugeLabel });
+        await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'asked_about', source: 'fact' });
 
         const line = await service.build('leon', 'hola lyna');
 
@@ -805,8 +805,8 @@ describe('GraphContextService', () => {
       it('con "ya le recomendé"', async () => {
         await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-        const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: labelGigante });
-        await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'recommended_to', source: 'fact' });
+        const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: hugeLabel });
+        await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'recommended_to', source: 'fact' });
 
         const line = await service.build('leon', 'hola lyna');
 
@@ -828,10 +828,10 @@ describe('GraphContextService', () => {
         // mirar si otra sobrevivió) -- ver el mutante probado en el reporte.
         const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
-        const corta = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Vagabond' });
-        const gigante = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: labelGigante });
-        await graph.upsertEdge({ from: lyna._id, to: corta._id, type: 'asked_about', source: 'fact' });
-        await graph.upsertEdge({ from: lyna._id, to: gigante._id, type: 'likes', source: 'fact' });
+        const shortWork = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Vagabond' });
+        const hugeWork = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: hugeLabel });
+        await graph.upsertEdge({ from: lyna._id, to: shortWork._id, type: 'asked_about', source: 'fact' });
+        await graph.upsertEdge({ from: lyna._id, to: hugeWork._id, type: 'likes', source: 'fact' });
 
         const line = await service.build('leon', 'hola lyna');
 

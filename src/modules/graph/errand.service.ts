@@ -36,10 +36,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type CreateErrandResult =
   | 'ok'
-  | 'autor_lleno'
-  | 'destino_lleno'
-  | 'usuario_desconocido'
-  | 'invalido';
+  | 'author_full'
+  | 'target_full'
+  | 'unknown_user'
+  | 'invalid';
 
 @Injectable()
 export class ErrandService {
@@ -116,8 +116,8 @@ export class ErrandService {
 
   /** Registra (o borra, con `null`) el nombre propio del bot. Ver `botName`. */
   setBotName(name: string | null): void {
-    const limpio = (name ?? '').trim();
-    this.botName = limpio ? limpio : null;
+    const trimmed = (name ?? '').trim();
+    this.botName = trimmed ? trimmed : null;
   }
 
   /**
@@ -125,7 +125,7 @@ export class ErrandService {
    * misma normalización con la que se guarda `forUser` en la fila— para que
    * mayúsculas y espacios no abran un hueco.
    */
-  private esElBot(forUser: string): boolean {
+  private isBotItself(forUser: string): boolean {
     if (!this.botName) return false;
     const bot = this.graph.normalizeUserKey(this.botName);
     return !!bot && bot === this.graph.normalizeUserKey(forUser);
@@ -166,53 +166,53 @@ export class ErrandService {
         maxLen: MAX_ERRAND_TEXT,
         minLen: MIN_ERRAND_TEXT,
       });
-      if (!clean || clean.length > MAX_ERRAND_TEXT) return this.rechazo('invalido', fromUser, forUser);
+      if (!clean || clean.length > MAX_ERRAND_TEXT) return this.reject('invalid', fromUser, forUser);
 
       // El propio bot nunca puede ser destinatario (ver `botName`). Va antes
       // de tocar Mongo: es una comparación en memoria y ahorra dos lecturas.
-      if (this.esElBot(forUser)) return this.rechazo('invalido', fromUser, forUser);
+      if (this.isBotItself(forUser)) return this.reject('invalid', fromUser, forUser);
 
       // Tanto el autor como el destinatario tienen que existir. Un recado no
       // puede crear gente en el grafo, misma regla que `ingestFactAbout`.
-      const [autor, destino] = await Promise.all([
+      const [author, target] = await Promise.all([
         this.graph.findNode('user', fromUser),
         this.graph.findNode('user', forUser),
       ]);
-      if (!autor || !destino) return this.rechazo('usuario_desconocido', fromUser, forUser);
-      if (autor.key === destino.key) return this.rechazo('invalido', fromUser, forUser);
+      if (!author || !target) return this.reject('unknown_user', fromUser, forUser);
+      if (author.key === target.key) return this.reject('invalid', fromUser, forUser);
 
       // Sección crítica serializada — ver el comentario de `queue` arriba.
-      const resultado = await this.runExclusive(() => this.createLocked(autor, destino, clean));
-      if (resultado !== 'ok') this.rechazo(resultado, fromUser, forUser);
-      return resultado;
+      const result = await this.runExclusive(() => this.createLocked(author, target, clean));
+      if (result !== 'ok') this.reject(result, fromUser, forUser);
+      return result;
     } catch (err) {
       this.logger.warn(`No se pudo crear el recado de ${fromUser} para ${forUser}: ${(err as Error)?.message}`);
-      return 'invalido';
+      return 'invalid';
     }
   }
 
   /** Cuenta los pendientes de autor/destinatario e inserta si hay cupo en ambos. Corre SIEMPRE serializado (ver `queue`). */
   private async createLocked(
-    autor: GraphNodeDocument,
-    destino: GraphNodeDocument,
+    author: GraphNodeDocument,
+    target: GraphNodeDocument,
     clean: string,
   ): Promise<CreateErrandResult> {
-    const ahora = new Date();
-    const pendiente = { deliveredAt: null, expiresAt: { $gt: ahora } };
+    const now = new Date();
+    const pendingFilter = { deliveredAt: null, expiresAt: { $gt: now } };
 
-    const [delAutor, delDestino] = await Promise.all([
-      this.errandModel.countDocuments({ fromUser: autor.key, ...pendiente }),
-      this.errandModel.countDocuments({ forUser: destino.key, ...pendiente }),
+    const [authorPending, targetPending] = await Promise.all([
+      this.errandModel.countDocuments({ fromUser: author.key, ...pendingFilter }),
+      this.errandModel.countDocuments({ forUser: target.key, ...pendingFilter }),
     ]);
-    if (delAutor >= MAX_PENDING_PER_AUTHOR) return 'autor_lleno';
-    if (delDestino >= MAX_PENDING_PER_TARGET) return 'destino_lleno';
+    if (authorPending >= MAX_PENDING_PER_AUTHOR) return 'author_full';
+    if (targetPending >= MAX_PENDING_PER_TARGET) return 'target_full';
 
     await this.errandModel.create({
-      fromUser: autor.key,
-      fromLabel: autor.label || autor.key,
-      forUser: destino.key,
+      fromUser: author.key,
+      fromLabel: author.label || author.key,
+      forUser: target.key,
       text: clean,
-      expiresAt: new Date(ahora.getTime() + ERRAND_TTL_DAYS * DAY_MS),
+      expiresAt: new Date(now.getTime() + ERRAND_TTL_DAYS * DAY_MS),
       deliveredAt: null,
     });
     return 'ok';
@@ -220,15 +220,15 @@ export class ErrandService {
 
   /**
    * Revisión de código (Important): antes, cualquier rechazo que NO fuera
-   * una excepción (autor_lleno, destino_lleno, usuario_desconocido,
-   * inválido) era invisible — el modelo ya le contestó al usuario "dale, se
+   * una excepción (`author_full`, `target_full`, `unknown_user`, `invalid`)
+   * era invisible — el modelo ya le contestó al usuario "dale, se
    * lo digo" y el recado simplemente no queda guardado, sin una sola línea
    * de log. Con un tope de 3 por autor esto va a pasar seguido; sin rastro
    * es indepurable. Un `warn` por rama de rechazo, sin bloquear el flujo.
    */
-  private rechazo(resultado: CreateErrandResult, fromUser: string, forUser: string): CreateErrandResult {
-    this.logger.warn(`Recado rechazado (${resultado}): ${fromUser} -> ${forUser}`);
-    return resultado;
+  private reject(result: CreateErrandResult, fromUser: string, forUser: string): CreateErrandResult {
+    this.logger.warn(`Recado rechazado (${result}): ${fromUser} -> ${forUser}`);
+    return result;
   }
 
   /**

@@ -15,13 +15,13 @@ describe('CrossContextSettingsService', () => {
   });
 
   it('el override gana sobre el .env, en ambas direcciones', () => {
-    const apagadoEnEnv = buildService(false);
-    apagadoEnEnv.setOverride(true);
-    expect(apagadoEnEnv.isEnabled()).toBe(true);
+    const offInEnv = buildService(false);
+    offInEnv.setOverride(true);
+    expect(offInEnv.isEnabled()).toBe(true);
 
-    const encendidoEnEnv = buildService(true);
-    encendidoEnEnv.setOverride(false);
-    expect(encendidoEnEnv.isEnabled()).toBe(false);
+    const onInEnv = buildService(true);
+    onInEnv.setOverride(false);
+    expect(onInEnv.isEnabled()).toBe(false);
   });
 
   it('setOverride(null) vuelve al valor del .env', () => {

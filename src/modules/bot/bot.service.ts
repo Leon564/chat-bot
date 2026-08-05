@@ -1227,13 +1227,13 @@ export class BotService implements OnModuleInit {
     const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
     if (!errand) return false;
 
-    const redactado = await this.chatService
+    const drafted = await this.chatService
       .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
       .catch(() => '');
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
     // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
-    const mensaje = redactado || `${errand.fromLabel} te dejó dicho: ${errand.text}`;
+    const message = drafted || `${errand.fromLabel} te dejó dicho: ${errand.text}`;
 
     // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
     // `handleChatResponse` y no por `sendBotMessage` directo. El camino
@@ -1247,8 +1247,8 @@ export class BotService implements OnModuleInit {
     // `ErrandService.create` sanitiza), pero la rama del modelo sigue siendo
     // texto sin filtrar y no hay motivo para que la entrega sea la única voz
     // del bot que no pasa por el mismo embudo. El prefijo de mención lo pone
-    // `handleChatResponse` (`<@usuario>`), por eso `mensaje` ya no lo trae.
-    await this.handleChatResponse(mensaje, authorUsername);
+    // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
+    await this.handleChatResponse(message, authorUsername);
     return true;
   }
 

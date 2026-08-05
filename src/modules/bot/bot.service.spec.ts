@@ -1533,19 +1533,19 @@ describe('entrega de recados', () => {
     // los dos tests de este describe que sí invocan `deliverPendingErrand`
     // pasan por el fallback (`deliverErrand` mockeado a `''`, ver el default
     // de `buildBotService`). Verificado con un mutante: reemplazar
-    // `@${authorUsername} ${redactado}` por basura en esa rama deja la
+    // `@${authorUsername} ${drafted}` por basura en esa rama deja la
     // suite en verde si no hay una aserción sobre el texto exacto que
     // redactó el modelo.
-    const redactado = 'Che, leon te dejó dicho que subas el video.';
+    const drafted = 'Che, leon te dejó dicho que subas el video.';
     const { service, sent } = await buildBotService({
       crossContext: { isEnabled: () => true },
       errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
-      chat: { deliverErrand: jest.fn().mockResolvedValue(redactado) },
+      chat: { deliverErrand: jest.fn().mockResolvedValue(drafted) },
     });
 
     await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
 
-    expect(sent.join(' ')).toContain(redactado);
+    expect(sent.join(' ')).toContain(drafted);
     // El patrón del fallback fijo ("te dejó dicho:") NO debe aparecer — si
     // apareciera, sería señal de que se ignoró el texto del modelo.
     expect(sent.join(' ')).not.toContain('te dejó dicho:');

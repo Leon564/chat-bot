@@ -359,9 +359,9 @@ describe('GraphUserService', () => {
       const lyna = await graph.findNode('user', 'lyna');
       expect(await graph.countEdgesFrom(lyna!._id)).toBe(1);
 
-      const borradas = await service.forget('lyna', 'Berserk');
+      const deletedCount = await service.forget('lyna', 'Berserk');
 
-      expect(borradas).toBeGreaterThan(0);
+      expect(deletedCount).toBeGreaterThan(0);
       expect(await graph.countEdgesFrom(lyna!._id)).toBe(0);
     });
 
@@ -369,7 +369,7 @@ describe('GraphUserService', () => {
       await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
       await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
 
-      const hechos = await service.describe('lyna');
+      const facts = await service.describe('lyna');
 
       // `toContainEqual` sobre el objeto completo (relación + label + peso),
       // no `JSON.stringify(...).toContain('Berserk')` (revisión de código,
@@ -378,7 +378,7 @@ describe('GraphUserService', () => {
       // vinieran cuarenta hechos ajenos de otro test — con `toContainEqual`
       // hace falta que ESTE hecho puntual (relación Y objeto) esté presente
       // tal cual, tolerando que haya otros hechos alrededor.
-      expect(hechos).toContainEqual({ relation: 'likes', label: 'Berserk', weight: 1 });
+      expect(facts).toContainEqual({ relation: 'likes', label: 'Berserk', weight: 1 });
     });
   });
 });

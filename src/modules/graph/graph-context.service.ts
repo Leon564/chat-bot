@@ -496,9 +496,9 @@ export class GraphContextService {
     // que importa: lo que sigue siempre empieza el próximo ítem (o el resto
     // de un label partido), así que nunca es puntuación aunque el corte ya
     // esté en un borde limpio.
-    const cortoEnBordeDeItem = /[,;.]$/.test(trimmed);
+    const cutAtItemBoundary = /[,;.]$/.test(trimmed);
 
-    if (!cortoEnBordeDeItem) {
+    if (!cutAtItemBoundary) {
       const lastComma = trimmed.lastIndexOf(', ');
       const lastSemicolon = trimmed.lastIndexOf('; ');
       const lastSeparator = Math.max(lastComma, lastSemicolon);

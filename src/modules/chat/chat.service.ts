@@ -61,7 +61,7 @@ export class ChatService {
    * (revisión final de rama, Important #4). Ver el comentario del punto donde
    * se usa, en `chat()`.
    */
-  private static readonly RECONOCIMIENTO_SIN_TEXTO = 'Listo 👍';
+  private static readonly ACK_WITHOUT_TEXT = 'Listo 👍';
 
   constructor(
     private readonly configService: ConfigService,
@@ -217,7 +217,7 @@ export class ChatService {
       if (graphContextInjected) intents.push('graph');
       intents.push(...blocks);
 
-      this.registrarUso('chat', response, username, intents);
+      this.recordUsage('chat', response, username, intents);
 
       let content = response.choices[0].message.content || '';
       console.log(`Respuesta de OpenAI: ${content}`);
@@ -279,7 +279,7 @@ export class ChatService {
       // toque. Se usa abajo para distinguir "el modelo no dijo nada" (dejarlo
       // vacío, comportamiento de siempre) de "la limpieza se llevó todo"
       // (revisión final de rama, Important #4).
-      const contenidoDelModelo = content;
+      const modelContent = content;
 
       if (useMemory) {
         const about = this.extractFactsAboutFromResponse(content);
@@ -405,7 +405,7 @@ export class ChatService {
         // defensiva: lo bien formado ya fue consumido (y, si correspondía,
         // ingerido) por los extractores; lo que llega acá es, por
         // construcción, algo que ninguno de ellos reconoció.
-        content = ChatService.stripVerbosSobrantes(content);
+        content = ChatService.stripLeftoverVerbs(content);
 
         // Prosa después de la llamada (revisión final de rama, Important #4).
         //
@@ -427,8 +427,8 @@ export class ChatService {
         // y no inventa una confirmación de algo que quizá no se guardó.
         // Cuando el modelo directamente no dijo nada, se deja vacío como
         // siempre: ahí no hay nada que reemplazar.
-        if (!content.trim() && contenidoDelModelo.trim()) {
-          content = ChatService.RECONOCIMIENTO_SIN_TEXTO;
+        if (!content.trim() && modelContent.trim()) {
+          content = ChatService.ACK_WITHOUT_TEXT;
         }
       }
 
@@ -480,7 +480,7 @@ export class ChatService {
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
 
-      this.registrarUso('translate', response, username);
+      this.recordUsage('translate', response, username);
 
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
@@ -571,7 +571,7 @@ escribas nada después del delimitador.`
         max_tokens: 500,
       });
 
-      this.registrarUso('summary', summaryResponse, username);
+      this.recordUsage('summary', summaryResponse, username);
 
       const raw = summaryResponse.choices[0].message.content || '';
       const { text, facts } = this.parseSummaryAndFacts(raw, knownAuthors);
@@ -764,7 +764,7 @@ escribas nada después del delimitador.`
    * queda en 0/0 indistinguible de una medición real — se avisa una sola vez
    * por proceso para que no pase desapercibido.
    */
-  private registrarUso(
+  private recordUsage(
     kind: LlmKind,
     response: {
       usage?: {
@@ -980,7 +980,7 @@ escribas nada después del delimitador.`
    * orden inverso `SAVE_FACT` matchearía el prefijo y el `\s*\(` siguiente
    * fallaría contra el `_ABOUT` que queda, dejando la llamada intacta.
    */
-  private static createVerboSobranteRegex(): RegExp {
+  private static createLeftoverVerbRegex(): RegExp {
     return /\b(?:SAVE|LOAD)_(?:FACT_ABOUT|FACT|ERRAND|MEMORY)\s*\([^)]*\)?/gi;
   }
 
@@ -994,10 +994,10 @@ escribas nada después del delimitador.`
    * respuesta que no traía ningún verbo colgando, que es la abrumadora
    * mayoría.
    */
-  private static stripVerbosSobrantes(content: string): string {
+  private static stripLeftoverVerbs(content: string): string {
     if (!/\b(?:SAVE|LOAD)_(?:FACT_ABOUT|FACT|ERRAND|MEMORY)\s*\(/i.test(content)) return content;
     return content
-      .replace(ChatService.createVerboSobranteRegex(), '')
+      .replace(ChatService.createLeftoverVerbRegex(), '')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
   }
@@ -1348,7 +1348,7 @@ escribas nada después del delimitador.`
         max_tokens: 120,
       });
 
-      this.registrarUso('chat', response, forUser, ['errand']);
+      this.recordUsage('chat', response, forUser, ['errand']);
       return response.choices[0]?.message?.content?.trim() || '';
     } catch (err) {
       this.logger.warn(`No se pudo redactar el recado: ${(err as Error)?.message}`);
