@@ -263,7 +263,13 @@ export class ErrandService {
         .findOneAndUpdate(
           { forUser: key, deliveredAt: null, expiresAt: { $gt: new Date() } },
           { $set: { deliveredAt: new Date() } },
-          { sort: { createdAt: 1, _id: 1 }, new: true },
+          // `returnDocument: 'after'`, no la opción `new` (deprecada en
+          // Mongoose 8+, avisa por consola en cada llamada). Es el mismo
+          // criterio que ya usa `GraphService.upsertNodeWithReturn`. Acá
+          // 'after' y 'before' darían lo mismo — sólo se leen `fromLabel` y
+          // `text`, y el `$set` toca únicamente `deliveredAt` — pero se deja
+          // 'after' por ser el equivalente exacto de lo que había.
+          { sort: { createdAt: 1, _id: 1 }, returnDocument: 'after' },
         )
         .exec();
 
