@@ -1191,6 +1191,15 @@ escribas nada después del delimitador.`
    * Devuelve `''` ante cualquier fallo. El llamador tiene que tener un texto
    * fijo de respaldo: el recado YA se marcó como entregado antes de llegar
    * acá, así que si esto se pierde en silencio, se pierde para siempre.
+   *
+   * Revisión de código (Minor): NO se pasa `crossContext` acá — es inerte
+   * para este llamado. Ese flag sólo alimenta `blockSaveFact` (el tramo de
+   * "terceros"/`SAVE_FACT_ABOUT`/`SAVE_ERRAND`), y `blockSaveFact` corta al
+   * toque si `!useMemory` (acá siempre `false`) y, además, `build()` sólo lo
+   * invoca cuando `blocks.includes('SAVE_FACT')` (acá `blocks` es sólo
+   * `['PERSONA']`). Verificado: `build()` con `blocks: ['PERSONA']` devuelve
+   * el mismo prompt, byte a byte, con `crossContext` en `true`, `false` o
+   * ausente.
    */
   async deliverErrand(
     botName: string,
@@ -1207,7 +1216,6 @@ escribas nada después del delimitador.`
         useMemory: false,
         now: new Date(),
         blocks: ['PERSONA'],
-        crossContext: true,
       });
 
       const response = await this.openai.chat.completions.create({

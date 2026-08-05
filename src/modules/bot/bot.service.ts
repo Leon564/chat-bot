@@ -139,7 +139,20 @@ export class BotService implements OnModuleInit {
     // dirigirse al bot. Con el filtro delante, el recado no se entregaría
     // nunca — que es exactamente lo que le pasa a la nota de regreso de la
     // fase 5b, documentado y todavía sin arreglar.
-    if (await this.deliverPendingErrand(authorUsername, botUsername)) return;
+    //
+    // Revisión de código (Important #1): la entrega en sí SIEMPRE se intenta
+    // acá, incondicional — pero ya NO decide por su cuenta si el dispatcher
+    // corta (antes: `if (await this.deliverPendingErrand(...)) return;`).
+    // El mensaje que dispara la entrega puede A LA VEZ interpelar al bot
+    // (una mención, un pedido de música) — verificado ejecutando con
+    // `content: 'bot como va'` y un recado pendiente: `chatService.chat`
+    // recibía 0 llamadas y la pregunta real desaparecía en silencio detrás
+    // del recado ajeno. Cortar o no cortar es SIEMPRE la misma decisión que
+    // ya tomaba el filtro de mención de más abajo (`isReplyToBot` /
+    // `containsBotWord` / … `isVideoReq`) — la entrega no le agrega una
+    // razón nueva para cortar, sólo se monta encima sin cambiar esa
+    // decisión.
+    await this.deliverPendingErrand(authorUsername, botUsername);
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -1170,13 +1183,28 @@ export class BotService implements OnModuleInit {
 
   /**
    * Entrega UN recado pendiente para quien acaba de escribir. Devuelve true
-   * si entregó algo, para cortar el dispatcher — el mensaje que disparó la
-   * entrega no era para el bot, así que no corresponde además responderlo.
+   * si entregó algo.
+   *
+   * Revisión de código (Important #1): este valor de retorno YA NO decide si
+   * el dispatcher corta — antes lo hacía (`if (await
+   * this.deliverPendingErrand(...)) return;` en el llamador), bajo el
+   * supuesto de que "el mensaje que disparó la entrega no era para el bot".
+   * Ese supuesto es falso: este método corre ANTES del filtro de mención, así
+   * que en el momento en que se llama todavía no se sabe si el mensaje
+   * también interpelaba al bot. Con el supuesto viejo, un `content: 'bot
+   * como va'` con un recado pendiente entregaba el recado y CORTABA — la
+   * pregunta real desaparecía en silencio, sin que `chatService.chat` llegara
+   * a llamarse. Ahora el llamador entrega siempre (efecto secundario
+   * incondicional) y deja que el filtro de mención de siempre decida si además
+   * corresponde cortar.
    *
    * NO pasa por `rateLimitService.check`: el destinatario no pidió nada, y
    * dejarlo sin cupo por recados ajenos lo dejaría sin poder hablarle al bot.
-   * El gasto ya está acotado por `MAX_PENDING_PER_AUTHOR`, y el autor sí
-   * gastó su propio cupo al dejar el recado.
+   * Del lado del destinatario el gasto real está acotado por
+   * `MAX_PENDING_PER_TARGET` (recados de hasta 5 autores distintos, sin rate
+   * limit) — `MAX_PENDING_PER_AUTHOR` acota cuántos recados puede DEJAR un
+   * mismo autor, no cuántos puede RECIBIR una persona de varios autores
+   * distintos; el autor sí gastó su propio cupo al dejar cada recado.
    */
   private async deliverPendingErrand(
     authorUsername: string,

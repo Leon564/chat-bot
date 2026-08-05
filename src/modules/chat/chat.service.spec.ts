@@ -1081,21 +1081,12 @@ describe('ChatService — instrumentación de tokens', () => {
   });
 
   describe('deliverErrand (Task 5, entrega de recados)', () => {
-    it('arma el prompt sólo con el bloque PERSONA y crossContext en true', async () => {
-      crearMock.mockResolvedValue(respuesta('Che, leon te dejó dicho que subas el video.'));
-
-      await service.deliverErrand('Aria', 'lyna', 'leon', 'subí el video');
-
-      expect(builder.build).toHaveBeenCalledWith(
-        expect.objectContaining({
-          botName: 'Aria',
-          username: 'lyna',
-          useMemory: false,
-          blocks: ['PERSONA'],
-          crossContext: true,
-        }),
-      );
-    });
+    // Revisión de código (Minor): se sacó el test que verificaba
+    // `crossContext: true` en el argumento pasado al mock del builder — era
+    // un test sobre el doble, no sobre una salida real del código (`build`
+    // devuelve el mismo prompt con o sin ese flag para `blocks: ['PERSONA']`,
+    // ver el comentario de `deliverErrand`), y el parámetro en sí ya se sacó
+    // de la llamada real.
 
     it('devuelve el texto que redactó el modelo, recortado', async () => {
       crearMock.mockResolvedValue(respuesta('  Che, leon te dejó dicho que subas el video.  '));

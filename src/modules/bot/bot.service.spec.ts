@@ -1309,7 +1309,12 @@ const buildBotService = async (
     chat?: ChatDouble;
     rateLimit?: RateLimitDouble;
   } = {},
-): Promise<{ service: BotService; sent: string[]; errands: { claimNext: jest.Mock } }> => {
+): Promise<{
+  service: BotService;
+  sent: string[];
+  errands: { claimNext: jest.Mock };
+  chat: { chat: jest.Mock; deliverErrand: jest.Mock };
+}> => {
   const sent: string[] = [];
   const socket = {
     onMessage: jest.fn(),
@@ -1380,7 +1385,7 @@ const buildBotService = async (
   // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
   const service = moduleRef.get<BotService>(BotService);
 
-  return { service, sent, errands };
+  return { service, sent, errands, chat };
 };
 
 describe('!contextocruzado', () => {
@@ -1426,8 +1431,8 @@ describe('!contextocruzado', () => {
 });
 
 describe('entrega de recados', () => {
-  it('entrega aunque el mensaje no mencione al bot', async () => {
-    const { service, sent, errands } = await buildBotService({
+  it('entrega aunque el mensaje no mencione al bot, y CORTA (no era para el bot)', async () => {
+    const { service, sent, errands, chat } = await buildBotService({
       crossContext: { isEnabled: () => true },
       errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
     });
@@ -1436,6 +1441,54 @@ describe('entrega de recados', () => {
 
     expect(errands.claimNext).toHaveBeenCalledWith('lyna');
     expect(sent.join(' ')).toContain('subí el video');
+    // Revisión de código (Important #3) — la rama "no interpela al bot" del
+    // corte: sin esta aserción, un dispatcher que dejara de cortar acá (p.
+    // ej. si alguien volviera a atar el corte al valor de retorno de
+    // `deliverPendingErrand` en vez de al filtro de mención) seguiría
+    // pasando el resto de este test igual.
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('Important #1 — un mensaje que SÍ interpela al bot entrega el recado Y además se sigue respondiendo', async () => {
+    // Antes de este fix, `deliverPendingErrand` cortaba el dispatcher por su
+    // cuenta con el supuesto (falso) de que "el mensaje no era para el bot".
+    // Reproducido: con este mismo fixture, `chat.chat` recibía 0 llamadas y
+    // la pregunta real de Lyna se perdía en silencio detrás del recado.
+    const { service, sent, errands, chat } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+      chat: { chat: jest.fn().mockResolvedValue('respuesta del modelo') },
+    });
+
+    await service['handleNewChatMessage']({ content: 'bot como va', authorUsername: 'lyna' } as any);
+
+    expect(errands.claimNext).toHaveBeenCalledWith('lyna');
+    expect(sent.join(' ')).toContain('subí el video'); // el recado se entregó igual
+    expect(chat.chat).toHaveBeenCalled(); // Y la pregunta real también se atendió
+    expect(sent.join(' ')).toContain('respuesta del modelo');
+  });
+
+  it('Important #1 — un pedido de "usuarios online" con un recado pendiente también se atiende (no sólo menciones)', async () => {
+    // Mismo hallazgo que el test de arriba, con otro de los disparadores que
+    // NO son una mención textual del bot (`isOnlineReq`, ver el filtro más
+    // abajo en el dispatcher) — la entrega no puede tragarse ninguno de
+    // ellos, no sólo el caso de mención directa.
+    const { service, sent, errands } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+    });
+
+    await service['handleNewChatMessage']({
+      content: 'usuarios en linea', authorUsername: 'lyna',
+    } as any);
+
+    expect(errands.claimNext).toHaveBeenCalledWith('lyna');
+    expect(sent.join(' ')).toContain('subí el video'); // el recado se entregó
+    // El fixture de `getOnlineUsers` (default de `buildBotService`) resuelve
+    // vacío: esta línea es la respuesta real del fast-path de usuarios
+    // online, prueba de que el dispatcher SIGUIÓ de largo tras entregar el
+    // recado en vez de cortar.
+    expect(sent.join(' ')).toContain('No hay nadie conectado');
   });
 
   it('con el flag apagado ni siquiera consulta recados', async () => {
@@ -1460,6 +1513,30 @@ describe('entrega de recados', () => {
     await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
 
     expect(check).not.toHaveBeenCalled();
+  });
+
+  it('Important #2 — cuando el modelo redacta bien, entrega ESE texto (no el fallback fijo)', async () => {
+    // Sin este test, la rama feliz de la entrega (la que corre en
+    // producción cuando el modelo SÍ responde) no tenía cobertura propia:
+    // los dos tests de este describe que sí invocan `deliverPendingErrand`
+    // pasan por el fallback (`deliverErrand` mockeado a `''`, ver el default
+    // de `buildBotService`). Verificado con un mutante: reemplazar
+    // `@${authorUsername} ${redactado}` por basura en esa rama deja la
+    // suite en verde si no hay una aserción sobre el texto exacto que
+    // redactó el modelo.
+    const redactado = 'Che, leon te dejó dicho que subas el video.';
+    const { service, sent } = await buildBotService({
+      crossContext: { isEnabled: () => true },
+      errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+      chat: { deliverErrand: jest.fn().mockResolvedValue(redactado) },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(sent.join(' ')).toContain(redactado);
+    // El patrón del fallback fijo ("te dejó dicho:") NO debe aparecer — si
+    // apareciera, sería señal de que se ignoró el texto del modelo.
+    expect(sent.join(' ')).not.toContain('te dejó dicho:');
   });
 
   it('si el modelo falla, igual entrega el recado con texto fijo', async () => {
