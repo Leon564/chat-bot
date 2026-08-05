@@ -129,5 +129,66 @@ describe('PromptBuilderService', () => {
       expect(service.build({ ...base, crossContext: false })).not.toContain('SAVE_FACT_ABOUT');
       expect(service.build({ ...base, crossContext: true })).toContain('SAVE_FACT_ABOUT');
     });
+
+    // ─── Revisión final de rama (Important #3) ────────────────────────────
+    //
+    // El único test de este archivo aseveraba SÓLO `SAVE_FACT_ABOUT`, con un
+    // describe titulado "tramo de terceros" que se lee como si cubriera el
+    // bloque entero. Se comprobó: borrando el párrafo completo de
+    // `SAVE_ERRAND` del prompt, la suite daba 554 passed. Ese párrafo es lo
+    // único que hace que el modelo emita `SAVE_ERRAND`, así que las Tasks 4 y
+    // 5 enteras (la colección `bot_errands`, la cola FIFO, el camino de
+    // entrega) podían quedar inertes en producción con la suite en verde.
+    it('el tramo de terceros también enseña SAVE_ERRAND, no sólo SAVE_FACT_ABOUT', () => {
+      const base = {
+        botName: 'aria',
+        username: 'leon',
+        maxLength: 200,
+        personality: 'default' as const,
+        useMemory: true,
+        now: new Date('2026-08-02T12:00:00Z'),
+        blocks: ['SAVE_FACT'] as PromptBlock[],
+      };
+
+      expect(service.build({ ...base, crossContext: false })).not.toContain('SAVE_ERRAND');
+      expect(service.build({ ...base, crossContext: true })).toContain('SAVE_ERRAND');
+    });
+
+    // ─── Revisión final de rama (deuda #2) ────────────────────────────────
+    //
+    // El bloque no le decía al modelo dos reglas que el código SÍ aplica y
+    // descarta en silencio: el sujeto/destinatario tiene que ser alguien ya
+    // conocido, y no puede ser el bot. Sin señal en el prompt, el modelo
+    // seguía emitiendo verbos que se tiran.
+    it('el tramo de terceros exige que el sujeto sea alguien de la sala y excluye al propio bot', () => {
+      const salida = service.build({
+        botName: 'aria',
+        username: 'leon',
+        maxLength: 200,
+        personality: 'default',
+        useMemory: true,
+        now: new Date('2026-08-02T12:00:00Z'),
+        blocks: ['SAVE_FACT'] as PromptBlock[],
+        crossContext: true,
+      });
+
+      expect(salida).toContain('ya escribió en esta sala');
+      expect(salida).toContain('Nunca sobre vos mismo (aria)');
+      expect(salida).toContain('nunca podés ser vos mismo (aria)');
+    });
+
+    it('sin botName, el tramo no dice "vos mismo (undefined)"', () => {
+      const salida = service.build({
+        username: 'leon',
+        maxLength: 200,
+        personality: 'default',
+        useMemory: true,
+        now: new Date('2026-08-02T12:00:00Z'),
+        blocks: ['SAVE_FACT'] as PromptBlock[],
+        crossContext: true,
+      });
+
+      expect(salida).not.toContain('undefined');
+    });
   });
 });

@@ -50,6 +50,27 @@ const CROSS_CONTEXT_EDGE_TYPES: EdgeType[] = ['asked_about', 'likes', 'recommend
 const MAX_USER_NGRAM_SIZE = 3;
 
 /**
+ * Cuántas palabras del mensaje se consideran al buscar un nombre de usuario
+ * (revisión final de rama, deuda #4).
+ *
+ * `resolveMentionedUser` armaba n-gramas SIN ningún tope, mientras
+ * `extractCandidates` —en este mismo archivo, para el mismo tipo de trabajo—
+ * corta en `CANDIDATE_CAP = 40`. Con N palabras salen ~3N candidatas, todas
+ * dentro de un solo `$in`, y esto corre en CADA mensaje: un mensaje de 200
+ * palabras eran ~600 términos por mensaje.
+ *
+ * Se topea la cantidad de PALABRAS y no la de candidatas (que sería el calco
+ * literal de `CANDIDATE_CAP`) porque el bucle recorre los tamaños de 3 hacia
+ * 1: cortar por cantidad de candidatas gastaría todo el presupuesto en
+ * trigramas y nunca llegaría a los unigramas, que es la forma en que se
+ * escribe la mayoría de los nombres — la feature se apagaría en silencio
+ * justo para los mensajes largos. Con este tope el máximo queda en
+ * 20 + 19 + 18 = 57 candidatas, del mismo orden de magnitud que
+ * `CANDIDATE_CAP`, y los tres tamaños siguen representados.
+ */
+export const MAX_USER_WORDS = 20;
+
+/**
  * Ventana dentro de la cual `props.lastNode` todavía cuenta como "lo último
  * que miró". Sin este tope, el bot resolvería "¿y el segundo tomo?" contra
  * algo que la persona consultó hace tres días, no contra el turno anterior.
@@ -257,7 +278,9 @@ export class GraphContextService {
       .replace(/[<>@]/g, ' ')
       .split(/\s+/)
       .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
-      .filter(Boolean);
+      .filter(Boolean)
+      // Tope de trabajo por mensaje — ver `MAX_USER_WORDS`.
+      .slice(0, MAX_USER_WORDS);
 
     const candidates: string[] = [];
     for (let size = MAX_USER_NGRAM_SIZE; size >= 1; size--) {

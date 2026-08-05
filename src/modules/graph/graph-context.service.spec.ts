@@ -17,6 +17,7 @@ import {
   MAX_CHARS_OTHER,
   LAST_NODE_WINDOW_MS,
   RETURNING_AFTER_DAYS,
+  MAX_USER_WORDS,
 } from './graph-context.service';
 import { MIN_CANDIDATES } from './graph.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
@@ -589,6 +590,50 @@ describe('GraphContextService', () => {
 
       expect(line).not.toContain('lyna');
       expect(line).not.toContain('Chainsaw Man');
+    });
+
+    // ─── Revisión final de rama (deuda #4) — n-gramas sin tope ────────────
+
+    it('no arma n-gramas sin tope: un mensaje largo no manda cientos de términos en un solo $in', async () => {
+      const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+      const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: lyna._id, to: obra._id, type: 'asked_about', source: 'fact' });
+
+      const espia = jest.spyOn(graph, 'findUserNodesByKeys');
+      // 200 palabras: lo que el revisor midió en ~600 términos por mensaje,
+      // en CADA mensaje, mientras `extractCandidates` (mismo archivo, mismo
+      // tipo de trabajo) ya cortaba en 40.
+      const mensajeLargo = Array.from({ length: 200 }, (_, i) => `palabra${i}`).join(' ');
+
+      await service.build('leon', mensajeLargo);
+
+      expect(espia).toHaveBeenCalled();
+      const terminos = espia.mock.calls[0][0];
+      // Tope duro: 3 tamaños de n-grama sobre a lo sumo MAX_USER_WORDS palabras.
+      expect(terminos.length).toBeLessThanOrEqual(MAX_USER_WORDS * 3);
+      // Y muy por debajo de los ~600 de antes — si alguien saca el `.slice`,
+      // esta aserción se cae sola.
+      expect(terminos.length).toBeLessThan(100);
+      espia.mockRestore();
+    });
+
+    it('el tope no rompe la resolución de una mención que aparece tarde en el mensaje corto', async () => {
+      const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+      const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      const obra = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      const csm = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Chainsaw Man' });
+      await graph.upsertEdge({ from: leon._id, to: obra._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: lyna._id, to: csm._id, type: 'asked_about', source: 'fact' });
+
+      // 19 palabras de relleno + la mención en la 20.ª: justo en el borde del
+      // tope, que es donde un off-by-one se notaría.
+      const relleno = Array.from({ length: 19 }, (_, i) => `bla${i}`).join(' ');
+
+      const line = await service.build('leon', `${relleno} lyna`);
+
+      expect(line).toContain('Sobre lyna:');
     });
 
     it('resuelve un nombre de usuario con acentos', async () => {

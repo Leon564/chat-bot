@@ -42,3 +42,43 @@ describe('configuration — bot.rateLimitPerHour', () => {
     expect(configuration().bot.rateLimitPerHour).toBe(0);
   });
 });
+
+/**
+ * `CROSS_USER_CONTEXT` es el único interruptor de toda la rama de contexto
+ * cruzado y se lee con una comparación estricta `=== 'true'`
+ * (`configuration.ts`). Sin estos tests se podía publicar una build donde
+ * encender el flag en el `.env` no hiciera nada —un `CROSS_USER_CONTEXT=1` o
+ * `=TRUE` deja el flag apagado— con la suite completamente en verde.
+ */
+describe('configuration — bot.crossUserContext', () => {
+  const ORIGINAL_ENV = process.env.CROSS_USER_CONTEXT;
+
+  afterEach(() => {
+    if (ORIGINAL_ENV === undefined) delete process.env.CROSS_USER_CONTEXT;
+    else process.env.CROSS_USER_CONTEXT = ORIGINAL_ENV;
+  });
+
+  it('está apagado cuando la variable no está seteada (default opt-in)', () => {
+    delete process.env.CROSS_USER_CONTEXT;
+    expect(configuration().bot.crossUserContext).toBe(false);
+  });
+
+  it("se enciende SÓLO con el literal 'true'", () => {
+    process.env.CROSS_USER_CONTEXT = 'true';
+    expect(configuration().bot.crossUserContext).toBe(true);
+  });
+
+  it('queda apagado con cualquier otro valor verdadero-parecido', () => {
+    for (const valor of ['1', 'TRUE', 'True', 'yes', 'on', ' true ']) {
+      process.env.CROSS_USER_CONTEXT = valor;
+      expect(configuration().bot.crossUserContext).toBe(false);
+    }
+  });
+
+  it("queda apagado con 'false' y con cadena vacía", () => {
+    process.env.CROSS_USER_CONTEXT = 'false';
+    expect(configuration().bot.crossUserContext).toBe(false);
+    process.env.CROSS_USER_CONTEXT = '';
+    expect(configuration().bot.crossUserContext).toBe(false);
+  });
+});
