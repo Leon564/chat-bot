@@ -10,11 +10,19 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphService } from './graph.service';
 import { GraphUserService, MAX_FACTS_SHOWN } from './graph-user.service';
+import { GraphIngestService } from './graph-ingest.service';
+import { UtilsService } from '../../common/utils/utils.service';
 
 describe('GraphUserService', () => {
   let connection: Connection;
   let service: GraphUserService;
   let graph: GraphService;
+  // Sólo para el describe de Task 3 (contexto cruzado): sembrar exactamente
+  // lo que deja `ingestFactAbout` cuando alguien habla de un tercero, en vez
+  // de escribir la arista a mano con `graph.upsertEdge` — así el test
+  // verifica la contención real (`!olvida`/`!quesabes` sobre lo que
+  // `GraphIngestService` efectivamente persiste), no una simulación aparte.
+  let ingest: GraphIngestService;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -25,12 +33,13 @@ describe('GraphUserService', () => {
           { name: GraphEdge.name, schema: GraphEdgeSchema },
         ]),
       ],
-      providers: [GraphService, GraphUserService],
+      providers: [GraphService, GraphUserService, GraphIngestService, UtilsService],
     }).compile();
 
     connection = moduleRef.get<Connection>(getConnectionToken());
     service = moduleRef.get<GraphUserService>(GraphUserService);
     graph = moduleRef.get<GraphService>(GraphService);
+    ingest = moduleRef.get<GraphIngestService>(GraphIngestService);
     await syncAllIndexes(connection);
   });
 
@@ -309,6 +318,67 @@ describe('GraphUserService', () => {
       expect(await service.findForgettable('Nico', '')).toEqual([]);
       expect(await service.findForgettable('Nico', 'ab')).toEqual([]);
       expect(findNodeSpy.mock.calls.length).toBe(llamadasPrevias);
+    });
+  });
+
+  // ─── Contexto cruzado (Task 3) — !olvida/!quesabes alcanzan lo que otro plantó ──
+
+  describe('contención de riesgo: hechos sin atribución sembrados por OTRA persona', () => {
+    // REENCUADRE (revisión de código, ronda 1, Important #3) — qué prueban
+    // estos dos tests y, sobre todo, qué NO prueban.
+    //
+    // `ingestFactAbout` e `ingestFact` producen ARISTAS ESTRUCTURALMENTE
+    // IDÉNTICAS: mismo `type`, mismo `source` ('fact' por default en los
+    // dos), mismo `weight` inicial, mismo nodo destino — sólo difiere
+    // `lastSeenAt`. La arista NUNCA guarda quién la escribió: fue una
+    // decisión explícita y ya tomada del dueño del proyecto (rechazada dos
+    // veces durante el diseño) que los hechos sobre terceros van SIN
+    // atribución. Por eso estos dos tests NO PUEDEN, ni deberían poder,
+    // distinguir "esto lo plantó otra persona" de "me lo planté yo mismo" —
+    // si se reemplazara `ingest.ingestFactAbout('lyna', 'likes', 'Berserk')`
+    // por un auto-plantado equivalente (`ingest.ingestFact('lyna', 'likes',
+    // 'Berserk')`), los dos tests seguirían exactamente igual de verdes. Eso
+    // NO es un hueco de cobertura que haya que cerrar agregando atribución
+    // — sería deshacer la decisión ya tomada — es la consecuencia correcta
+    // y esperada del diseño sin atribución.
+    //
+    // Lo que SÍ verifican, y por eso valen igual: que `forget`/`describe`
+    // (la contención real de `!olvida`/`!quesabes`) no hacen NINGÚN tipo de
+    // excepción por el origen de la arista — ambos sólo miran `from:
+    // userNode._id`, sin filtrar por `source` ni por ningún otro campo — así
+    // que un hecho sembrado vía `ingestFactAbout` (que puede aterrizar en un
+    // nodo `topic` si el objeto no resuelve por alias, exactamente el mismo
+    // camino que ya cubre `ingestFact` en `graph-ingest.service.spec.ts`) es
+    // tan alcanzable por el borrado/la consulta como cualquier otro. La
+    // contención es ESTRUCTURAL (nace de que ambos servicios ignoran el
+    // origen), no algo que un test de comportamiento pueda discriminar.
+    it('!olvida borra un hecho que plantó OTRA persona sobre uno', async () => {
+      await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      // Exactamente lo que deja `ingestFactAbout` cuando leon habla de lyna.
+      await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
+      const lyna = await graph.findNode('user', 'lyna');
+      expect(await graph.countEdgesFrom(lyna!._id)).toBe(1);
+
+      const deletedCount = await service.forget('lyna', 'Berserk');
+
+      expect(deletedCount).toBeGreaterThan(0);
+      expect(await graph.countEdgesFrom(lyna!._id)).toBe(0);
+    });
+
+    it('!quesabes se lo muestra antes de que lo borre', async () => {
+      await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
+
+      const facts = await service.describe('lyna');
+
+      // `toContainEqual` sobre el objeto completo (relación + label + peso),
+      // no `JSON.stringify(...).toContain('Berserk')` (revisión de código,
+      // ronda 1, Important #3): esa aserción floja pasaría igual si la
+      // relación viniera mal (p. ej. 'dislikes' en vez de 'likes') o si
+      // vinieran cuarenta hechos ajenos de otro test — con `toContainEqual`
+      // hace falta que ESTE hecho puntual (relación Y objeto) esté presente
+      // tal cual, tolerando que haya otros hechos alrededor.
+      expect(facts).toContainEqual({ relation: 'likes', label: 'Berserk', weight: 1 });
     });
   });
 });

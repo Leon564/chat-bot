@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { GraphService, TopEdge, Candidate, MIN_CANDIDATES, MAX_CANDIDATES } from './graph.service';
 import { GraphNodeDocument, LastNodeProp, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 
 /**
  * Cuántas aristas como máximo entran a la línea de contexto. Se aplica en la
@@ -17,8 +18,67 @@ export const MAX_EDGES = 6;
  */
 export const MAX_CHARS = 400;
 
+/**
+ * Tope propio de la oración sobre OTRO usuario. Deliberadamente separado de
+ * `MAX_CHARS`: la línea principal ya viene ajustada (la entrega de la fase 5b
+ * documenta que las candidatas de la colaborativa empujan afuera la
+ * continuidad conversacional). Si la parte del otro usuario compitiera por
+ * esos mismos 400, agrandaría un problema que ya existe en vez de agregar una
+ * capacidad.
+ */
+export const MAX_CHARS_OTHER = 150;
+
+/** Cuántas aristas del OTRO usuario entran, como mucho. */
+export const MAX_EDGES_OTHER = 4;
+
 /** Relaciones que alimentan la línea de contexto, en el orden en que se agrupan al renderizar. */
 const CONTEXT_EDGE_TYPES: EdgeType[] = ['likes', 'recommended_to', 'interacts_with'];
+
+/**
+ * Relaciones que se leen del otro usuario, en orden de renderizado.
+ *
+ * Incluye `asked_about`, que NO está en `CONTEXT_EDGE_TYPES` — se viene
+ * escribiendo desde la fase 4b vía `SAVE_FACT` y nunca se leyó en ninguna
+ * línea. Es justo lo que responde el caso de uso: "de qué hablaste con Lyna"
+ * ES por qué obras preguntó. Se agrega SÓLO acá a propósito: sumarlo a la
+ * línea del propio usuario cambiaría el comportamiento de todos los usuarios,
+ * lo que es otro cambio y no éste (ver "Fuera de alcance" en el spec).
+ */
+const CROSS_CONTEXT_EDGE_TYPES: EdgeType[] = ['asked_about', 'likes', 'recommended_to'];
+
+/** Máximo de palabras que puede tener un nombre de usuario al buscarlo en el mensaje. */
+const MAX_USER_NGRAM_SIZE = 3;
+
+/**
+ * Cuántas palabras iniciales del mensaje entran a los n-gramas de MÁS DE UNA
+ * palabra (bigramas y trigramas). Los unigramas NO están topeados: recorren
+ * el mensaje entero, deduplicados.
+ *
+ * Historia, porque el tope anterior se justificó con un argumento falso
+ * (re-revisión, punto 2.4). `resolveMentionedUser` armaba n-gramas sin ningún
+ * tope: con N palabras salen ~3N candidatas dentro de un solo `$in`, y esto
+ * corre en CADA mensaje — un mensaje de 200 palabras eran ~600 términos. El
+ * primer arreglo topeó las PALABRAS (`words.slice(0, 20)`) diciendo que así
+ * se evitaba "apagar la feature en silencio para mensajes largos". Eso es
+ * falso y se midió: con 25 palabras de relleno y `lyna` en la posición 26 la
+ * oración cruzada NO aparecía, y con `"che lyna"` sí. El tope no evitaba el
+ * apagado silencioso: sólo corría el umbral de la palabra 1 a la 21.
+ *
+ * La forma correcta separa las dos cosas, porque no cuestan lo mismo:
+ *   - Unigramas: 1 término por palabra distinta. Es como se escribe la
+ *     abrumadora mayoría de los nombres, así que topearlos ES apagar la
+ *     feature. Van sobre el mensaje completo, deduplicados.
+ *   - Bi/trigramas: 2 términos por palabra, y sólo sirven para nombres de
+ *     varias palabras, que son la minoría. Acá sí vale un tope.
+ *
+ * EL LÍMITE REAL QUE QUEDA (cubierto por test en
+ * `graph-context.service.spec.ts`): un nombre de UNA palabra resuelve esté
+ * donde esté en el mensaje; un nombre de DOS O TRES palabras sólo resuelve si
+ * empieza dentro de las primeras `MAX_USER_NGRAM_WORDS` palabras. El techo de
+ * términos por mensaje queda en `palabras distintas + 19 + 18` (los bigramas
+ * y trigramas de la ventana), contra los ~3N de antes del primer arreglo.
+ */
+export const MAX_USER_NGRAM_WORDS = 20;
 
 /**
  * Ventana dentro de la cual `props.lastNode` todavía cuenta como "lo último
@@ -45,6 +105,20 @@ export const RETURNING_AFTER_DAYS = 14;
  * medias (p. ej. "...lo último que miró fue" sin nada después) cuando el
  * recorte por límite de palabra cae justo ahí — eso confundiría al modelo
  * más que directamente omitir la sección.
+ *
+ * ACOPLAMIENTO OCULTO con `buildOtherLine`: esta lista también se usa (vía
+ * `truncateTo`) para recortar la oración cruzada sobre OTRO usuario, que
+ * arma sus propias frases ('le gusta', 'ya le recomendé', 'preguntó por')
+ * de forma independiente en vez de reusar este arreglo. Si alguien cambia
+ * la redacción de una frase en un solo lado (acá o en `buildOtherLine`), el
+ * guard deja de reconocer el verbo colgando en el otro lado, en silencio —
+ * sin que ningún test de tipos lo detecte. 'preguntó por' está acá
+ * ÚNICAMENTE por `buildOtherLine` (la línea propia usa 'justo preguntó por',
+ * ya cubierta abajo); no lo borres pensando que es un duplicado inútil. El
+ * riesgo más probable no es renombrar una frase existente, sino agregar una
+ * CUARTA frase nueva a `buildOtherLine` (o a `render()`) sin sumar su
+ * entrada acá: el bug reaparece para esa frase puntual y ningún test
+ * existente lo va a notar, porque sólo cubren las tres frases actuales.
  */
 const DANGLING_SUFFIXES = [
   'le gusta',
@@ -54,6 +128,7 @@ const DANGLING_SUFFIXES = [
   'lo último que miró fue',
   'justo preguntó por',
   'su gusto más fuerte es',
+  'preguntó por',
 ];
 
 /** Tipos de nodo que puede mencionar una pregunta (nunca 'user'). */
@@ -86,7 +161,10 @@ const CANDIDATE_CAP = 40;
 export class GraphContextService {
   private readonly logger = new Logger(GraphContextService.name);
 
-  constructor(private readonly graph: GraphService) {}
+  constructor(
+    private readonly graph: GraphService,
+    private readonly crossContext: CrossContextSettingsService,
+  ) {}
 
   async build(username: string, message: string): Promise<string> {
     try {
@@ -100,16 +178,16 @@ export class GraphContextService {
       const previousMessageAt = this.resolvePreviousMessageAt(userNode);
       const returningNote = this.resolveReturningNote(edges, previousMessageAt);
 
-      // Alguien que vuelve después de mucho tiempo pero no tiene ningún
-      // `likes`/`recommended_to`/`interacts_with` ni `lastNode` reciente
-      // igual merece la nota de regreso — sin esta condición extra, el corte
-      // temprano de abajo la descartaría en silencio junto con el resto.
-      if (edges.length === 0 && !lastNode && !returningNote) return '';
+      // Se calcula ANTES del corte temprano de abajo: alguien sin datos
+      // propios que pregunta por otra persona igual merece la respuesta. Si
+      // esto se calculara después, "leon" (recién llegado, sin aristas)
+      // preguntando por Lyna recibiría '' y la feature parecería rota justo
+      // en el caso más común de estrenarla.
+      const otherLine = await this.buildOtherLine(username, message);
+
+      if (edges.length === 0 && !lastNode && !returningNote && !otherLine) return '';
 
       const highlight = await this.resolveHighlight(message, edges);
-      // Sólo lectura, igual que el resto de este método: si el usuario no
-      // tiene ningún `likes` hacia una obra, `collaborative` devuelve vacío
-      // sin tocar Mongo de más (ver el corte temprano en `GraphService`).
       const candidates = await this.graph.collaborative(userNode._id, MAX_CANDIDATES);
 
       const line = this.render(
@@ -120,11 +198,130 @@ export class GraphContextService {
         candidates,
         returningNote,
       );
-      return this.truncate(line);
+
+      // La oración cruzada se CONCATENA después del truncado de la principal,
+      // con su propio tope. Nunca entra al mismo `truncate`.
+      return [this.truncate(line), otherLine].filter((part) => part.length > 0).join(' ');
     } catch (err) {
       this.logger.warn(`build falló, se sigue sin contexto extra: ${(err as Error).message}`);
       return '';
     }
+  }
+
+  /**
+   * La oración sobre OTRO usuario mencionado en el mensaje. `''` cuando el
+   * flag está apagado, cuando el mensaje no nombra a nadie conocido, o cuando
+   * el nombrado no tiene ninguna relación que contar.
+   *
+   * Un solo usuario por mensaje, a propósito: acota el costo (una consulta
+   * extra, no N) y acota el largo del prompt.
+   */
+  private async buildOtherLine(selfUsername: string, message: string): Promise<string> {
+    if (!this.crossContext.isEnabled()) return '';
+
+    const other = await this.resolveMentionedUser(selfUsername, message);
+    if (!other) return '';
+
+    const edges = await this.graph.topEdges(
+      other._id,
+      CROSS_CONTEXT_EDGE_TYPES,
+      MAX_EDGES_OTHER,
+    );
+    if (edges.length === 0) return '';
+
+    const asked = edges.filter((e) => e.type === 'asked_about').map((e) => e.label);
+    const likes = edges.filter((e) => e.type === 'likes').map((e) => e.label);
+    const recommended = edges.filter((e) => e.type === 'recommended_to').map((e) => e.label);
+
+    // ACOPLAMIENTO con `DANGLING_SUFFIXES`: estas tres frases literales
+    // ('preguntó por', 'le gusta', 'ya le recomendé') tienen que seguir
+    // apareciendo, tal cual, en ese arreglo -- es lo que le permite a
+    // `truncateTo` reconocer el verbo colgando y limpiarlo en vez de dejarlo
+    // sin objeto. Cambiar la redacción acá sin tocar `DANGLING_SUFFIXES`
+    // reabre el bug que este comentario documenta -- y lo mismo si el día de
+    // mañana se agrega una CUARTA frase acá sin sumarla también allá.
+    const segments: string[] = [];
+    if (asked.length > 0) segments.push(`preguntó por ${asked.join(', ')}`);
+    if (likes.length > 0) segments.push(`le gusta ${likes.join(', ')}`);
+    if (recommended.length > 0) segments.push(`ya le recomendé ${recommended.join(', ')}`);
+    if (segments.length === 0) return '';
+
+    const label = other.label || other.key;
+    const prefix = `Sobre ${label}`;
+    const truncated = this.truncateTo(`${prefix}: ${segments.join('; ')}.`, MAX_CHARS_OTHER);
+
+    // A diferencia de la línea principal (que nunca llega a `truncate` sin
+    // al menos un segmento real, por el corte temprano de `render`), acá SÍ
+    // puede pasar que el guard de `DANGLING_SUFFIXES` deje la oración
+    // pelada -- un solo edge con un label larguísimo puede consumir todo
+    // `MAX_CHARS_OTHER`, y una vez que el guard le saca el verbo colgando no
+    // queda nada más a lo que volver. Inyectar "Sobre lyna" solo (sin
+    // ningún dato) en el prompt es peor que no mencionar a lyna en
+    // absoluto: el modelo leería una afirmación vacía con la misma
+    // autoridad que una real.
+    if (truncated === prefix || truncated === `${prefix}:`) return '';
+
+    return truncated;
+  }
+
+  /**
+   * Busca en el mensaje el nombre de un usuario que exista en el grafo,
+   * distinto de quien escribe. Devuelve el match de MÁS palabras — sin eso,
+   * "Sleepy Ash" resolvería a "Sleepy" si ambos existen.
+   *
+   * La normalización va por `normalizeUserKey` (vía
+   * `GraphService.findUserNodesByKeys`), NO por `normalizeKey`: esta última
+   * quita acentos, y para personas eso colapsa cuentas distintas. Usar la
+   * normalización equivocada acá haría que la feature fallara en silencio
+   * sólo para los usuarios con tilde en el nombre — el tipo de bug que nadie
+   * reporta porque parece que "a veces no anda".
+   */
+  private async resolveMentionedUser(
+    selfUsername: string,
+    message: string,
+  ): Promise<GraphNodeDocument | null> {
+    const self = this.graph.normalizeUserKey(selfUsername);
+
+    // `@lyna` y `<@lyna>` (la forma que escribe el backend cuando las
+    // respuestas están desactivadas) tienen que resolver igual que `lyna`.
+    const words = message
+      .replace(/[<>@]/g, ' ')
+      .split(/\s+/)
+      .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+      .filter(Boolean);
+
+    // Un `Set` y no un array: deduplica los unigramas de un mensaje repetitivo
+    // antes de que lleguen al `$in`. Ver `MAX_USER_NGRAM_WORDS` para el
+    // reparto (unigramas sin tope, bi/trigramas topeados) y por qué.
+    const candidates = new Set<string>();
+
+    // Bi/trigramas: sólo sobre la ventana inicial — son los que multiplican
+    // el trabajo (2 términos por palabra) y sólo sirven para nombres de
+    // varias palabras.
+    const ngramWords = words.slice(0, MAX_USER_NGRAM_WORDS);
+    for (let size = MAX_USER_NGRAM_SIZE; size >= 2; size--) {
+      for (let i = 0; i + size <= ngramWords.length; i++) {
+        candidates.add(ngramWords.slice(i, i + size).join(' '));
+      }
+    }
+
+    // Unigramas: el mensaje COMPLETO. Topearlos era apagar la feature en
+    // silencio para cualquier mención tardía — el defecto medido que este
+    // reparto corrige.
+    for (const word of words) candidates.add(word);
+
+    if (candidates.size === 0) return null;
+
+    const nodes = await this.graph.findUserNodesByKeys([...candidates]);
+    const usable = nodes.filter((n) => n.key !== self);
+    if (usable.length === 0) return null;
+
+    // Más palabras gana; a igualdad, el más largo en caracteres.
+    return usable.sort((a, b) => {
+      const wordsA = a.key.split(' ').length;
+      const wordsB = b.key.split(' ').length;
+      return wordsB - wordsA || b.key.length - a.key.length;
+    })[0];
   }
 
   /**
@@ -304,9 +501,13 @@ export class GraphContextService {
    * colgando sin objeto igual que antes.
    */
   private truncate(line: string): string {
-    if (line.length <= MAX_CHARS) return line;
+    return this.truncateTo(line, MAX_CHARS);
+  }
 
-    const sliced = line.slice(0, MAX_CHARS);
+  private truncateTo(line: string, maxChars: number): string {
+    if (line.length <= maxChars) return line;
+
+    const sliced = line.slice(0, maxChars);
     const lastSpace = sliced.lastIndexOf(' ');
     let trimmed = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced;
 
@@ -317,9 +518,9 @@ export class GraphContextService {
     // que importa: lo que sigue siempre empieza el próximo ítem (o el resto
     // de un label partido), así que nunca es puntuación aunque el corte ya
     // esté en un borde limpio.
-    const cortoEnBordeDeItem = /[,;.]$/.test(trimmed);
+    const cutAtItemBoundary = /[,;.]$/.test(trimmed);
 
-    if (!cortoEnBordeDeItem) {
+    if (!cutAtItemBoundary) {
       const lastComma = trimmed.lastIndexOf(', ');
       const lastSemicolon = trimmed.lastIndexOf('; ');
       const lastSeparator = Math.max(lastComma, lastSemicolon);

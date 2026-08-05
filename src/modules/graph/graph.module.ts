@@ -4,7 +4,9 @@ import { GraphNode, GraphNodeSchema } from '../../common/schemas/graph-node.sche
 import { GraphEdge, GraphEdgeSchema } from '../../common/schemas/graph-edge.schema';
 import { GraphMigration, GraphMigrationSchema } from '../../common/schemas/graph-migration.schema';
 import { Memory, MemorySchema } from '../../common/schemas/memory.schema';
+import { Errand, ErrandSchema } from '../../common/schemas/errand.schema';
 import { UtilsModule } from '../../common/utils/utils.module';
+import { CrossContextModule } from '../../common/settings/cross-context.module';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
 import { GraphMigrationService } from './graph-migration.service';
@@ -12,6 +14,7 @@ import { GraphUserKeyMigrationService } from './graph-user-key-migration.service
 import { GraphCacheService } from './graph-cache.service';
 import { GraphContextService } from './graph-context.service';
 import { GraphUserService } from './graph-user.service';
+import { ErrandService } from './errand.service';
 
 /**
  * Módulo autónomo del grafo. No importa `ChatModule` a propósito: tanto
@@ -30,8 +33,10 @@ import { GraphUserService } from './graph-user.service';
       { name: GraphEdge.name, schema: GraphEdgeSchema },
       { name: GraphMigration.name, schema: GraphMigrationSchema },
       { name: Memory.name, schema: MemorySchema },
+      { name: Errand.name, schema: ErrandSchema },
     ]),
     UtilsModule,
+    CrossContextModule,
   ],
   providers: [
     GraphService,
@@ -41,6 +46,7 @@ import { GraphUserService } from './graph-user.service';
     GraphCacheService,
     GraphContextService,
     GraphUserService,
+    ErrandService,
   ],
   exports: [
     GraphService,
@@ -48,6 +54,7 @@ import { GraphUserService } from './graph-user.service';
     GraphCacheService,
     GraphContextService,
     GraphUserService,
+    ErrandService,
     MongooseModule,
   ],
 })

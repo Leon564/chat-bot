@@ -17,6 +17,7 @@ import { MigrationService } from '../../common/utils/migration.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphModule } from '../graph/graph.module';
+import { CrossContextModule } from '../../common/settings/cross-context.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { GraphModule } from '../graph/graph.module';
     ]),
     GraphModule,
     UtilsModule,
+    CrossContextModule,
   ],
   providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
   // UtilsService ya no se declara acá: viene de UtilsModule (importado

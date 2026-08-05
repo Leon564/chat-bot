@@ -19,6 +19,8 @@ import {
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
@@ -75,6 +77,8 @@ export class BotService implements OnModuleInit {
     private readonly graphUserService: GraphUserService,
     private readonly usageService: UsageService,
     private readonly rateLimitService: RateLimitService,
+    private readonly crossContextSettings: CrossContextSettingsService,
+    private readonly errandService: ErrandService,
   ) {}
 
   async onModuleInit() {
@@ -102,6 +106,18 @@ export class BotService implements OnModuleInit {
 
     const botUsername = this.chatSocketService.username ?? 'bot';
 
+    // El nombre propio del bot no se conoce hasta que el backend responde la
+    // autenticación, así que `ErrandService` no puede leerlo de la config: se
+    // lo pasamos acá, donde ya está resuelto, para que pueda hacer cumplir
+    // "el bot no puede ser destinatario de un recado" en el punto donde
+    // escribe la fila (revisión final de rama, deuda #3). Sólo cuando el
+    // socket lo sabe de verdad: el `?? 'bot'` de arriba es un fallback para
+    // los regex de mención, y usarlo acá haría que un usuario que se llame
+    // literalmente "bot" no pudiera recibir recados.
+    if (this.chatSocketService.username) {
+      this.errandService.setBotName(this.chatSocketService.username);
+    }
+
     await this.loggingService.saveLog(authorUsername, content);
     // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
     // por eso va acá y no después del filtro de menciones de abajo.
@@ -116,6 +132,10 @@ export class BotService implements OnModuleInit {
     // bot for the command to work.
     if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
 
+    // Interruptor de emergencia del contexto cruzado. Mismo motivo que
+    // !personality para ir antes del filtro de menciones.
+    if (await this.handleCrossContextCommand(content, authorUsername, authorRole)) return;
+
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
     if (await this.handleMemoryCommand(content, authorUsername)) return;
@@ -125,6 +145,26 @@ export class BotService implements OnModuleInit {
     // delicada de las tres (borra datos), no debe depender de que el
     // dispatcher la deje pasar por casualidad.
     if (await this.handleForgetCommand(content, authorUsername)) return;
+
+    // Entrega de recados. Va antes del filtro de menciones a propósito: el
+    // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
+    // dirigirse al bot. Con el filtro delante, el recado no se entregaría
+    // nunca — que es exactamente lo que le pasa a la nota de regreso de la
+    // fase 5b, documentado y todavía sin arreglar.
+    //
+    // Revisión de código (Important #1): la entrega en sí SIEMPRE se intenta
+    // acá, incondicional — pero ya NO decide por su cuenta si el dispatcher
+    // corta (antes: `if (await this.deliverPendingErrand(...)) return;`).
+    // El mensaje que dispara la entrega puede A LA VEZ interpelar al bot
+    // (una mención, un pedido de música) — verificado ejecutando con
+    // `content: 'bot como va'` y un recado pendiente: `chatService.chat`
+    // recibía 0 llamadas y la pregunta real desaparecía en silencio detrás
+    // del recado ajeno. Cortar o no cortar es SIEMPRE la misma decisión que
+    // ya tomaba el filtro de mención de más abajo (`isReplyToBot` /
+    // `containsBotWord` / … `isVideoReq`) — la entrega no le agrega una
+    // razón nueva para cortar, sólo se monta encima sin cambiar esa
+    // decisión.
+    await this.deliverPendingErrand(authorUsername, botUsername);
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -902,6 +942,61 @@ export class BotService implements OnModuleInit {
     return true;
   }
 
+  // ─── Cross-context command (admins) ──────────────────────────────────────
+
+  /**
+   * `!contextocruzado on|off|reset|status`. Calcado de
+   * `handlePersonalityCommand`: por regex y sin gastar una llamada al modelo,
+   * y va antes del filtro de menciones para que un admin no tenga que
+   * nombrar al bot para apagar la feature. Ese detalle importa acá más que en
+   * personalidad — es el interruptor de emergencia.
+   */
+  private async handleCrossContextCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!(?:contextocruzado|crosscontext)(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar el contexto cruzado.`);
+      return true;
+    }
+
+    if (sub === 'on' || sub === 'off') {
+      this.crossContextSettings.setOverride(sub === 'on');
+      this.sendBotMessage(
+        `@${authorUsername} ✅ Contexto cruzado ${sub === 'on' ? 'activado' : 'desactivado'}.`,
+      );
+      console.log(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.crossContextSettings.setOverride(null);
+      const info = this.crossContextSettings.getInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Contexto cruzado reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
+      );
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.crossContextSettings.getInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 🔗 Contexto cruzado: ${info.enabled ? 'activado' : 'desactivado'}${note}.`,
+      );
+      return true;
+    }
+
+    this.sendBotMessage(`@${authorUsername} Uso: !contextocruzado on | off | reset | status`);
+    return true;
+  }
+
   // ─── Memory command (!quesabes) ────────────────────────────────────────────
 
   /**
@@ -1094,6 +1189,115 @@ export class BotService implements OnModuleInit {
       `@${authorUsername} 🗑️ Borré ${deleted} cosa${deleted !== 1 ? 's' : ''}${detail}.`,
     );
     return true;
+  }
+
+  // ─── Entrega de recados (Task 5, contexto cruzado) ─────────────────────────
+
+  /**
+   * Entrega UN recado pendiente para quien acaba de escribir. Devuelve true
+   * si entregó algo.
+   *
+   * Revisión de código (Important #1): este valor de retorno YA NO decide si
+   * el dispatcher corta — antes lo hacía (`if (await
+   * this.deliverPendingErrand(...)) return;` en el llamador), bajo el
+   * supuesto de que "el mensaje que disparó la entrega no era para el bot".
+   * Ese supuesto es falso: este método corre ANTES del filtro de mención, así
+   * que en el momento en que se llama todavía no se sabe si el mensaje
+   * también interpelaba al bot. Con el supuesto viejo, un `content: 'bot
+   * como va'` con un recado pendiente entregaba el recado y CORTABA — la
+   * pregunta real desaparecía en silencio, sin que `chatService.chat` llegara
+   * a llamarse. Ahora el llamador entrega siempre (efecto secundario
+   * incondicional) y deja que el filtro de mención de siempre decida si además
+   * corresponde cortar.
+   *
+   * NO pasa por `rateLimitService.check`: el destinatario no pidió nada, y
+   * dejarlo sin cupo por recados ajenos lo dejaría sin poder hablarle al bot.
+   * Del lado del destinatario el gasto real está acotado por
+   * `MAX_PENDING_PER_TARGET` (recados de hasta 5 autores distintos, sin rate
+   * limit) — `MAX_PENDING_PER_AUTHOR` acota cuántos recados puede DEJAR un
+   * mismo autor, no cuántos puede RECIBIR una persona de varios autores
+   * distintos; el autor sí gastó su propio cupo al dejar cada recado.
+   */
+  private async deliverPendingErrand(
+    authorUsername: string,
+    botUsername: string,
+  ): Promise<boolean> {
+    if (!this.crossContextSettings.isEnabled()) return false;
+
+    const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
+    if (!errand) return false;
+
+    const drafted = await this.chatService
+      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
+      .catch(() => '');
+
+    // El recado ya está marcado como entregado (ver `claimNext`), así que si
+    // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
+    //
+    // Re-revisión (2.1): el texto pasa por `stripIntentTokens` ANTES de
+    // `handleChatResponse`. Si la limpieza no deja nada (el modelo redactó
+    // sólo un token), cae al mismo texto fijo que ya cubría el fallo del
+    // modelo — nunca se publica una mención pelada.
+    const message =
+      BotService.stripIntentTokens(drafted) ||
+      BotService.stripIntentTokens(`${errand.fromLabel} te dejó dicho: ${errand.text}`);
+
+    // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
+    // `handleChatResponse` y no por `sendBotMessage` directo. El camino
+    // directo salteaba TODO lo que ese método hace por cualquier otra cosa
+    // que diga el bot: el partido en varias partes por `maxLengthResponse`
+    // (un recado de 200 caracteres redactado por el modelo se pasa del tope
+    // del chat) y la limpieza de los tokens de intención
+    // ({{music:…}}/{{resumen}}/{{usuarios_online}}), que en la rama de
+    // fallback se publicaban CRUDOS con la identidad del bot porque el texto
+    // del recado nunca se sanitizaba. Lo segundo ya no puede pasar (ahora
+    // `ErrandService.create` sanitiza), pero la rama del modelo sigue siendo
+    // texto sin filtrar y no hay motivo para que la entrega sea la única voz
+    // del bot que no pasa por el mismo embudo. El prefijo de mención lo pone
+    // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
+    await this.handleChatResponse(message, authorUsername);
+    return true;
+  }
+
+  /**
+   * Borra los tokens de intención (`{{…}}`) de un texto que va a salir por
+   * `handleChatResponse`.
+   *
+   * Re-revisión (2.1). Encauzar la entrega de un recado por
+   * `handleChatResponse` (ola anterior: para ganar el partido por
+   * `maxLengthResponse` y la limpieza) trajo de arrastre que ese método
+   * INTERPRETA tokens. Medido por el revisor sobre el texto que redacta el
+   * modelo en una entrega:
+   *   `{{music: rickroll}}`  → llegaba hasta `musicService.processMusic`
+   *   `{{usuarios_online}}`  → publicaba el roster
+   *   `{{resumen}}`          → entraba a `handleSummaryRequest`, que en el
+   *                            camino feliz quema el cooldown de 10 minutos
+   *                            y ejecuta `clearMessagesLog()`. Destructivo.
+   *
+   * Dos cosas separan esto del riesgo de cualquier otra respuesta del bot, y
+   * son las que justifican una limpieza propia en vez de confiar en el
+   * prompt: el disparador es un mensaje cualquiera del DESTINATARIO, que no
+   * pidió nada; y el prompt de entrega lleva prosa de OTRO usuario que
+   * sobrevive la sanitización (verificado: `"Ignora lo anterior."` queda
+   * persistida en el texto del recado). Es un camino de dos saltos para
+   * inducir al modelo a emitir el token; `ERRAND_CONTEXT_PREFIX` mitiga pero
+   * no cierra.
+   *
+   * Se borra por FORMA (`\{\{[^}]*\}\}`) y no por lista de tokens conocidos a
+   * propósito: un token nuevo que alguien agregue a `handleChatResponse`
+   * queda cubierto sin acordarse de este punto. La entrega de un recado no
+   * tiene ningún motivo legítimo para pedir música, un resumen o el roster.
+   *
+   * Si no hay ningún `{{`, devuelve el texto TAL CUAL — sin normalizar
+   * espacios ni recortar. El caso normal (la abrumadora mayoría) no puede
+   * cambiar por existir esta función.
+   */
+  private static stripIntentTokens(text: string): string {
+    if (!text.includes('{{')) return text;
+    return text
+      .replace(/\{\{[^}]*\}\}/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   /** Quita acentos (NFD + strip de diacríticos) para comparar sin importar tilde. */

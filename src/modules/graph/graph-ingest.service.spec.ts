@@ -596,6 +596,41 @@ describe('GraphIngestService — señales sociales', () => {
     });
   });
 
+  describe('ingestFactAbout', () => {
+    it('escribe el hecho desde el nodo del SUJETO, no del que habla', async () => {
+      const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+
+      await ingest.ingestFactAbout('lyna', 'likes', 'Berserk');
+
+      const edges = await graph.edgesFrom(lyna!._id);
+      expect(edges).toHaveLength(1);
+      expect(edges[0].type).toBe('likes');
+    });
+
+    it('no crea al usuario si no existe', async () => {
+      await ingest.ingestFactAbout('fantasma', 'likes', 'Berserk');
+
+      expect(await graph.findNode('user', 'fantasma')).toBeNull();
+    });
+
+    it('rechaza una relación fuera del enum', async () => {
+      const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+
+      await ingest.ingestFactAbout('lyna', 'odia_con_furia', 'Berserk');
+
+      expect(await graph.countEdgesFrom(lyna!._id)).toBe(0);
+    });
+
+    it('resuelve el sujeto preservando acentos', async () => {
+      const jose = await graph.upsertNode({ type: 'user', key: 'José', label: 'José' });
+      await graph.upsertNode({ type: 'user', key: 'Jose', label: 'Jose' });
+
+      await ingest.ingestFactAbout('José', 'likes', 'Berserk');
+
+      expect(await graph.countEdgesFrom(jose!._id)).toBe(1);
+    });
+  });
+
   describe('previousMessageAt (Task 4, fase 5b — reconocimiento de regreso)', () => {
     it('en el primer mensaje de alguien, previousMessageAt queda sin definir', async () => {
       await ingest.touchUser('Nico');

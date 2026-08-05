@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Types } from 'mongoose';
 import { GraphService } from './graph.service';
 import { GraphNodeDocument, NodeType } from '../../common/schemas/graph-node.schema';
 import { EdgeType, EdgeSource } from '../../common/schemas/graph-edge.schema';
@@ -393,24 +394,62 @@ export class GraphIngestService {
       const user = await this.touchUser(username);
       if (!user) return;
 
-      const resolved = await this.graph.resolveByAlias(cleanObject, ['work', 'genre', 'artist']);
-      const target =
-        resolved ??
-        (await this.graph.upsertNode({
-          type: 'topic',
-          key: cleanObject,
-          label: cleanObject,
-        }));
-      if (!target) return;
-
-      await this.graph.upsertEdge({
-        from: user._id,
-        to: target._id,
-        type: relation as EdgeType,
-        source,
-      });
+      await this.writeFactEdge(user._id, relation as EdgeType, cleanObject, source);
     } catch (err) {
       this.logger.warn(`Ingesta de hecho falló: ${(err as Error)?.message}`);
+    }
+  }
+
+  /** Resuelve el objeto contra un nodo conocido (o crea un `topic`) y escribe la arista. */
+  private async writeFactEdge(
+    userId: Types.ObjectId,
+    relation: EdgeType,
+    cleanObject: string,
+    source: EdgeSource,
+  ): Promise<void> {
+    const resolved = await this.graph.resolveByAlias(cleanObject, ['work', 'genre', 'artist']);
+    const target =
+      resolved ??
+      (await this.graph.upsertNode({ type: 'topic', key: cleanObject, label: cleanObject }));
+    if (!target) return;
+
+    await this.graph.upsertEdge({ from: userId, to: target._id, type: relation, source });
+  }
+
+  /**
+   * Igual que `ingestFact`, pero el sujeto es OTRA persona (contexto cruzado).
+   *
+   * Diferencia deliberada con `ingestFact`: acá se usa `findNode`, no
+   * `touchUser`. Un hecho sobre alguien NO puede crear a esa persona en el
+   * grafo — si el sujeto no existe, se descarta. Sin esa regla, el texto del
+   * modelo podría poblar el grafo de gente que nunca estuvo en la sala, y esa
+   * gente inventada después aparecería en la lectura cruzada como si fuera
+   * real.
+   *
+   * El resto de las validaciones son las mismas y siguen valiendo: la relación
+   * tiene que estar en `FACT_RELATIONS` y el objeto pasa por
+   * `sanitizeMemoryContent`.
+   */
+  async ingestFactAbout(
+    subject: string,
+    relation: string,
+    object: string,
+    source: EdgeSource = 'fact',
+  ): Promise<void> {
+    try {
+      if (!FACT_RELATIONS.includes(relation as EdgeType)) return;
+
+      const cleanObject = this.utilsService.sanitizeMemoryContent(object, {
+        minLen: FACT_OBJECT_MIN_LEN,
+      });
+      if (!cleanObject || cleanObject.length < FACT_OBJECT_MIN_LEN) return;
+
+      const user = await this.graph.findNode('user', subject);
+      if (!user) return;
+
+      await this.writeFactEdge(user._id, relation as EdgeType, cleanObject, source);
+    } catch (err) {
+      this.logger.warn(`Ingesta de hecho sobre tercero falló: ${(err as Error)?.message}`);
     }
   }
 }
