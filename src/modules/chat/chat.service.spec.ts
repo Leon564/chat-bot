@@ -1295,5 +1295,79 @@ describe('ChatService — instrumentación de tokens', () => {
       // dispatcher tiene que poder seguir cortando en `if (!response)`.
       expect(await service.chat('bot, algo', 'aria', 'leon')).toBe('');
     });
+
+    // ─── Re-revisión (2.3) — el acuse disparaba de más ─────────────────────
+    //
+    // El acuse también se activaba con una respuesta BIEN FORMADA sin prosa:
+    // `SAVE_FACT(likes, Berserk)` sola devolvía `''` antes de la rama y pasó
+    // a devolver `Listo 👍`, con el flag encendido Y apagado — una cuarta
+    // delta del flag apagado que nadie pidió. Y no es un caso raro: el
+    // prompt le pide al modelo emitir el verbo "al final de tu respuesta",
+    // así que "sólo el verbo" es una salida que el propio prompt fomenta.
+    //
+    // El acuse queda acotado al caso que de verdad lo necesita: cuando una
+    // captura se FUSIONÓ y se comió prosa que el usuario esperaba ver
+    // (`hasDanglingClose`, o el guard de "hay otro verbo adentro del
+    // objeto"). Un verbo bien formado y solo no perdió nada: el modelo
+    // eligió no decir nada más, y el comportamiento vuelve a ser el de
+    // antes de la rama.
+    describe('el acuse se limita a las capturas fusionadas (no a toda respuesta que quede vacía)', () => {
+      it.each([true, false])(
+        'un SAVE_FACT bien formado y solo devuelve vacío, no el acuse (crossContext=%s)',
+        async (enabled) => {
+          crossEnabled = enabled;
+          mockCompletion('SAVE_FACT(likes, Berserk)');
+
+          const out = await service.chat('me gusta berserk', 'aria', 'leon');
+
+          expect(out).toBe('');
+          // Y el hecho SÍ se ingirió: no se perdió nada que justifique acusar.
+          expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Berserk');
+        },
+      );
+
+      it('un SAVE_ERRAND bien formado y solo devuelve vacío, no el acuse', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_ERRAND(lyna, subi el video)');
+
+        const out = await service.chat('bot, decile a lyna algo', 'aria', 'leon');
+
+        expect(out).toBe('');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subi el video');
+      });
+
+      it('un SAVE_FACT_ABOUT bien formado y solo devuelve vacío, no el acuse', async () => {
+        crossEnabled = true;
+        mockCompletion('SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).toBe('');
+        expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('lyna', 'likes', 'Berserk');
+      });
+
+      it('con el flag APAGADO, un SAVE_FACT_ABOUT bien formado y solo tampoco acusa', async () => {
+        crossEnabled = false;
+        mockCompletion('SAVE_FACT_ABOUT(lyna, likes, Berserk)');
+
+        // Con el flag apagado no se ingiere nada, pero tampoco se perdió
+        // prosa: el texto que el usuario esperaba ver nunca existió.
+        expect(await service.chat('bot, algo', 'aria', 'leon')).toBe('');
+        expect(graphIngest.ingestFactAbout).not.toHaveBeenCalled();
+      });
+
+      it('un verbo malformado que sólo limpia la barrida final tampoco acusa', async () => {
+        crossEnabled = true;
+        // Dos argumentos donde el verbo exige tres: ningún extractor lo
+        // reconoce, lo borra `stripLeftoverVerbs`. No hubo captura fusionada,
+        // así que no hubo prosa comida.
+        mockCompletion('SAVE_FACT_ABOUT(likes, Berserk)');
+
+        const out = await service.chat('bot, algo', 'aria', 'leon');
+
+        expect(out).toBe('');
+        expect(out).not.toContain('SAVE_');
+      });
+    });
   });
 });

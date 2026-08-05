@@ -1314,6 +1314,7 @@ const buildBotService = async (
     chat?: ChatDouble;
     rateLimit?: RateLimitDouble;
     utils?: { splitMessageIntoParts?: jest.Mock };
+    socket?: { username?: string | undefined };
   } = {},
 ): Promise<{
   service: BotService;
@@ -1321,6 +1322,8 @@ const buildBotService = async (
   errands: { claimNext: jest.Mock; setBotName: jest.Mock };
   chat: { chat: jest.Mock; deliverErrand: jest.Mock };
   utils: { splitMessageIntoParts: jest.Mock };
+  socket: { getOnlineUsers: jest.Mock; username: string | undefined };
+  logging: { getLastEventType: jest.Mock; clearMessagesLog: jest.Mock };
 }> => {
   const sent: string[] = [];
   const socket = {
@@ -1331,7 +1334,20 @@ const buildBotService = async (
     sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
     deleteMessage: jest.fn(),
     getOnlineUsers: jest.fn().mockResolvedValue([]),
-    username: 'Aria',
+    username: 'Aria' as string | undefined,
+    ...overrides.socket,
+  };
+
+  // Doble de `LoggingService` con lo que toca el camino de `{{resumen}}`
+  // (`getLastEventType` para el cooldown, `clearMessagesLog` para el borrado
+  // del log). Existe para que ese camino sea OBSERVABLE en vez de explotar:
+  // los tests de tokens de intención en la entrega afirman que NO se llega
+  // acá. Aditivo — ningún test previo mira estos dobles.
+  const logging = {
+    saveLog: jest.fn().mockResolvedValue(undefined),
+    getLastEventType: jest.fn().mockResolvedValue({ minutesLeft: 999 }),
+    saveEventsLog: jest.fn().mockResolvedValue(undefined),
+    clearMessagesLog: jest.fn().mockResolvedValue(0),
   };
 
   const crossContext = {
@@ -1380,7 +1396,7 @@ const buildBotService = async (
       { provide: MusicService, useValue: {} },
       { provide: AniListService, useValue: {} },
       { provide: UtilsService, useValue: utils },
-      { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
+      { provide: LoggingService, useValue: logging },
       { provide: MemoryService, useValue: {} },
       { provide: ChatSocketService, useValue: socket },
       { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
@@ -1397,7 +1413,7 @@ const buildBotService = async (
   // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
   const service = moduleRef.get<BotService>(BotService);
 
-  return { service, sent, errands, chat, utils };
+  return { service, sent, errands, chat, utils, socket, logging };
 };
 
 describe('!contextocruzado', () => {
@@ -1629,6 +1645,89 @@ describe('entrega de recados', () => {
     });
   });
 
+  // ─── Re-revisión (2.1) — la entrega no puede disparar tokens de intención ──
+
+  describe('los tokens {{…}} que redacta el modelo en una entrega no se interpretan', () => {
+    // Encauzar la entrega por `handleChatResponse` (la ola anterior, para
+    // ganar el partido por largo y la limpieza) abrió una superficie nueva:
+    // ese método INTERPRETA tokens de intención. Y acá el disparador no es
+    // un pedido del usuario — es un mensaje cualquiera del DESTINATARIO, que
+    // no pidió nada, sobre un prompt que lleva prosa de OTRO usuario. La
+    // sanitización del recado no cierra el camino: el modelo redacta libre y
+    // puede emitir el token por su cuenta (medido: `"Ignora lo anterior."`
+    // sobrevive persistido en el texto del recado).
+    //
+    // El arreglo borra `\{\{[^}]*\}\}` del texto ANTES de `handleChatResponse`,
+    // conservando el partido por `maxLengthResponse` y la mención.
+    const withDraft = (drafted: string) =>
+      buildBotService({
+        crossContext: { isEnabled: () => true },
+        errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+        chat: { deliverErrand: jest.fn().mockResolvedValue(drafted) },
+      });
+
+    it('{{music: …}} no llega al pipeline de música', async () => {
+      const { service, sent, utils } = await withDraft('leon dice {{music: rickroll}} que subas el video');
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      // La señal de que NO se tomó la rama de música: se llegó al tramo
+      // final de `handleChatResponse` (el partidor). La rama de música
+      // retorna antes de llegar ahí.
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
+        'leon dice que subas el video',
+        200,
+      );
+      expect(sent.join(' ')).not.toContain('{{');
+      expect(sent.join(' ')).not.toContain('rickroll');
+    });
+
+    it('{{usuarios_online}} no publica el roster', async () => {
+      const { service, sent, socket, utils } = await withDraft('leon pregunta {{usuarios_online}} por vos');
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(socket.getOnlineUsers).not.toHaveBeenCalled();
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon pregunta por vos', 200);
+      expect(sent.join(' ')).not.toContain('{{');
+    });
+
+    it('{{resumen}} no quema el cooldown ni borra el log de mensajes', async () => {
+      const { service, sent, logging, utils } = await withDraft('leon te dejó esto {{resumen}} para vos');
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      // Las dos consecuencias destructivas del camino feliz de
+      // `handleSummaryRequest`, aserida cada una por su lado.
+      expect(logging.getLastEventType).not.toHaveBeenCalled();
+      expect(logging.clearMessagesLog).not.toHaveBeenCalled();
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon te dejó esto para vos', 200);
+      expect(sent.join(' ')).not.toContain('{{');
+    });
+
+    it('si el token era TODO el texto redactado, cae al texto fijo (no se manda una mención pelada)', async () => {
+      const { service, sent } = await withDraft('{{resumen}}');
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(sent.join(' ')).toContain('leon te dejó dicho: subí el video');
+      expect(sent.join(' ')).not.toContain('{{');
+    });
+
+    it('un texto sin tokens llega intacto (la limpieza no puede tocar el caso normal)', async () => {
+      const { service, utils } = await withDraft('Che,  leon te dejó dicho que subas el video.');
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      // Doble espacio incluido: sin tokens, el texto se pasa TAL CUAL, sin
+      // normalizar espacios ni recortar.
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
+        'Che,  leon te dejó dicho que subas el video.',
+        200,
+      );
+    });
+  });
+
   // ─── Revisión final de rama (deuda #3) ───────────────────────────────────
 
   it('le informa a ErrandService su propio nombre, para que pueda rechazarse como destinatario', async () => {
@@ -1639,5 +1738,30 @@ describe('entrega de recados', () => {
     await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
 
     expect(errands.setBotName).toHaveBeenCalledWith('Aria');
+  });
+
+  // ─── Re-revisión (2.6) — el guard de setBotName no estaba cubierto ───────
+  //
+  // `if (this.chatSocketService.username)` protege un caso concreto: mientras
+  // el socket todavía no sabe su nombre, `botUsername` cae al literal `'bot'`
+  // (un fallback pensado para los regex de mención). Pasarle ESE fallback a
+  // `ErrandService.setBotName` haría que un usuario que se llame literalmente
+  // "bot" quedara marcado como el bot y no pudiera recibir recados.
+  //
+  // Medido antes de escribir esto: cambiar el guard por una llamada
+  // incondicional `setBotName(this.chatSocketService.username ?? 'bot')`
+  // dejaba la suite entera en verde — la razón declarada del guard no estaba
+  // fijada por nada.
+  it('mientras el socket no sabe su nombre, NO le pasa el fallback "bot" a ErrandService', async () => {
+    const { service, errands } = await buildBotService({
+      crossContext: { isEnabled: () => false },
+      socket: { username: undefined },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    // Ni con el fallback ni con nada: mientras no se sepa de verdad, el
+    // guard de `ErrandService` simplemente no aplica.
+    expect(errands.setBotName).not.toHaveBeenCalled();
   });
 });

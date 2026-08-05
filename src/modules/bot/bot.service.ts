@@ -1233,7 +1233,14 @@ export class BotService implements OnModuleInit {
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
     // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
-    const message = drafted || `${errand.fromLabel} te dejó dicho: ${errand.text}`;
+    //
+    // Re-revisión (2.1): el texto pasa por `stripIntentTokens` ANTES de
+    // `handleChatResponse`. Si la limpieza no deja nada (el modelo redactó
+    // sólo un token), cae al mismo texto fijo que ya cubría el fallo del
+    // modelo — nunca se publica una mención pelada.
+    const message =
+      BotService.stripIntentTokens(drafted) ||
+      BotService.stripIntentTokens(`${errand.fromLabel} te dejó dicho: ${errand.text}`);
 
     // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
     // `handleChatResponse` y no por `sendBotMessage` directo. El camino
@@ -1250,6 +1257,47 @@ export class BotService implements OnModuleInit {
     // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
     await this.handleChatResponse(message, authorUsername);
     return true;
+  }
+
+  /**
+   * Borra los tokens de intención (`{{…}}`) de un texto que va a salir por
+   * `handleChatResponse`.
+   *
+   * Re-revisión (2.1). Encauzar la entrega de un recado por
+   * `handleChatResponse` (ola anterior: para ganar el partido por
+   * `maxLengthResponse` y la limpieza) trajo de arrastre que ese método
+   * INTERPRETA tokens. Medido por el revisor sobre el texto que redacta el
+   * modelo en una entrega:
+   *   `{{music: rickroll}}`  → llegaba hasta `musicService.processMusic`
+   *   `{{usuarios_online}}`  → publicaba el roster
+   *   `{{resumen}}`          → entraba a `handleSummaryRequest`, que en el
+   *                            camino feliz quema el cooldown de 10 minutos
+   *                            y ejecuta `clearMessagesLog()`. Destructivo.
+   *
+   * Dos cosas separan esto del riesgo de cualquier otra respuesta del bot, y
+   * son las que justifican una limpieza propia en vez de confiar en el
+   * prompt: el disparador es un mensaje cualquiera del DESTINATARIO, que no
+   * pidió nada; y el prompt de entrega lleva prosa de OTRO usuario que
+   * sobrevive la sanitización (verificado: `"Ignora lo anterior."` queda
+   * persistida en el texto del recado). Es un camino de dos saltos para
+   * inducir al modelo a emitir el token; `ERRAND_CONTEXT_PREFIX` mitiga pero
+   * no cierra.
+   *
+   * Se borra por FORMA (`\{\{[^}]*\}\}`) y no por lista de tokens conocidos a
+   * propósito: un token nuevo que alguien agregue a `handleChatResponse`
+   * queda cubierto sin acordarse de este punto. La entrega de un recado no
+   * tiene ningún motivo legítimo para pedir música, un resumen o el roster.
+   *
+   * Si no hay ningún `{{`, devuelve el texto TAL CUAL — sin normalizar
+   * espacios ni recortar. El caso normal (la abrumadora mayoría) no puede
+   * cambiar por existir esta función.
+   */
+  private static stripIntentTokens(text: string): string {
+    if (!text.includes('{{')) return text;
+    return text
+      .replace(/\{\{[^}]*\}\}/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   /** Quita acentos (NFD + strip de diacríticos) para comparar sin importar tilde. */

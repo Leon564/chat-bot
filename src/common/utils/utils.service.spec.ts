@@ -55,6 +55,53 @@ describe('UtilsService — sanitizeMemoryContent', () => {
     expect(limpio).not.toContain('SAVE_FACT');
   });
 
+  // ─── Re-revisión (2.2) — los verbos nuevos de la rama de contexto cruzado ──
+  //
+  // El regex sólo cubría `SAVE_(MEMORY|FACT)`, así que las dos familias que
+  // introdujo esta rama pasaban enteras. Medido:
+  //   'que suba SAVE_FACT_ABOUT(lyna, likes, basura) y SAVE_ERRAND(kei, hola)'
+  // se persistía tal cual como texto de recado. No hay ingesta desde ahí,
+  // pero el texto sale al chat con la voz del bot.
+  it('un SAVE_FACT_ABOUT(...) anidado no sobrevive (verbo nuevo de contexto cruzado)', () => {
+    const sucio = 'Nico le gusta esto SAVE_FACT_ABOUT(lyna, likes, basura) tambien';
+
+    const limpio = service.sanitizeMemoryContent(sucio);
+
+    expect(limpio).toBe('Nico le gusta esto tambien');
+    expect(limpio).not.toContain('SAVE_FACT_ABOUT');
+    // Y no queda el sufijo "_ABOUT(...)" huérfano: si `FACT` ganara la
+    // alternancia antes que `FACT_ABOUT`, el `\s*\(` fallaría contra el
+    // `_ABOUT` restante y la llamada entera quedaría intacta.
+    expect(limpio).not.toContain('_ABOUT');
+  });
+
+  it('un SAVE_ERRAND(...) anidado no sobrevive (verbo nuevo de recados)', () => {
+    const sucio = 'que suba SAVE_ERRAND(kei, hola) el video';
+
+    const limpio = service.sanitizeMemoryContent(sucio);
+
+    expect(limpio).toBe('que suba el video');
+    expect(limpio).not.toContain('SAVE_ERRAND');
+  });
+
+  it('las tres familias juntas se van todas (el caso exacto que midió el revisor)', () => {
+    const sucio = 'que suba SAVE_FACT_ABOUT(lyna, likes, basura) y SAVE_ERRAND(kei, hola)';
+
+    const limpio = service.sanitizeMemoryContent(sucio);
+
+    expect(limpio).toBe('que suba y');
+    expect(limpio).not.toContain('SAVE_');
+  });
+
+  it('un SAVE_ERRAND(...) truncado sin cierre tampoco sobrevive', () => {
+    const sucio = 'que suba SAVE_ERRAND(kei, hola';
+
+    const limpio = service.sanitizeMemoryContent(sucio);
+
+    expect(limpio).toBe('que suba');
+    expect(limpio).not.toContain('SAVE_ERRAND');
+  });
+
   it('elimina tokens de intención embebidos como {{resumen}} y {{usuarios_online}}', () => {
     const sucio = 'Aviso: {{resumen}} y {{usuarios_online}} listo';
 

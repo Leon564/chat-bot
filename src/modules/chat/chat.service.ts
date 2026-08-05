@@ -281,8 +281,18 @@ export class ChatService {
       // (revisión final de rama, Important #4).
       const modelContent = content;
 
+      /**
+       * ¿Alguna captura se FUSIONÓ y se comió prosa que no le pertenecía?
+       *
+       * Re-revisión (2.3): es la condición que de verdad justifica el acuse
+       * fijo, y reemplaza al `!content.trim()` a secas que había antes. Ver
+       * el punto donde se usa, más abajo.
+       */
+      let mergedCapture = false;
+
       if (useMemory) {
         const about = this.extractFactsAboutFromResponse(content);
+        mergedCapture = mergedCapture || about.mergedCapture;
         if (about.facts.length > 0 || about.cleanContent !== content) {
           content = about.cleanContent;
         }
@@ -298,6 +308,7 @@ export class ChatService {
         // ningún recado, pero el texto se limpia igual — si no, la llamada
         // cruda saldría al chat.
         const errandsResult = this.extractErrandsFromResponse(content);
+        mergedCapture = mergedCapture || errandsResult.mergedCapture;
         if (errandsResult.errands.length > 0 || errandsResult.cleanContent !== content) {
           content = errandsResult.cleanContent;
         }
@@ -344,6 +355,7 @@ export class ChatService {
 
       if (useMemory && ChatService.hasSaveFact(content)) {
         const factResults = this.extractFactsFromResponse(content);
+        mergedCapture = mergedCapture || factResults.mergedCapture;
         content = factResults.cleanContent;
 
         // Verificación adicional: el token debería estar preservado por extractFactsFromResponse
@@ -427,7 +439,22 @@ export class ChatService {
         // y no inventa una confirmación de algo que quizá no se guardó.
         // Cuando el modelo directamente no dijo nada, se deja vacío como
         // siempre: ahí no hay nada que reemplazar.
-        if (!content.trim() && modelContent.trim()) {
+        //
+        // Re-revisión (2.3): el disparador es `mergedCapture`, no
+        // `!content.trim()` a secas. Con la condición vieja, una respuesta
+        // BIEN FORMADA sin prosa —`SAVE_FACT(likes, Berserk)` sola— pasaba de
+        // devolver `''` (comportamiento anterior a la rama) a devolver
+        // `Listo 👍`, con el flag encendido Y apagado: una cuarta delta del
+        // flag apagado. Y no es un caso raro: el prompt le pide al modelo
+        // emitir el verbo "al final de tu respuesta", así que "sólo el verbo"
+        // es una salida que el propio prompt fomenta.
+        //
+        // `mergedCapture` es la señal exacta de "se perdió contenido que el
+        // usuario esperaba ver": marca las capturas que se COMIERON texto que
+        // no les pertenecía (`hasDanglingClose`, o el guard de "hay otro verbo
+        // adentro del objeto"). Un verbo bien formado y solo no perdió nada —
+        // el modelo eligió no decir nada más — y vuelve a devolver `''`.
+        if (!content.trim() && modelContent.trim() && mergedCapture) {
           content = ChatService.ACK_WITHOUT_TEXT;
         }
       }
@@ -1045,15 +1072,19 @@ escribas nada después del delimitador.`
   private extractFactsAboutFromResponse(content: string): {
     cleanContent: string;
     facts: Array<{ subject: string; relation: string; object: string }>;
+    mergedCapture: boolean;
   } {
     const facts: Array<{ subject: string; relation: string; object: string }> = [];
     const regex = ChatService.createFactAboutRegex();
     let match: RegExpExecArray | null;
+    let mergedCapture = false;
 
     while ((match = regex.exec(content)) !== null) {
       const subject = match[1].trim();
       const relation = match[2].trim().toLowerCase();
       const object = match[3].trim();
+
+      if (ChatService.isMergedCapture(object)) mergedCapture = true;
 
       if (
         subject &&
@@ -1077,7 +1108,30 @@ escribas nada después del delimitador.`
     // Limpieza de última instancia: una llamada truncada que el regex de
     // arriba no pudo matchear como completa (ver `createDanglingFactAboutRegex`).
     cleanContent = cleanContent.replace(ChatService.createDanglingFactAboutRegex(), '').trim();
-    return { cleanContent, facts };
+    return { cleanContent, facts, mergedCapture };
+  }
+
+  /**
+   * `true` si el objeto/texto capturado se comió contenido que no le
+   * pertenecía — o sea, si la captura se FUSIONÓ (re-revisión 2.3).
+   *
+   * Reúne las DOS señales que los extractores ya usaban por separado para
+   * rechazar una captura, y les da un nombre: `hasDanglingClose` (un `)` de
+   * más respecto a los `(` del propio objeto) y "hay otro verbo textual
+   * adentro del objeto". Las dos significan lo mismo desde el punto de vista
+   * del usuario: el regex retrocedió hasta el final de la respuesta y se
+   * tragó de paso la prosa que venía después del `)` que en realidad cerraba
+   * la llamada.
+   *
+   * Deliberadamente NO incluye las otras razones de rechazo (sujeto vacío,
+   * sujeto más largo que `FACT_ABOUT_SUBJECT_MAX_LEN`, relación u objeto
+   * vacíos): ahí no se comió nada, la llamada simplemente no era válida. Esa
+   * distinción es justo lo que acota el acuse fijo a los casos que lo
+   * necesitan.
+   */
+  private static isMergedCapture(captured: string): boolean {
+    if (!captured) return false;
+    return /SAVE_(FACT|ERRAND)/i.test(captured) || ChatService.hasDanglingClose(captured);
   }
 
   /**
@@ -1159,14 +1213,18 @@ escribas nada después del delimitador.`
   private extractErrandsFromResponse(content: string): {
     cleanContent: string;
     errands: Array<{ forUser: string; text: string }>;
+    mergedCapture: boolean;
   } {
     const errands: Array<{ forUser: string; text: string }> = [];
     const regex = ChatService.createErrandRegex();
     let match: RegExpExecArray | null;
+    let mergedCapture = false;
 
     while ((match = regex.exec(content)) !== null) {
       const forUser = match[1].trim();
       const text = match[2].trim();
+
+      if (ChatService.isMergedCapture(text)) mergedCapture = true;
 
       if (
         forUser &&
@@ -1185,7 +1243,7 @@ escribas nada después del delimitador.`
     // Limpieza de última instancia: una llamada truncada que el regex de
     // arriba no pudo matchear como completa (ver `createDanglingErrandRegex`).
     cleanContent = cleanContent.replace(ChatService.createDanglingErrandRegex(), '').trim();
-    return { cleanContent, errands };
+    return { cleanContent, errands, mergedCapture };
   }
 
   /**
@@ -1208,15 +1266,19 @@ escribas nada después del delimitador.`
   private extractFactsFromResponse(content: string): {
     cleanContent: string;
     facts: Array<{ relation: string; object: string }>;
+    mergedCapture: boolean;
   } {
     const facts: Array<{ relation: string; object: string }> = [];
 
     const factRegex = ChatService.createSaveFactRegex();
     let match: RegExpExecArray | null;
+    let mergedCapture = false;
 
     while ((match = factRegex.exec(content)) !== null) {
       const relation = match[1].trim().toLowerCase();
       const object = match[2].trim();
+
+      if (ChatService.isMergedCapture(object)) mergedCapture = true;
 
       // Re-review (verificado empíricamente): el lookahead que decide dónde
       // cierra una llamada (ver `createSaveFactRegex`) exige que el ')' esté
@@ -1271,7 +1333,7 @@ escribas nada después del delimitador.`
     // Limpiar líneas vacías múltiples.
     cleanContent = cleanContent.replace(/\n\s*\n\s*\n/g, '\n\n');
 
-    return { cleanContent, facts };
+    return { cleanContent, facts, mergedCapture };
   }
 
   /**

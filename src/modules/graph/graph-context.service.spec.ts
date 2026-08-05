@@ -17,7 +17,7 @@ import {
   MAX_CHARS_OTHER,
   LAST_NODE_WINDOW_MS,
   RETURNING_AFTER_DAYS,
-  MAX_USER_WORDS,
+  MAX_USER_NGRAM_WORDS,
 } from './graph-context.service';
 import { MIN_CANDIDATES } from './graph.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
@@ -610,13 +610,77 @@ describe('GraphContextService', () => {
       await service.build('leon', longMessage);
 
       expect(spy).toHaveBeenCalled();
-      const terms = spy.mock.calls[0][0];
-      // Tope duro: 3 tamaños de n-grama sobre a lo sumo MAX_USER_WORDS palabras.
-      expect(terms.length).toBeLessThanOrEqual(MAX_USER_WORDS * 3);
-      // Y muy por debajo de los ~600 de antes — si alguien saca el `.slice`,
-      // esta aserción se cae sola.
-      expect(terms.length).toBeLessThan(100);
+      const terms: string[] = spy.mock.calls[0][0];
+
+      // ─── Re-revisión (2.4) — cuál es EXACTAMENTE el tope ─────────────────
+      //
+      // El tope viejo (`.slice(0, 20)` sobre las palabras, antes de armar los
+      // tres tamaños) apagaba la feature en silencio para cualquier mención
+      // después de la palabra 20 — el mismo defecto que decía evitar, corrido
+      // del umbral 1 al 21 (medido: 25 palabras de relleno + `lyna` en la 26
+      // no resolvía). Ahora el tope se aplica SÓLO a los n-gramas de más de
+      // una palabra, que son los que multiplican el trabajo.
+
+      // 1) Los unigramas recorren el mensaje COMPLETO, deduplicados: 200
+      //    palabras distintas → 200 términos de una palabra.
+      const unigrams = terms.filter((t) => !t.includes(' '));
+      expect(unigrams).toHaveLength(200);
+
+      // 2) Los bi/trigramas SÍ están topeados, y ése es el límite real:
+      //    (MAX_USER_NGRAM_WORDS - 1) bigramas + (MAX_USER_NGRAM_WORDS - 2)
+      //    trigramas = 37 con el valor actual.
+      const multiWord = terms.filter((t) => t.includes(' '));
+      expect(multiWord).toHaveLength(
+        MAX_USER_NGRAM_WORDS - 1 + (MAX_USER_NGRAM_WORDS - 2),
+      );
+
+      // 3) Y no se arma ningún bigrama más allá de la ventana: el par
+      //    (20, 21) queda afuera, el (18, 19) adentro.
+      expect(multiWord).toContain('palabra18 palabra19');
+      expect(multiWord).not.toContain('palabra20 palabra21');
+
+      // 4) Muy por debajo de los ~600 de antes (3 tamaños sobre 200 palabras),
+      //    que es el número que motivó el tope.
+      expect(terms.length).toBeLessThan(250);
       spy.mockRestore();
+    });
+
+    it('Re-revisión (2.4) — una mención MÁS ALLÁ de la ventana de n-gramas sigue resolviendo', async () => {
+      // El caso exacto que midió el revisor contra el tope viejo: 25 palabras
+      // de relleno y `lyna` en la posición 26. Con `.slice(0, 20)` sobre las
+      // palabras, la oración cruzada no aparecía; con `"che lyna"` sí. Es
+      // decir: el tope no evitaba el apagado silencioso, sólo corría el
+      // umbral. Ahora los unigramas ven el mensaje entero.
+      const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+      const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: lyna._id, to: work._id, type: 'asked_about', source: 'fact' });
+
+      const filler = Array.from({ length: 25 }, (_, i) => `bla${i}`).join(' ');
+
+      const line = await service.build('leon', `${filler} lyna`);
+
+      expect(line).toContain('Sobre lyna:');
+    });
+
+    it('Re-revisión (2.4) — un nombre de DOS palabras tardío sí queda fuera de la ventana (el límite que queda)', async () => {
+      // La contracara honesta del punto anterior: los bi/trigramas siguen
+      // topeados, así que un nombre de varias palabras mencionado después de
+      // la palabra 20 NO resuelve. Es el límite real que queda y está acá
+      // para que nadie lo descubra en producción.
+      const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+      const ash = await graph.upsertNode({ type: 'user', key: 'sleepy ash', label: 'Sleepy Ash' });
+      const work = await graph.upsertNode({ type: 'work', key: 'anilist:1', label: 'Berserk' });
+      await graph.upsertEdge({ from: leon._id, to: work._id, type: 'likes', source: 'fact' });
+      await graph.upsertEdge({ from: ash._id, to: work._id, type: 'asked_about', source: 'fact' });
+
+      const filler = Array.from({ length: 25 }, (_, i) => `bla${i}`).join(' ');
+
+      // Tardío (fuera de la ventana de bigramas): no resuelve.
+      expect(await service.build('leon', `${filler} sleepy ash`)).not.toContain('Sobre Sleepy Ash');
+      // Temprano (dentro de la ventana): sí resuelve.
+      expect(await service.build('leon', 'che sleepy ash')).toContain('Sobre Sleepy Ash');
     });
 
     it('el tope no rompe la resolución de una mención que aparece tarde en el mensaje corto', async () => {

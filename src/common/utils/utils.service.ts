@@ -38,11 +38,13 @@ export class UtilsService {
    * or (b) be rendered verbatim by the chat client and abuse other users:
    *   - HTML tags + entities (delegated to cleanHtmlFromMessage)
    *   - Bot intent tokens like {{resumen}} / {{usuarios_online}}
-   *   - SAVE_MEMORY()/LOAD_MEMORY() and SAVE_FACT()/LOAD_FACT() calls
+   *   - Every memory verb: SAVE/LOAD_MEMORY, _FACT, _FACT_ABOUT and _ERRAND
    *     (defence against nested injection — SAVE_FACT was added in Task 4 of
    *     fase 4b, when it replaced SAVE_MEMORY as the memory-emitting token;
-   *     without stripping it too, a user could nest a SAVE_FACT(...) inside
-   *     the object of another fact and have it survive sanitisation)
+   *     SAVE_FACT_ABOUT and SAVE_ERRAND came with cross-user context. Without
+   *     stripping them too, a user could nest one inside the object of
+   *     another fact — or inside the text of an errand — and have it survive
+   *     sanitisation)
    *   - BBCode media tags [img|image|audio|video]url[/...]
    *   - The leading ^#hex color prefix used by sendBotMessage
    *   - <@user> mentions (kept as @user so the recall reads naturally
@@ -71,7 +73,22 @@ export class UtilsService {
     // existe. `[^)]*` ya no puede cruzar un ')', así que si no hay ninguno
     // en el resto del string, consume hasta el final y el `)` opcional
     // simplemente no matchea nada.
-    s = s.replace(/\b(SAVE|LOAD)_(MEMORY|FACT)\s*\([^)]*\)?/gi, '');
+    // Re-revisión (2.2): las tres familias de verbos, no sólo
+    // `SAVE_(MEMORY|FACT)`. La rama de contexto cruzado agregó
+    // `SAVE_FACT_ABOUT` y `SAVE_ERRAND` y este patrón no se movió, así que
+    // pasaban enteros. Medido:
+    //   'que suba SAVE_FACT_ABOUT(lyna, likes, basura) y SAVE_ERRAND(kei, hola)'
+    // se persistía TAL CUAL como texto de recado. No hay ingesta desde ahí
+    // (la entrega no pasa por los extractores), pero el texto puede salir al
+    // chat con la voz del bot.
+    //
+    // `FACT_ABOUT` va ANTES que `FACT` en la alternancia: la alternancia de
+    // JavaScript es de primera coincidencia, así que con el orden inverso
+    // `FACT` matchearía el prefijo y el `\s*\(` siguiente fallaría contra el
+    // `_ABOUT` que queda, dejando la llamada intacta. Mismo orden y mismo
+    // motivo que `ChatService.createLeftoverVerbRegex` — si alguien agrega un
+    // cuarto verbo, hay que sumarlo en los dos lados.
+    s = s.replace(/\b(SAVE|LOAD)_(FACT_ABOUT|MEMORY|FACT|ERRAND)\s*\([^)]*\)?/gi, '');
     s = s.replace(/\[(img|image|audio|video)(?:\s+[a-z]+="[^"]*")*\][^[\]]*\[\/\1\]/gi, '');
     s = s.replace(/^\s*\^#[0-9a-fA-F]{3,8}\s+/, '');
     s = s.replace(/[\x00-\x1f\x7f]+/g, ' ');

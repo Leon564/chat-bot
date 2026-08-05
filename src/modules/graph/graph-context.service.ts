@@ -50,25 +50,35 @@ const CROSS_CONTEXT_EDGE_TYPES: EdgeType[] = ['asked_about', 'likes', 'recommend
 const MAX_USER_NGRAM_SIZE = 3;
 
 /**
- * Cuántas palabras del mensaje se consideran al buscar un nombre de usuario
- * (revisión final de rama, deuda #4).
+ * Cuántas palabras iniciales del mensaje entran a los n-gramas de MÁS DE UNA
+ * palabra (bigramas y trigramas). Los unigramas NO están topeados: recorren
+ * el mensaje entero, deduplicados.
  *
- * `resolveMentionedUser` armaba n-gramas SIN ningún tope, mientras
- * `extractCandidates` —en este mismo archivo, para el mismo tipo de trabajo—
- * corta en `CANDIDATE_CAP = 40`. Con N palabras salen ~3N candidatas, todas
- * dentro de un solo `$in`, y esto corre en CADA mensaje: un mensaje de 200
- * palabras eran ~600 términos por mensaje.
+ * Historia, porque el tope anterior se justificó con un argumento falso
+ * (re-revisión, punto 2.4). `resolveMentionedUser` armaba n-gramas sin ningún
+ * tope: con N palabras salen ~3N candidatas dentro de un solo `$in`, y esto
+ * corre en CADA mensaje — un mensaje de 200 palabras eran ~600 términos. El
+ * primer arreglo topeó las PALABRAS (`words.slice(0, 20)`) diciendo que así
+ * se evitaba "apagar la feature en silencio para mensajes largos". Eso es
+ * falso y se midió: con 25 palabras de relleno y `lyna` en la posición 26 la
+ * oración cruzada NO aparecía, y con `"che lyna"` sí. El tope no evitaba el
+ * apagado silencioso: sólo corría el umbral de la palabra 1 a la 21.
  *
- * Se topea la cantidad de PALABRAS y no la de candidatas (que sería el calco
- * literal de `CANDIDATE_CAP`) porque el bucle recorre los tamaños de 3 hacia
- * 1: cortar por cantidad de candidatas gastaría todo el presupuesto en
- * trigramas y nunca llegaría a los unigramas, que es la forma en que se
- * escribe la mayoría de los nombres — la feature se apagaría en silencio
- * justo para los mensajes largos. Con este tope el máximo queda en
- * 20 + 19 + 18 = 57 candidatas, del mismo orden de magnitud que
- * `CANDIDATE_CAP`, y los tres tamaños siguen representados.
+ * La forma correcta separa las dos cosas, porque no cuestan lo mismo:
+ *   - Unigramas: 1 término por palabra distinta. Es como se escribe la
+ *     abrumadora mayoría de los nombres, así que topearlos ES apagar la
+ *     feature. Van sobre el mensaje completo, deduplicados.
+ *   - Bi/trigramas: 2 términos por palabra, y sólo sirven para nombres de
+ *     varias palabras, que son la minoría. Acá sí vale un tope.
+ *
+ * EL LÍMITE REAL QUE QUEDA (cubierto por test en
+ * `graph-context.service.spec.ts`): un nombre de UNA palabra resuelve esté
+ * donde esté en el mensaje; un nombre de DOS O TRES palabras sólo resuelve si
+ * empieza dentro de las primeras `MAX_USER_NGRAM_WORDS` palabras. El techo de
+ * términos por mensaje queda en `palabras distintas + 19 + 18` (los bigramas
+ * y trigramas de la ventana), contra los ~3N de antes del primer arreglo.
  */
-export const MAX_USER_WORDS = 20;
+export const MAX_USER_NGRAM_WORDS = 20;
 
 /**
  * Ventana dentro de la cual `props.lastNode` todavía cuenta como "lo último
@@ -278,19 +288,31 @@ export class GraphContextService {
       .replace(/[<>@]/g, ' ')
       .split(/\s+/)
       .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
-      .filter(Boolean)
-      // Tope de trabajo por mensaje — ver `MAX_USER_WORDS`.
-      .slice(0, MAX_USER_WORDS);
+      .filter(Boolean);
 
-    const candidates: string[] = [];
-    for (let size = MAX_USER_NGRAM_SIZE; size >= 1; size--) {
-      for (let i = 0; i + size <= words.length; i++) {
-        candidates.push(words.slice(i, i + size).join(' '));
+    // Un `Set` y no un array: deduplica los unigramas de un mensaje repetitivo
+    // antes de que lleguen al `$in`. Ver `MAX_USER_NGRAM_WORDS` para el
+    // reparto (unigramas sin tope, bi/trigramas topeados) y por qué.
+    const candidates = new Set<string>();
+
+    // Bi/trigramas: sólo sobre la ventana inicial — son los que multiplican
+    // el trabajo (2 términos por palabra) y sólo sirven para nombres de
+    // varias palabras.
+    const ngramWords = words.slice(0, MAX_USER_NGRAM_WORDS);
+    for (let size = MAX_USER_NGRAM_SIZE; size >= 2; size--) {
+      for (let i = 0; i + size <= ngramWords.length; i++) {
+        candidates.add(ngramWords.slice(i, i + size).join(' '));
       }
     }
-    if (candidates.length === 0) return null;
 
-    const nodes = await this.graph.findUserNodesByKeys(candidates);
+    // Unigramas: el mensaje COMPLETO. Topearlos era apagar la feature en
+    // silencio para cualquier mención tardía — el defecto medido que este
+    // reparto corrige.
+    for (const word of words) candidates.add(word);
+
+    if (candidates.size === 0) return null;
+
+    const nodes = await this.graph.findUserNodesByKeys([...candidates]);
     const usable = nodes.filter((n) => n.key !== self);
     if (usable.length === 0) return null;
 
