@@ -50,6 +50,10 @@ const noopCrossContextSettings = {
  */
 const noopErrandService = {
   claimNext: jest.fn().mockResolvedValue(null),
+  // `BotService` le informa su propio nombre en cada mensaje (revisión final
+  // de rama, deuda #3): sin este miembro, el doble explota con "not a
+  // function" en los describes que despachan un mensaje.
+  setBotName: jest.fn(),
 };
 
 /**
@@ -1290,6 +1294,7 @@ type CrossContextDouble = {
 
 type ErrandDouble = {
   claimNext?: jest.Mock;
+  setBotName?: jest.Mock;
 };
 
 type ChatDouble = {
@@ -1308,12 +1313,14 @@ const buildBotService = async (
     errands?: ErrandDouble;
     chat?: ChatDouble;
     rateLimit?: RateLimitDouble;
+    utils?: { splitMessageIntoParts?: jest.Mock };
   } = {},
 ): Promise<{
   service: BotService;
   sent: string[];
-  errands: { claimNext: jest.Mock };
+  errands: { claimNext: jest.Mock; setBotName: jest.Mock };
   chat: { chat: jest.Mock; deliverErrand: jest.Mock };
+  utils: { splitMessageIntoParts: jest.Mock };
 }> => {
   const sent: string[] = [];
   const socket = {
@@ -1339,6 +1346,7 @@ const buildBotService = async (
   // el propio "entrega de recados") no vean cambio de comportamiento.
   const errands = {
     claimNext: jest.fn().mockResolvedValue(null),
+    setBotName: jest.fn(),
     ...overrides.errands,
   };
 
@@ -1354,6 +1362,16 @@ const buildBotService = async (
     ...overrides.rateLimit,
   };
 
+  // Se declara aparte (antes iba inline en el provider) para poder aserir
+  // sobre `splitMessageIntoParts` desde los tests: es la señal observable de
+  // que la entrega de un recado pasa por `handleChatResponse` y no por
+  // `sendBotMessage` directo.
+  const utils = {
+    sleep: jest.fn().mockResolvedValue(undefined),
+    splitMessageIntoParts: jest.fn((text: string) => [text]),
+    ...overrides.utils,
+  };
+
   const moduleRef = await Test.createTestingModule({
     providers: [
       BotService,
@@ -1361,13 +1379,7 @@ const buildBotService = async (
       { provide: ChatService, useValue: chat },
       { provide: MusicService, useValue: {} },
       { provide: AniListService, useValue: {} },
-      {
-        provide: UtilsService,
-        useValue: {
-          sleep: jest.fn().mockResolvedValue(undefined),
-          splitMessageIntoParts: jest.fn((text: string) => [text]),
-        },
-      },
+      { provide: UtilsService, useValue: utils },
       { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
       { provide: MemoryService, useValue: {} },
       { provide: ChatSocketService, useValue: socket },
@@ -1385,7 +1397,7 @@ const buildBotService = async (
   // No se llama a onModuleInit, mismo motivo que en los describes de arriba.
   const service = moduleRef.get<BotService>(BotService);
 
-  return { service, sent, errands, chat };
+  return { service, sent, errands, chat, utils };
 };
 
 describe('!contextocruzado', () => {
@@ -1563,5 +1575,69 @@ describe('entrega de recados', () => {
     } as any);
 
     expect(errands.claimNext).not.toHaveBeenCalled();
+  });
+
+  // ─── Revisión final de rama (CRITICAL, tercera parte) ────────────────────
+
+  describe('la entrega pasa por handleChatResponse, no por sendBotMessage directo', () => {
+    // El camino directo salteaba el partido por `maxLengthResponse` y la
+    // limpieza de tokens de intención: un recado largo se publicaba entero
+    // (por encima del tope del chat) y un `{{music:…}}` en el texto salía
+    // crudo con la identidad del bot.
+    it('el texto redactado por el modelo se parte por maxLengthResponse', async () => {
+      const { service, sent, utils } = await buildBotService({
+        crossContext: { isEnabled: () => true },
+        errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+        chat: { deliverErrand: jest.fn().mockResolvedValue('parte uno parte dos') },
+        utils: { splitMessageIntoParts: jest.fn(() => ['parte uno', 'parte dos']) },
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      // Antes: UNA sola llamada a sendMessage con el texto entero, sin pasar
+      // nunca por el partidor.
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('parte uno parte dos', 200);
+      expect(sent).toHaveLength(2);
+      expect(sent[0]).toContain('parte uno');
+      expect(sent[1]).toContain('parte dos');
+    });
+
+    it('el texto fijo de respaldo también se parte (la rama que corre cuando el modelo falla)', async () => {
+      const { service, utils } = await buildBotService({
+        crossContext: { isEnabled: () => true },
+        errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+        chat: { deliverErrand: jest.fn().mockResolvedValue('') },
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
+        'leon te dejó dicho: subí el video',
+        200,
+      );
+    });
+
+    it('la primera parte lleva la mención del destinatario', async () => {
+      const { service, sent } = await buildBotService({
+        crossContext: { isEnabled: () => true },
+        errands: { claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'subí el video' }) },
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(sent[0]).toContain('<@lyna>');
+    });
+  });
+
+  // ─── Revisión final de rama (deuda #3) ───────────────────────────────────
+
+  it('le informa a ErrandService su propio nombre, para que pueda rechazarse como destinatario', async () => {
+    const { service, errands } = await buildBotService({
+      crossContext: { isEnabled: () => false },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(errands.setBotName).toHaveBeenCalledWith('Aria');
   });
 });

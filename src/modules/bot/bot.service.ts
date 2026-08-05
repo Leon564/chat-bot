@@ -106,6 +106,18 @@ export class BotService implements OnModuleInit {
 
     const botUsername = this.chatSocketService.username ?? 'bot';
 
+    // El nombre propio del bot no se conoce hasta que el backend responde la
+    // autenticación, así que `ErrandService` no puede leerlo de la config: se
+    // lo pasamos acá, donde ya está resuelto, para que pueda hacer cumplir
+    // "el bot no puede ser destinatario de un recado" en el punto donde
+    // escribe la fila (revisión final de rama, deuda #3). Sólo cuando el
+    // socket lo sabe de verdad: el `?? 'bot'` de arriba es un fallback para
+    // los regex de mención, y usarlo acá haría que un usuario que se llame
+    // literalmente "bot" no pudiera recibir recados.
+    if (this.chatSocketService.username) {
+      this.errandService.setBotName(this.chatSocketService.username);
+    }
+
     await this.loggingService.saveLog(authorUsername, content);
     // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
     // por eso va acá y no después del filtro de menciones de abajo.
@@ -1221,11 +1233,22 @@ export class BotService implements OnModuleInit {
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
     // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
-    const mensaje = redactado
-      ? `@${authorUsername} ${redactado}`
-      : `@${authorUsername} ${errand.fromLabel} te dejó dicho: ${errand.text}`;
+    const mensaje = redactado || `${errand.fromLabel} te dejó dicho: ${errand.text}`;
 
-    this.sendBotMessage(mensaje);
+    // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
+    // `handleChatResponse` y no por `sendBotMessage` directo. El camino
+    // directo salteaba TODO lo que ese método hace por cualquier otra cosa
+    // que diga el bot: el partido en varias partes por `maxLengthResponse`
+    // (un recado de 200 caracteres redactado por el modelo se pasa del tope
+    // del chat) y la limpieza de los tokens de intención
+    // ({{music:…}}/{{resumen}}/{{usuarios_online}}), que en la rama de
+    // fallback se publicaban CRUDOS con la identidad del bot porque el texto
+    // del recado nunca se sanitizaba. Lo segundo ya no puede pasar (ahora
+    // `ErrandService.create` sanitiza), pero la rama del modelo sigue siendo
+    // texto sin filtrar y no hay motivo para que la entrega sea la única voz
+    // del bot que no pasa por el mismo embudo. El prefijo de mención lo pone
+    // `handleChatResponse` (`<@usuario>`), por eso `mensaje` ya no lo trae.
+    await this.handleChatResponse(mensaje, authorUsername);
     return true;
   }
 
