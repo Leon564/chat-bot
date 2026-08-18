@@ -21,7 +21,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
-    "@distube/ytdl-core": "github:ToddyTheNoobDud/ytdl-core-stuff",
+    "@distube/ytdl-core": "github:Leon564/ytdl-core",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.0.0",
