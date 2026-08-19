@@ -608,6 +608,27 @@ export class MusicService {
     return searchResults.items.filter((item: any) => item.type === 'video');
   }
 
+  // El cliente TVHTML5 anuncia un itag 18 cuyas URLs responden 403 en la
+  // primera petición, con o sin cabecera Range. Como sus formatos suelen
+  // encabezar info.formats, chooseFormat() los elegía y la descarga moría
+  // antes de empezar; los de ANDROID / ANDROID_VR sí sirven el archivo.
+  private static readonly DEAD_FORMAT_CLIENT = /[?&]c=TVHTML5(&|$)/;
+
+  /**
+   * Los formatos adaptativos (audio-only) sólo entregan ~60s de media si la
+   * URL no lleva PoToken: cualquier rango posterior responde 403, así que
+   * `filter: "audioonly"` rompía toda canción de más de un minuto. Los
+   * progresivos (itag 18, audio+video) no tienen ese tope, y ffmpeg descarta
+   * la pista de video al convertir a mp3 en convertBufferToMp3().
+   */
+  private static isUsableProgressive(format: any): boolean {
+    return (
+      format.hasAudio &&
+      format.hasVideo &&
+      !MusicService.DEAD_FORMAT_CLIENT.test(format.url)
+    );
+  }
+
   private async processSingleMusicRequest(
     query: string,
     username: string,
@@ -655,10 +676,13 @@ export class MusicService {
         try {
           console.log(`⬇️ [DOWNLOAD] Intento ${attempt}/${maxDownloadRetries} - Descargando: ${video.url}`);
 
-          // Configurar opciones de ytdl progresivamente más agresivas
+          // Intentos 1-2 piden un formato progresivo; el 3 cae a audioonly,
+          // que sólo completa en videos cortos pero da mejor calidad cuando
+          // cabe. Ver isUsableProgressive() para el porqué.
           const ytdlOptions: any = {
-            quality: attempt === 1 ? "highestaudio" : (attempt === 2 ? "highest" : "lowest"),
-            filter: attempt <= 2 ? "audioonly" : undefined,
+            ...(attempt <= 2
+              ? { filter: MusicService.isUsableProgressive }
+              : { filter: "audioonly", quality: "highestaudio" }),
             // miniget defaults to 3 redirects which is too low for some YouTube
             // CDN chains; raising it avoids the intermittent
             // "Too many redirects" error reported in production.
@@ -687,10 +711,7 @@ export class MusicService {
           }
 
           if (attempt === 3) {
-            // Último intento con configuración más básica
-            console.log(`🔄 [DOWNLOAD] Intento final con configuración básica`);
-            delete ytdlOptions.filter;
-            ytdlOptions.quality = 'lowest';
+            console.log(`🔄 [DOWNLOAD] Intento final con audioonly (sólo completa en videos cortos)`);
           }
 
           // Obtener el stream
