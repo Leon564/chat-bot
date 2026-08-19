@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { LlmUsage, LlmUsageDocument, LlmKind } from '../../common/schemas/llm-usage.schema';
+import { LlmUsage, LlmKind } from '../../common/schemas/llm-usage.schema';
 
 export interface RecordUsageInput {
   kind: LlmKind;
@@ -34,8 +34,16 @@ const PRUNE_MARGIN = 500;
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
 
+  /**
+   * Va `Model<LlmUsage>` y NO `Model<LlmUsageDocument>` a proposito. El campo
+   * `model` de esta coleccion choca con el metodo `model()` que trae
+   * `mongoose.Document`, asi que en la interseccion `LlmUsage & Document` ese
+   * campo queda tipado `string & (funcion)` y `create()` rechaza un string
+   * pelado. Con el tipo crudo el documento hidratado sigue siendo el mismo en
+   * runtime y el create vuelve a tipar contra los campos del schema.
+   */
   constructor(
-    @InjectModel(LlmUsage.name) private readonly usageModel: Model<LlmUsageDocument>,
+    @InjectModel(LlmUsage.name) private readonly usageModel: Model<LlmUsage>,
   ) {}
 
   async record(input: RecordUsageInput): Promise<void> {
