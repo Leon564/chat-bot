@@ -61,6 +61,16 @@ export class MusicService {
    */
   private readonly pending: MusicRequest[] = [];
 
+  /**
+   * Turno de entrada a la descarga, en orden de llegada. La búsqueda corre
+   * de a 3 en paralelo, así que sin esto el orden en que los pedidos llegan
+   * al `downloadSem` es el orden en que TERMINAN de buscar: una búsqueda
+   * lenta dejaba que un pedido posterior se le colara en la descarga. Cada
+   * pedido espera el turno del anterior antes de pedir su permiso y suelta
+   * el suyo recién después de haberse formado en el semáforo.
+   */
+  private downloadTurn: Promise<void> = Promise.resolve();
+
   private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden" | "uguu";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
@@ -560,6 +570,11 @@ export class MusicService {
     };
     this.pending.push(request);
 
+    const prevTurn = this.downloadTurn;
+    let releaseTurn!: () => void;
+    this.downloadTurn = new Promise<void>((resolve) => (releaseTurn = resolve));
+    let turnReleased = false;
+
     const isVideo = request.kind === 'video';
     const tag = isVideo ? '🎬' : '🎵';
     console.log(
@@ -579,12 +594,18 @@ export class MusicService {
       console.log(`🎯 [FOUND] "${video.title}" - ${video.url}`);
 
       // ── Etapa 2: descarga + transcodificación (serializada) ──────────────
+      await prevTurn;
       this.setStage(request, 'downloading');
-      const prepared = await this.downloadSem.run(() =>
+      // `run` se forma en el semáforo de forma sincrónica, así que al soltar
+      // el turno en la línea siguiente este pedido ya está en la fila.
+      const downloadPromise = this.downloadSem.run(() =>
         isVideo
           ? this.prepareVideoFile(video, request.username)
           : this.prepareAudioFile(video, request.username),
       );
+      turnReleased = true;
+      releaseTurn();
+      const prepared = await downloadPromise;
 
       // ── Etapa 3: subida (se superpone con la descarga del siguiente) ─────
       this.setStage(request, 'uploading');
@@ -595,6 +616,10 @@ export class MusicService {
       console.error(`${tag} [ERROR] Error procesando "${request.query}":`, error);
       throw error instanceof Error ? error : new Error(String(error));
     } finally {
+      // Si falló antes de formarse (búsqueda sin resultados, ytsr caído), el
+      // turno se pasa recién cuando le toque: soltarlo ya dejaría al
+      // siguiente adelantarse a los que siguen buscando delante suyo.
+      if (!turnReleased) void prevTurn.then(releaseTurn);
       const idx = this.pending.indexOf(request);
       if (idx !== -1) this.pending.splice(idx, 1);
     }
@@ -610,9 +635,14 @@ export class MusicService {
     request.stage = stage;
     if (!request.onProgress) return;
 
-    const ahead = this.pending.filter(
-      (r) => r !== request && (r.stage === 'downloading' || r.stage === 'uploading'),
-    ).length;
+    // `pending` está en orden de llegada y la descarga respeta ese orden
+    // (`downloadTurn`), así que va adelante todo el que llegó antes y todavía
+    // no la soltó — incluido quien sigue buscando. Los que están en
+    // 'uploading' no demoran a nadie: contarlos le anunciaba "hay 1 pedido
+    // antes que el tuyo" a quien iba a empezar a descargar en el acto.
+    const ahead = this.pending
+      .slice(0, this.pending.indexOf(request))
+      .filter((r) => r.stage !== 'uploading').length;
 
     const text =
       stage === 'searching' && ahead > 0

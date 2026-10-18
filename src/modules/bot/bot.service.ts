@@ -21,6 +21,7 @@ import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
+import { MusicProgress } from '../../common/interfaces';
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y

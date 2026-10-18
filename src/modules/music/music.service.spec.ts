@@ -120,7 +120,7 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       await service.processMusic('cancion de prueba', 'alice');
 
       expect(enqueueSpy).not.toHaveBeenCalled();
-      expect(service.getQueueStatus()).toEqual({ isProcessing: false, queueLength: 0 });
+      expect(service.getQueueStatus()).toMatchObject({ isProcessing: false, queueLength: 0 });
     });
 
     it('el texto contiene el título y la URL cacheada', async () => {
@@ -149,7 +149,7 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       const result = await service.processMusic('otra cancion', 'bob');
 
       expect(enqueueSpy).toHaveBeenCalledTimes(1);
-      expect(enqueueSpy).toHaveBeenCalledWith('otra cancion', 'bob');
+      expect(enqueueSpy).toHaveBeenCalledWith('otra cancion', 'bob', undefined);
       expect(result.text).toContain('<@bob>');
       // Sin candidato cacheado no hay nada que verificar con HEAD.
       expect(fetchMock).not.toHaveBeenCalled();
@@ -296,5 +296,89 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
       expect(enqueueSpy).toHaveBeenCalledTimes(2);
       expect(result.text).toContain('<@bob>');
     });
+  });
+});
+
+describe('MusicService — orden de la cola y posición reportada', () => {
+  let service: MusicService;
+  const internals = () => service as any;
+
+  /** Promesa resoluble a mano, para decidir desde el test cuándo termina cada búsqueda. */
+  const deferred = <T>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  beforeEach(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MusicService,
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        { provide: GraphCacheService, useValue: { findTrack: jest.fn(), invalidateTrack: jest.fn() } },
+        { provide: GraphService, useValue: new GraphService({} as any, {} as any) },
+      ],
+    }).compile();
+    service = moduleRef.get<MusicService>(MusicService);
+
+    jest.spyOn(internals(), 'publishPreparedFile').mockImplementation(async (_p: any, video: any) => ({
+      text: video.title,
+      track: null,
+    }));
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('la descarga respeta el orden de llegada aunque una búsqueda posterior termine antes', async () => {
+    const searches: Record<string, ReturnType<typeof deferred<any[]>>> = {
+      a: deferred<any[]>(),
+      b: deferred<any[]>(),
+    };
+    jest.spyOn(internals(), 'searchYouTube').mockImplementation((q: string) => searches[q].promise);
+    const downloadOrder: string[] = [];
+    jest.spyOn(internals(), 'prepareAudioFile').mockImplementation(async (video: any) => {
+      downloadOrder.push(video.title);
+      return { path: video.title };
+    });
+
+    const pa = internals().runPipeline({ query: 'a', username: 'u1', kind: 'audio' });
+    const pb = internals().runPipeline({ query: 'b', username: 'u2', kind: 'audio' });
+
+    searches.b.resolve([{ title: 'b', url: 'x' }]);
+    await flushMicrotasks();
+    expect(downloadOrder).toEqual([]); // b no se cuela mientras a sigue buscando
+
+    searches.a.resolve([{ title: 'a', url: 'x' }]);
+    await Promise.all([pa, pb]);
+    expect(downloadOrder).toEqual(['a', 'b']);
+  });
+
+  it('una búsqueda que falla no traba la cola de los que vienen detrás', async () => {
+    jest.spyOn(internals(), 'searchYouTube').mockImplementation(async (q: string) =>
+      q === 'a' ? [] : [{ title: q, url: 'x' }],
+    );
+    jest.spyOn(internals(), 'prepareAudioFile').mockImplementation(async (video: any) => ({ path: video.title }));
+
+    const pa = internals().runPipeline({ query: 'a', username: 'u1', kind: 'audio' });
+    const pb = internals().runPipeline({ query: 'b', username: 'u2', kind: 'audio' });
+
+    await expect(pa).rejects.toThrow(/No se encontraron/);
+    await expect(pb).resolves.toMatchObject({ text: 'b' });
+    expect(service.getQueueStatus().queueLength).toBe(0);
+  });
+
+  it('la posición no cuenta pedidos que ya están subiendo', async () => {
+    const uploading = { query: 'z', username: 'u0', stage: 'uploading' };
+    const downloading = { query: 'y', username: 'u0', stage: 'downloading' };
+    const onProgress = jest.fn();
+    const request = { query: 'a', username: 'u1', stage: 'queued', onProgress };
+
+    internals().pending.push(uploading, request);
+    internals().setStage(request, 'searching');
+    expect(onProgress).not.toHaveBeenCalled(); // nadie adelante de verdad
+
+    internals().pending.splice(0, internals().pending.length, uploading, downloading, request);
+    internals().setStage(request, 'searching');
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ position: 1 }));
   });
 });
