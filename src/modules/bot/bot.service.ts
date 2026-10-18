@@ -389,7 +389,7 @@ export class BotService implements OnModuleInit {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     this.musicService
-      .processMusic(query, authorUsername)
+      .processMusic(query, authorUsername, this.queueFeedback(authorUsername))
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
@@ -406,6 +406,19 @@ export class BotService implements OnModuleInit {
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
       });
+  }
+
+  /**
+   * Avisa en el chat cuando el pedido tiene gente adelante. Sólo se manda el
+   * aviso de cola (no el de "descargando"/"subiendo"): con el pipeline por
+   * etapas esas fases son cortas, y un mensaje por cada una sería ruido.
+   * Es fire-and-forget — el pipeline ignora cualquier error de acá.
+   */
+  private queueFeedback(authorUsername: string) {
+    return (update: MusicProgress): void => {
+      if (update.stage !== 'searching' || update.position < 1) return;
+      this.sendBotMessage(`@${authorUsername} ${update.text}`);
+    };
   }
 
   // ─── AniList ───────────────────────────────────────────────────────────────
@@ -617,7 +630,7 @@ export class BotService implements OnModuleInit {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     this.musicService
-      .processVideo(query, authorUsername)
+      .processVideo(query, authorUsername, this.queueFeedback(authorUsername))
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);

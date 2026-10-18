@@ -5,6 +5,7 @@ import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import * as ytsr from "ytsr";
 import { Stream, Readable } from "stream";
+import { pipeline } from "stream/promises";
 import * as fs from "fs";
 import * as path from "path";
 import * as FormData from "form-data";
@@ -13,6 +14,8 @@ import * as he from "he";
 import YTDlpWrap from "yt-dlp-wrap";
 import {
   MusicRequest,
+  MusicStage,
+  MusicProgress,
   YouTubeCookie,
   QueueStatus,
   MusicResult,
@@ -20,14 +23,44 @@ import {
 } from "../../common/interfaces";
 import { GraphCacheService } from "../graph/graph-cache.service";
 import { GraphService } from "../graph/graph.service";
+import { Semaphore } from "./semaphore";
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
 @Injectable()
 export class MusicService {
-  private isProcessing: boolean;
-  private queue: MusicRequest[];
+  /**
+   * Pipeline por etapas. Antes había un único `while` serial: buscar →
+   * descargar → transcodificar → subir, y recién ahí empezaba el siguiente
+   * pedido. Con una canción no se notaba; con N la espera era N veces el
+   * pipeline entero, porque ninguna etapa se superponía con otra.
+   *
+   * Ahora cada pedido avanza por su cuenta y cada etapa tiene su propio
+   * límite, elegido según qué recurso satura:
+   *
+   *  - BÚSQUEDA (ytsr): sólo latencia de red y unos KB de metadata. Varias en
+   *    paralelo no cuestan nada y sacan la latencia del camino crítico.
+   *  - DESCARGA + ffmpeg: CPU y disco. Se mantiene en 1 a propósito — es la
+   *    etapa que de verdad hay que serializar para no reventar la RAM ni
+   *    poner a competir dos ffmpeg por el CPU.
+   *  - SUBIDA: puro I/O de red, el proceso está ocioso esperando. Dejarla en
+   *    paralelo con la descarga del siguiente tema es de donde sale la mayor
+   *    parte de la mejora: la canción 2 se descarga mientras la 1 sube.
+   */
+  private readonly searchSem = new Semaphore(3);
+  private readonly downloadSem = new Semaphore(1);
+  private readonly uploadSem = new Semaphore(2);
+
+  /**
+   * Pedidos vivos, en orden de llegada. Reemplaza al array `queue` que antes
+   * era a la vez cola de trabajo y fuente del estado; ahora el trabajo lo
+   * agendan los semáforos y esto sirve sólo para reportar posición y estado.
+   * Se saca la entrada en un `finally`, así un pedido que falla no queda
+   * contando para siempre en la posición de los demás.
+   */
+  private readonly pending: MusicRequest[] = [];
+
   private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden" | "uguu";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
@@ -56,9 +89,6 @@ export class MusicService {
     private readonly graphCacheService: GraphCacheService,
     private readonly graphService: GraphService,
   ) {
-    this.isProcessing = false;
-    this.queue = [];
-
     // Configurar servicio de subida desde variables de entorno
     this.uploadService =
       (this.configService.get<string>("music.uploadService") as
@@ -317,7 +347,11 @@ export class MusicService {
    * idénticos que ya están en vuelo — un acierto en cualquiera de los dos
    * casos saltea búsqueda, descarga, transcodificación y subida por completo.
    */
-  async processMusic(query: string, username: string): Promise<MusicResult> {
+  async processMusic(
+    query: string,
+    username: string,
+    onProgress?: (update: MusicProgress) => void,
+  ): Promise<MusicResult> {
     const cachedResult = await this.tryServeFromCache(query, username);
     if (cachedResult) {
       return cachedResult;
@@ -336,7 +370,7 @@ export class MusicService {
       }
     }
 
-    const pipelinePromise = this.enqueueMusicRequest(query, username);
+    const pipelinePromise = this.enqueueMusicRequest(query, username, onProgress);
 
     if (!normalizedQuery) {
       return pipelinePromise;
@@ -471,122 +505,130 @@ export class MusicService {
    * `processMusic` para que sea un punto de entrada único al pipeline
    * pesado — el que se dobla en los tests.
    */
-  private enqueueMusicRequest(query: string, username: string): Promise<MusicResult> {
-    return new Promise((resolve, reject) => {
-      const request: MusicRequest = {
-        query,
-        username,
-        kind: 'audio',
-        resolve,
-        reject,
-      };
-
-      this.queue.push(request);
-      console.log(
-        `🎵 [QUEUE] Solicitud añadida a la cola. Total en cola: ${this.queue.length}`
-      );
-
-      if (!this.isProcessing) {
-        this.processQueue();
-      }
-    });
+  private enqueueMusicRequest(
+    query: string,
+    username: string,
+    onProgress?: (update: MusicProgress) => void,
+  ): Promise<MusicResult> {
+    return this.runPipeline({ query, username, kind: 'audio', onProgress });
   }
 
   /**
-   * Procesa una solicitud de video (opt-in via VIDEO_ENABLED). Reuses the
-   * shared queue so audio and video stay serialized — no concurrent ffmpeg /
-   * upload pressure, and preserves the existing 5s spacing between items.
+   * Procesa una solicitud de video (opt-in via VIDEO_ENABLED). Comparte las
+   * mismas etapas y semáforos que el audio: la descarga/transcodificación
+   * sigue siendo de a una, así que un video pesado nunca corre su ffmpeg en
+   * paralelo con el de una canción.
    */
-  async processVideo(query: string, username: string): Promise<MusicResult> {
-    return new Promise((resolve, reject) => {
-      const request: MusicRequest = {
-        query,
-        username,
-        kind: 'video',
-        resolve,
-        reject,
-      };
-      this.queue.push(request);
-      console.log(
-        `🎬 [QUEUE] Solicitud de video añadida. Total en cola: ${this.queue.length}`
-      );
-      if (!this.isProcessing) this.processQueue();
-    });
+  async processVideo(
+    query: string,
+    username: string,
+    onProgress?: (update: MusicProgress) => void,
+  ): Promise<MusicResult> {
+    return this.runPipeline({ query, username, kind: 'video', onProgress });
   }
 
   /**
-   * Obtiene el estado de la cola de procesamiento
+   * Obtiene el estado de la cola de procesamiento, desglosado por etapa.
+   * `isProcessing` se mantiene por compatibilidad con el comando de debug.
    */
   getQueueStatus(): QueueStatus {
+    const count = (stage: MusicStage) =>
+      this.pending.filter((r) => r.stage === stage).length;
     return {
-      isProcessing: this.isProcessing,
-      queueLength: this.queue.length,
+      isProcessing: this.pending.length > 0,
+      queueLength: this.pending.length,
+      searching: count('searching'),
+      downloading: count('downloading'),
+      uploading: count('uploading'),
     };
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.isProcessing || this.queue.length === 0) {
-      return;
-    }
+  /**
+   * Lleva un pedido por las tres etapas. Cada `await sem.run(...)` es a la
+   * vez el turno y el límite de concurrencia de esa etapa, así que el código
+   * se lee secuencialmente aunque varios pedidos lo estén recorriendo a la
+   * vez en puntos distintos.
+   */
+  private async runPipeline(
+    spec: Pick<MusicRequest, 'query' | 'username' | 'kind' | 'onProgress'>,
+  ): Promise<MusicResult> {
+    const request: MusicRequest = {
+      ...spec,
+      stage: 'queued',
+      resolve: () => {},
+      reject: () => {},
+    };
+    this.pending.push(request);
 
-    this.isProcessing = true;
+    const isVideo = request.kind === 'video';
+    const tag = isVideo ? '🎬' : '🎵';
     console.log(
-      `🎵 [QUEUE] Iniciando procesamiento de cola. ${this.queue.length} elementos pendientes`
+      `${tag} [QUEUE] "${request.query}" encolada. Pendientes: ${this.pending.length}`,
     );
 
-    while (this.queue.length > 0) {
-      const request = this.queue.shift()!;
-
-      // Search-ahead: lanzamos la búsqueda ytsr del siguiente item ahora
-      // para que su latencia de red se superponga con la descarga+upload
-      // del item actual. La búsqueda es barata en RAM (sólo metadata), así
-      // que no rompe el principio de serializar el trabajo pesado.
-      // `.catch(() => null)` evita rejecciones no manejadas; el consumidor
-      // hace fallback a búsqueda inline cuando recibe null.
-      if (this.queue.length > 0 && !this.queue[0].prefetch) {
-        const next = this.queue[0];
-        next.prefetch = this.searchYouTube(next.query).catch((err) => {
-          console.warn(
-            `⚠️ [PREFETCH] Fallo precargando "${next.query}":`,
-            err instanceof Error ? err.message : err,
-          );
-          return null;
-        });
+    try {
+      // ── Etapa 1: búsqueda ────────────────────────────────────────────────
+      this.setStage(request, 'searching');
+      const videos = await this.searchSem.run(() =>
+        this.searchYouTube(request.query),
+      );
+      if (videos.length === 0) {
+        throw new Error(`No se encontraron resultados para "${request.query}"`);
       }
+      const video = videos[0] as any;
+      console.log(`🎯 [FOUND] "${video.title}" - ${video.url}`);
 
-      try {
-        const isVideo = request.kind === 'video';
-        const tag = isVideo ? '🎬' : '🎵';
-        console.log(
-          `${tag} [PROCESSING] Procesando: "${request.query}" para ${request.username}`
-        );
-        const prefetched = request.prefetch
-          ? (await request.prefetch) ?? undefined
-          : undefined;
-        if (prefetched) {
-          console.log(`✨ [PREFETCH] Usando búsqueda pre-cargada para "${request.query}"`);
-        }
-        const result = isVideo
-          ? await this.processSingleVideoRequest(request.query, request.username, prefetched)
-          : await this.processSingleMusicRequest(request.query, request.username, prefetched);
-        request.resolve(result);
-      } catch (error) {
-        console.error(`🎵 [ERROR] Error procesando "${request.query}":`, error);
-        request.reject(
-          error instanceof Error ? error : new Error(String(error))
-        );
-      }
+      // ── Etapa 2: descarga + transcodificación (serializada) ──────────────
+      this.setStage(request, 'downloading');
+      const prepared = await this.downloadSem.run(() =>
+        isVideo
+          ? this.prepareVideoFile(video, request.username)
+          : this.prepareAudioFile(video, request.username),
+      );
 
-      // Pequeña pausa entre items. Antes eran 5s "para no sobrecargar",
-      // pero como la cola ya es estrictamente serial (un único pipeline a
-      // la vez) la pausa larga sólo agregaba latencia sin proteger RAM.
-      if (this.queue.length > 0) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      // ── Etapa 3: subida (se superpone con la descarga del siguiente) ─────
+      this.setStage(request, 'uploading');
+      return await this.uploadSem.run(() =>
+        this.publishPreparedFile(prepared, video, request.username, isVideo),
+      );
+    } catch (error) {
+      console.error(`${tag} [ERROR] Error procesando "${request.query}":`, error);
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      const idx = this.pending.indexOf(request);
+      if (idx !== -1) this.pending.splice(idx, 1);
     }
+  }
 
-    this.isProcessing = false;
-    console.log(`🎵 [QUEUE] Cola de procesamiento completada`);
+  /**
+   * Marca la etapa y le avisa al usuario. La posición que se reporta es
+   * cuántos pedidos tiene por delante en la etapa pesada (la descarga): es
+   * el único número que de verdad predice la espera, porque búsqueda y
+   * subida corren en paralelo.
+   */
+  private setStage(request: MusicRequest, stage: MusicStage): void {
+    request.stage = stage;
+    if (!request.onProgress) return;
+
+    const ahead = this.pending.filter(
+      (r) => r !== request && (r.stage === 'downloading' || r.stage === 'uploading'),
+    ).length;
+
+    const text =
+      stage === 'searching' && ahead > 0
+        ? `⏳ Hay ${ahead} ${ahead === 1 ? 'pedido' : 'pedidos'} antes que el tuyo — sos el #${ahead + 1} en la cola.`
+        : stage === 'downloading'
+          ? `⬇️ Descargando "${request.query}"…`
+          : stage === 'uploading'
+            ? `☁️ Subiendo "${request.query}"…`
+            : '';
+
+    if (!text) return;
+    try {
+      request.onProgress({ stage, position: ahead, text });
+    } catch {
+      // El feedback es best-effort: nunca debe tumbar el pipeline.
+    }
   }
 
   /**
@@ -629,319 +671,193 @@ export class MusicService {
     );
   }
 
-  private async processSingleMusicRequest(
-    query: string,
+  /**
+   * Resultado de la etapa pesada: un archivo ya listo en disco. Nunca se
+   * devuelve el contenido en memoria — ese era el origen del pico de RAM.
+   */
+  private async prepareAudioFile(
+    video: any,
     username: string,
-    prefetched?: any[],
-  ): Promise<MusicResult> {
-    try {
-      // Si processQueue ya disparó la búsqueda mientras procesaba el item
-      // anterior, la reutilizamos. Si el prefetch falló (null/undefined)
-      // hacemos la búsqueda inline como fallback.
-      let videos = prefetched;
-      if (!videos) {
-        console.log(`🔍 [SEARCH] Buscando en YouTube: "${query}"`);
-        videos = await this.searchYouTube(query);
-      }
+  ): Promise<{ path: string }> {
+    const maxDurationMinutes =
+      this.configService.get<number>('music.maxDurationMinutes') || 8;
+    this.assertDurationWithin(video, maxDurationMinutes);
 
-      if (videos.length === 0) {
-        throw new Error(`No se encontraron resultados para "${query}"`);
-      }
+    const outputPath = this.tempFilePath('music', username, 'mp3');
 
-      const video = videos[0] as any;
-      console.log(
-        `🎯 [FOUND] Video encontrado: "${video.title}" - ${video.url}`
-      );
-
-      // Validar duración del video
-      const maxDurationMinutes = this.configService.get<number>('music.maxDurationMinutes') || 8;
-      if (video.duration && typeof video.duration === 'string') {
-        const durationMinutes = this.parseDurationToMinutes(video.duration);
-        console.log(`⏱️ [DURATION] Duración del video: ${video.duration} (${durationMinutes} min) - Límite: ${maxDurationMinutes} min`);
-        
-        if (durationMinutes > maxDurationMinutes) {
-          throw new Error(`El video es demasiado largo (${durationMinutes} min). El límite es de ${maxDurationMinutes} minutos.`);
-        }
-      }
-
-      // Intentar descarga con diferentes configuraciones
-      const maxDownloadRetries = 3;
-      let audioBuffer = null;
-      let lastError: unknown = null;
-
-      // Primero intentar con ytdl-core
-      console.log(`⬇️ [YTDL-CORE] Intentando descarga con @distube/ytdl-core...`);
-
-      for (let attempt = 1; attempt <= maxDownloadRetries; attempt++) {
-        try {
-          console.log(`⬇️ [DOWNLOAD] Intento ${attempt}/${maxDownloadRetries} - Descargando: ${video.url}`);
-
-          // Intentos 1-2 piden un formato progresivo; el 3 cae a audioonly,
-          // que sólo completa en videos cortos pero da mejor calidad cuando
-          // cabe. Ver isUsableProgressive() para el porqué.
-          const ytdlOptions: any = {
-            ...(attempt <= 2
-              ? { filter: MusicService.isUsableProgressive }
-              : { filter: "audioonly", quality: "highestaudio" }),
-            // miniget defaults to 3 redirects which is too low for some YouTube
-            // CDN chains; raising it avoids the intermittent
-            // "Too many redirects" error reported in production.
-            requestOptions: {
-              maxRedirects: 10,
-              maxRetries: 3,
-              maxReconnects: 2,
-              backoff: { inc: 500, max: 5000 },
-              headers: {
-                'User-Agent': this.getRandomUserAgent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-              },
-            },
-          };
-
-          // Configuración de headers más robusta
-          if (this.youtubeCookies) {
-            ytdlOptions.cookies = this.youtubeCookies;
-            console.log(`🍪 [YTDL] Usando cookies en intento ${attempt}`);
-          }
-
-          if (attempt >= 2) {
-            ytdlOptions.lang = 'en';
-          }
-
-          if (attempt === 3) {
-            console.log(`🔄 [DOWNLOAD] Intento final con audioonly (sólo completa en videos cortos)`);
-          }
-
-          // Obtener el stream
-          const audioStream =  ytdl(video.url, ytdlOptions);
-
-          // Convertir stream a buffer con timeout específico para este intento.
-          // 10s/20s/30s — un audio de YouTube que no empieza a fluir en
-          // ~15s casi nunca completa con éxito, así que extender los
-          // timeouts sólo retrasaba la caída al fallback yt-dlp.
-          console.log(`📦 [BUFFER] Convirtiendo stream a buffer (intento ${attempt})...`);
-          audioBuffer = await this.streamToBuffer(audioStream, attempt * 10000); // 10s, 20s, 30s
-          console.log(`✅ [BUFFER] Buffer creado exitosamente en intento ${attempt}: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-          break; // Salir del loop si fue exitoso
-
-        } catch (error) {
-          lastError = error;
-          const msg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [DOWNLOAD] Error en intento ${attempt}:`, msg);
-
-          // Some errors are not flaky — retrying with the same library will
-          // hit the same wall. Bail to the yt-dlp fallback right away.
-          if (/too many redirects|status code: 403|sign in to confirm/i.test(msg)) {
-            console.log(`⚡ [DOWNLOAD] Error no recuperable detectado, saltando a yt-dlp.`);
-            break;
-          }
-
-          if (attempt < maxDownloadRetries) {
-            const delay = attempt * 3000; // 3s, 6s, 9s
-            console.log(`⏱️ [DOWNLOAD] Esperando ${delay}ms antes del siguiente intento...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-        }
-      }
-
-      // Si ytdl-core falló, intentar con yt-dlp como fallback
-      if (!audioBuffer) {
-        console.log(`🔄 [YT-DLP] ytdl-core falló, verificando disponibilidad de yt-dlp...`);
-        
-        // Verificar si yt-dlp está disponible antes de intentar usarlo
-        const ytdlpAvailable = await this.isYtDlpAvailable();
-        
-        if (ytdlpAvailable) {
-          try {
-            console.log(`🔄 [YT-DLP] Intentando descarga con yt-dlp como fallback...`);
-            audioBuffer = await this.downloadWithYtDlp(video.url);
-            console.log(`✅ [YT-DLP] Descarga exitosa con yt-dlp: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-          } catch (ytdlpError) {
-            console.error(`❌ [YT-DLP] Error con yt-dlp:`, ytdlpError instanceof Error ? ytdlpError.message : ytdlpError);
-            throw new Error(`No se pudo descargar el audio con ningún método. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`);
-          }
-        } else {
-          console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, no se puede usar como fallback`);
-          throw new Error(`No se pudo descargar el audio. ytdl-core falló: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp no está disponible.`);
-        }
-      }
-
-      // Convertir a MP3
-      const tempDir = path.join(process.cwd(), 'temp');
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-
-      const sanitizedUsername = username.replace(/[^\w\-_.]/g, '').substring(0, 20) || 'user';
-      const filename = `music_${Date.now()}_${sanitizedUsername}.mp3`;
-      const outputPath = path.join(tempDir, filename);
-
-      await this.convertBufferToMp3(audioBuffer, outputPath);
-      console.log(`✅ [CONVERT] Audio convertido a MP3: ${outputPath}`);
-
-      // Subir archivo
+    // yt-dlp primero: resuelve PoToken, baja SÓLO el audio y ya entrega un
+    // mp3 128K escrito en disco. El camino viejo (ytdl-core) pedía un
+    // formato progresivo — audio+VIDEO, itag 18 — porque los adaptativos se
+    // cortan a los ~60s sin PoToken, y después tiraba la pista de video en
+    // ffmpeg: se descargaban 25-40 MB para quedarse con ~4 MB de audio.
+    if (await this.isYtDlpAvailable()) {
       try {
-        const uploadUrl = await this.uploadFile(outputPath);
-        console.log(`☁️ [UPLOAD] Archivo subido exitosamente: ${uploadUrl}`);
+        await this.downloadAudioWithYtDlp(video.url, outputPath);
+        console.log(
+          `✅ [YT-DLP] Audio listo: ${this.fileSizeMb(outputPath)} MB (sin re-codificar)`,
+        );
+        return { path: outputPath };
+      } catch (error) {
+        console.warn(
+          `⚠️ [YT-DLP] Falló, probando ytdl-core:`,
+          error instanceof Error ? error.message : error,
+        );
+        this.safeUnlink(outputPath);
+      }
+    }
 
-        // Limpiar archivo temporal
-        fs.unlinkSync(outputPath);
-        console.log(`🗑️ [CLEANUP] Archivo temporal eliminado: ${outputPath}`);
+    // Fallback ytdl-core. Se baja directo a un archivo temporal y se
+    // transcodifica desde disco: nada de Buffer.concat con la canción
+    // entera (que además duplicaba el pico al concatenar los chunks).
+    const rawPath = this.tempFilePath('raw', username, 'media');
+    let lastError: unknown = null;
 
-        const audioTag = this.buildAudioBBCode(uploadUrl, video);
-        return {
-          text: `🎵 <@${username}> Aquí tienes "${video.title}": ${audioTag}`,
-          track: {
-            title: video.title,
-            artist: video.author?.name ?? null,
-            thumb: video.bestThumbnail?.url ?? null,
-            youtubeUrl: video.url ?? null,
-            uploadUrl,
-            uploadService: this.serviceFromUploadUrl(uploadUrl),
+    // Dos intentos, no tres, y sin el backoff de 3s/6s/9s: la escalera vieja
+    // podía quemar más de un minuto por canción antes de rendirse, y eso se
+    // pagaba otra vez por cada pedido de la cola.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`⬇️ [YTDL-CORE] Intento ${attempt}/2 — ${video.url}`);
+        const ytdlOptions: any = {
+          filter: MusicService.isUsableProgressive,
+          requestOptions: {
+            maxRedirects: 10,
+            maxRetries: 3,
+            maxReconnects: 2,
+            backoff: { inc: 500, max: 5000 },
+            headers: {
+              'User-Agent': this.getRandomUserAgent(),
+              Accept:
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-us,en;q=0.5',
+              'Sec-Fetch-Mode': 'navigate',
+            },
           },
         };
-      } catch (uploadError) {
-        const uploadErrorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
+        if (this.youtubeCookies) ytdlOptions.cookies = this.youtubeCookies;
+        if (attempt === 2) ytdlOptions.lang = 'en';
 
-        // Si es un problema de conectividad, mantener el archivo y dar instrucciones
-        if (uploadErrorMsg.includes('temporalmente no disponibles')) {
-          console.log(`💾 [BACKUP] Manteniendo archivo local debido a problemas de conectividad: ${outputPath}`);
-          return { text: `🎵 <@${username}> Audio "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. El archivo se ha guardado localmente. Por favor, intenta nuevamente en unos minutos.`, track: null };
+        await this.streamToFile(ytdl(video.url, ytdlOptions), rawPath, 60_000);
+        console.log(`✅ [YTDL-CORE] Descargado: ${this.fileSizeMb(rawPath)} MB`);
+
+        await this.transcodeToMp3(rawPath, outputPath);
+        this.safeUnlink(rawPath);
+        return { path: outputPath };
+      } catch (error) {
+        lastError = error;
+        this.safeUnlink(rawPath);
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`❌ [YTDL-CORE] Intento ${attempt} falló:`, msg);
+        if (/too many redirects|status code: 403|sign in to confirm/i.test(msg)) {
+          break;
         }
-
-        // Para otros errores, limpiar archivo y relanzar error
-        fs.unlinkSync(outputPath);
-        throw uploadError;
       }
-    } catch (error) {
-      console.error(`❌ [ERROR] Error en procesamiento de música:`, error);
-      throw new Error(
-        `Error procesando música: ${error instanceof Error ? error.message : String(error)}`
-      );
     }
-  }
 
-  private convertToMp3(
-    inputStream: Readable,
-    outputPath: string
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      ffmpeg(inputStream)
-        .toFormat("mp3")
-        .audioBitrate(128)
-        .audioChannels(2)
-        .audioFrequency(44100)
-        .output(outputPath)
-        .on("end", () => {
-          console.log(`🔄 [FFMPEG] Conversión completada: ${outputPath}`);
-          resolve();
-        })
-        .on("error", (error) => {
-          console.error(`❌ [FFMPEG] Error en conversión:`, error);
-          reject(error);
-        })
-        .run();
-    });
+    this.safeUnlink(outputPath);
+    throw new Error(
+      `No se pudo descargar el audio con ningún método. Último error: ${
+        lastError instanceof Error ? lastError.message : lastError
+      }`,
+    );
   }
 
   /**
-   * Mirrors processSingleMusicRequest but keeps the video stream: searches
-   * YouTube, validates against MAX_VIDEO_DURATION, downloads a muxed
-   * audio+video format with ytdl-core (and yt-dlp as a fallback that merges
-   * separate streams into mp4), uploads, and returns a [video]url[/video]
-   * BBCode that the chat already knows how to render.
+   * Etapa pesada del camino de video: deja un mp4 listo en disco. Igual que
+   * el audio, nunca pasa por un Buffer — antes se bajaba el mp4 entero a RAM
+   * (hasta 5 minutos de video) sólo para escribirlo con writeFileSync.
    */
-  private async processSingleVideoRequest(
-    query: string,
+  private async prepareVideoFile(
+    video: any,
     username: string,
-    prefetched?: any[],
-  ): Promise<MusicResult> {
-    let videos = prefetched;
-    if (!videos) {
-      console.log(`🔍 [SEARCH] Buscando video en YouTube: "${query}"`);
-      videos = await this.searchYouTube(query);
-    }
-    if (videos.length === 0) throw new Error(`No se encontraron resultados para "${query}"`);
-
-    const video = videos[0] as any;
-    console.log(`🎯 [FOUND] Video: "${video.title}" - ${video.url}`);
-
+  ): Promise<{ path: string }> {
     const maxDur = this.configService.get<number>('video.maxDurationMinutes') || 5;
-    if (video.duration && typeof video.duration === 'string') {
-      const minutes = this.parseDurationToMinutes(video.duration);
-      if (minutes > maxDur) {
-        throw new Error(`El video es demasiado largo (${minutes} min). El límite es de ${maxDur} minutos.`);
-      }
-    }
+    this.assertDurationWithin(video, maxDur);
 
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-    const safeUser = username.replace(/[^\w\-_.]/g, '').substring(0, 20) || 'user';
-    const outputPath = path.join(tempDir, `video_${Date.now()}_${safeUser}.mp4`);
-
+    const outputPath = this.tempFilePath('video', username, 'mp4');
     let lastError: unknown = null;
-    let downloaded = false;
 
-    // ytdl-core: try to grab a single muxed mp4 (audio+video). Some YouTube
-    // videos no longer expose muxed formats, in which case we fall through
-    // to yt-dlp which can merge separate streams.
     try {
       const ytdlOptions: any = {
         quality: 'highest',
-        filter: (format: any) => format.hasVideo && format.hasAudio && (format.container === 'mp4' || !format.container),
+        filter: (format: any) =>
+          format.hasVideo &&
+          format.hasAudio &&
+          (format.container === 'mp4' || !format.container),
       };
       if (this.youtubeCookies) ytdlOptions.cookies = this.youtubeCookies;
 
-      const stream = ytdl(video.url, ytdlOptions);
-      const buffer = await this.streamToBuffer(stream, 5 * 60 * 1000);
-      fs.writeFileSync(outputPath, buffer);
-      console.log(`✅ [VIDEO] Descarga ytdl-core OK: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
-      downloaded = true;
+      await this.streamToFile(ytdl(video.url, ytdlOptions), outputPath, 5 * 60 * 1000);
+      console.log(`✅ [VIDEO] ytdl-core OK: ${this.fileSizeMb(outputPath)} MB`);
+      return { path: outputPath };
     } catch (error) {
       lastError = error;
-      console.error(`❌ [VIDEO] ytdl-core falló:`, error instanceof Error ? error.message : error);
+      this.safeUnlink(outputPath);
+      console.error(
+        `❌ [VIDEO] ytdl-core falló:`,
+        error instanceof Error ? error.message : error,
+      );
     }
 
-    if (!downloaded) {
-      const ytdlpOk = await this.isYtDlpAvailable();
-      if (!ytdlpOk) {
-        throw new Error(
-          `No se pudo descargar el video. ytdl-core falló: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp no está disponible.`,
-        );
-      }
-      try {
-        console.log(`🔄 [VIDEO] Probando yt-dlp como fallback`);
-        // -f best/bestvideo+bestaudio with mp4 merge — emits to outputPath.
-        await this.safeYtDlpExec(
-          [
-            video.url,
-            '-f', 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-            '--merge-output-format', 'mp4',
-            '-o', outputPath,
-            '--no-playlist',
-            '--quiet',
-            '--no-warnings',
-          ],
-          5 * 60 * 1000,
-        );
-        if (!fs.existsSync(outputPath)) throw new Error('yt-dlp no produjo archivo');
-        console.log(`✅ [VIDEO] Descarga yt-dlp OK`);
-        downloaded = true;
-      } catch (ytdlpError) {
-        throw new Error(
-          `No se pudo descargar el video. ytdl-core: ${lastError instanceof Error ? lastError.message : lastError}. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`,
-        );
-      }
+    if (!(await this.isYtDlpAvailable())) {
+      throw new Error(
+        `No se pudo descargar el video. ytdl-core falló: ${
+          lastError instanceof Error ? lastError.message : lastError
+        }. yt-dlp no está disponible.`,
+      );
     }
 
     try {
-      const uploadUrl = await this.uploadFile(outputPath);
-      console.log(`☁️ [VIDEO UPLOAD] OK: ${uploadUrl}`);
-      fs.unlinkSync(outputPath);
+      console.log(`🔄 [VIDEO] Probando yt-dlp como fallback`);
+      await this.safeYtDlpExec(
+        [
+          video.url,
+          '-f', 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+          '--merge-output-format', 'mp4',
+          '-o', outputPath,
+          '--no-playlist',
+          '--quiet',
+          '--no-warnings',
+        ],
+        5 * 60 * 1000,
+      );
+      if (!fs.existsSync(outputPath)) throw new Error('yt-dlp no produjo archivo');
+      console.log(`✅ [VIDEO] yt-dlp OK: ${this.fileSizeMb(outputPath)} MB`);
+      return { path: outputPath };
+    } catch (ytdlpError) {
+      this.safeUnlink(outputPath);
+      throw new Error(
+        `No se pudo descargar el video. ytdl-core: ${
+          lastError instanceof Error ? lastError.message : lastError
+        }. yt-dlp: ${ytdlpError instanceof Error ? ytdlpError.message : ytdlpError}`,
+      );
+    }
+  }
+
+  /**
+   * Etapa 3, común a audio y video: sube el archivo ya preparado, lo borra y
+   * arma el MusicResult. Es lo único que queda en el camino crítico una vez
+   * liberado el semáforo de descarga, así que correrla en paralelo con la
+   * descarga del siguiente pedido es seguro: sólo usa red y un descriptor.
+   */
+  private async publishPreparedFile(
+    prepared: { path: string },
+    video: any,
+    username: string,
+    isVideo: boolean,
+  ): Promise<MusicResult> {
+    const { path: filePath } = prepared;
+    try {
+      const uploadUrl = await this.uploadFile(filePath);
+      console.log(`☁️ [UPLOAD] OK: ${uploadUrl}`);
+      this.safeUnlink(filePath);
+
+      const body = isVideo
+        ? `[video]${uploadUrl}[/video]`
+        : this.buildAudioBBCode(uploadUrl, video);
+
       return {
-        text: `🎬 <@${username}> Aquí tienes "${video.title}": [video]${uploadUrl}[/video]`,
+        text: `${isVideo ? '🎬' : '🎵'} <@${username}> Aquí tienes "${video.title}": ${body}`,
         track: {
           title: video.title,
           artist: video.author?.name ?? null,
@@ -952,86 +868,129 @@ export class MusicService {
         },
       };
     } catch (uploadError) {
-      const msg = uploadError instanceof Error ? uploadError.message : String(uploadError);
+      const msg =
+        uploadError instanceof Error ? uploadError.message : String(uploadError);
+
       if (msg.includes('temporalmente no disponibles')) {
-        console.log(`💾 [VIDEO BACKUP] Manteniendo archivo local: ${outputPath}`);
-        return { text: `🎬 <@${username}> Video "${video.title}" procesado pero los servicios de subida están temporalmente no disponibles. Probá más tarde.`, track: null };
+        console.log(`💾 [BACKUP] Manteniendo archivo local: ${filePath}`);
+        return {
+          text: `${isVideo ? '🎬' : '🎵'} <@${username}> "${video.title}" se procesó pero los servicios de subida están temporalmente no disponibles. Probá de nuevo en unos minutos.`,
+          track: null,
+        };
       }
-      try { fs.unlinkSync(outputPath); } catch {}
+
+      this.safeUnlink(filePath);
       throw uploadError;
     }
   }
 
-  private async streamToBuffer(stream: Readable, timeoutMs: number = 5 * 60 * 1000): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      let totalSize = 0;
+  // ─── Utilidades de archivo/stream ──────────────────────────────────────────
 
-      stream.on('data', (chunk: Buffer) => {
-        chunks.push(chunk);
-        totalSize += chunk.length;
-        
-        // Log progreso cada 5MB
-        if (totalSize % (5 * 1024 * 1024) < chunk.length) {
-          console.log(`📦 [BUFFER] Descargado: ${(totalSize / 1024 / 1024).toFixed(1)} MB`);
-        }
-      });
-
-      stream.on('end', () => {
-        const buffer = Buffer.concat(chunks, totalSize);
-        console.log(`✅ [BUFFER] Stream completo: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
-        clearTimeout(timeout);
-        resolve(buffer);
-      });
-
-      stream.on('error', (error) => {
-        console.error(`❌ [BUFFER] Error en stream:`, error);
-        clearTimeout(timeout);
-        reject(error);
-      });
-
-      // Timeout configurable para el stream
-      const timeout = setTimeout(() => {
-        stream.destroy();
-        reject(new Error(`Timeout: El stream tardó más de ${timeoutMs / 1000} segundos`));
-      }, timeoutMs);
-    });
+  /** Valida la duración declarada por ytsr antes de gastar red y CPU. */
+  private assertDurationWithin(video: any, maxMinutes: number): void {
+    if (!video?.duration || typeof video.duration !== 'string') return;
+    const minutes = this.parseDurationToMinutes(video.duration);
+    console.log(
+      `⏱️ [DURATION] ${video.duration} (${minutes} min) — límite ${maxMinutes} min`,
+    );
+    if (minutes > maxMinutes) {
+      throw new Error(
+        `El video es demasiado largo (${minutes} min). El límite es de ${maxMinutes} minutos.`,
+      );
+    }
   }
 
-  private async convertBufferToMp3(buffer: Buffer, outputPath: string): Promise<void> {
-    const { Readable } = require('stream');
-    
+  /** Ruta temporal con el nombre de usuario saneado. Crea `temp/` si falta. */
+  private tempFilePath(prefix: string, username: string, ext: string): string {
+    const tempDir = path.join(process.cwd(), 'temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+    const safeUser =
+      username.replace(/[^\w\-_.]/g, '').substring(0, 20) || 'user';
+    return path.join(
+      tempDir,
+      `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${safeUser}.${ext}`,
+    );
+  }
+
+  private fileSizeMb(filePath: string): string {
+    try {
+      return (fs.statSync(filePath).size / 1024 / 1024).toFixed(2);
+    } catch {
+      return '0.00';
+    }
+  }
+
+  private safeUnlink(filePath: string): void {
+    try {
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {
+      // Limpieza best-effort — no vale la pena tumbar el pipeline por esto.
+    }
+  }
+
+  /**
+   * Vuelca un stream a disco respetando la contrapresión (`pipeline`), en vez
+   * del viejo `streamToBuffer` que acumulaba chunks y hacía `Buffer.concat`:
+   * eso mantenía el archivo entero en RAM y encima duplicaba el pico al
+   * concatenar. Acá la memoria usada es un par de chunks, sin importar si el
+   * archivo pesa 4 MB o 80 MB.
+   *
+   * El timeout destruye el stream, lo que hace fallar el `pipeline` y cierra
+   * el descriptor del archivo — sin fugas ni temporales a medio escribir.
+   */
+  private async streamToFile(
+    stream: Readable,
+    outputPath: string,
+    timeoutMs: number,
+  ): Promise<void> {
+    const timeout = setTimeout(() => {
+      stream.destroy(
+        new Error(`Timeout: el stream tardó más de ${timeoutMs / 1000} segundos`),
+      );
+    }, timeoutMs);
+
+    let logged = 0;
+    stream.on('data', (chunk: Buffer) => {
+      logged += chunk.length;
+      if (logged >= 5 * 1024 * 1024) {
+        logged = 0;
+        console.log(`📥 [STREAM] +5 MB → ${path.basename(outputPath)}`);
+      }
+    });
+
+    try {
+      await pipeline(stream, fs.createWriteStream(outputPath));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Transcodifica un archivo de disco a mp3. Se le pasa una RUTA y no un
+   * stream en memoria: ffmpeg abre el archivo él mismo y puede hacer seek,
+   * lo que además evita el `Readable` sintético que empujaba el buffer
+   * entero de una sin respetar contrapresión.
+   */
+  private transcodeToMp3(inputPath: string, outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Crear un stream readable desde el buffer
-      const bufferStream = new Readable({
-        read() {
-          this.push(buffer);
-          this.push(null); // Finalizar el stream
-        }
-      });
-
-      console.log(`🔄 [FFMPEG] Iniciando conversión desde buffer (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`);
-
-      ffmpeg(bufferStream)
-        .toFormat("mp3")
+      console.log(`🔄 [FFMPEG] Transcodificando ${path.basename(inputPath)} → mp3`);
+      ffmpeg(inputPath)
+        .toFormat('mp3')
         .audioBitrate(128)
         .audioChannels(2)
         .audioFrequency(44100)
         .output(outputPath)
-        .on("start", (commandLine) => {
-          console.log(`🔄 [FFMPEG] Comando: ${commandLine}`);
-        })
-        .on("progress", (progress) => {
+        .on('progress', (progress) => {
           if (progress.percent) {
-            console.log(`🔄 [FFMPEG] Progreso: ${Math.round(progress.percent)}%`);
+            console.log(`🔄 [FFMPEG] ${Math.round(progress.percent)}%`);
           }
         })
-        .on("end", () => {
-          console.log(`✅ [FFMPEG] Conversión completada desde buffer: ${outputPath}`);
+        .on('end', () => {
+          console.log(`✅ [FFMPEG] Listo: ${outputPath}`);
           resolve();
         })
-        .on("error", (error) => {
-          console.error(`❌ [FFMPEG] Error en conversión desde buffer:`, error);
+        .on('error', (error) => {
+          console.error(`❌ [FFMPEG] Error:`, error);
           reject(error);
         })
         .run();
@@ -1512,7 +1471,13 @@ export class MusicService {
     // unencoded for the resulting JSON to parse. encodeURI() produces exactly
     // that shape (e.g. `%7B%22parent%22:null,%22name%22:%22x.mp3%22%7D`).
     const xData = encodeURI(JSON.stringify({ parent: null, name: filename }));
-    const body = await fs.promises.readFile(filePath);
+    // Stream en vez de readFile: el endpoint acepta el binario crudo en el
+    // body, así que no hay razón para tener el archivo entero en RAM (el
+    // resto de los uploaders ya usaban createReadStream). Se manda
+    // Content-Length explícito porque sin él node-fetch cae a
+    // Transfer-Encoding: chunked, que este endpoint rechaza.
+    const { size } = await fs.promises.stat(filePath);
+    const body = fs.createReadStream(filePath);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60_000);
@@ -1525,6 +1490,7 @@ export class MusicService {
           headers: {
             Cookie: `auth=${authCookie}`,
             "Content-Type": "application/octet-stream",
+            "Content-Length": String(size),
             "X-Data": xData,
             "User-Agent": "chat-bot/1.0",
           },
@@ -1859,132 +1825,70 @@ export class MusicService {
     return userAgents[Math.floor(Math.random() * userAgents.length)];
   }
 
-  private async downloadWithYtDlp(videoUrl: string): Promise<Buffer> {
-    // Verificar disponibilidad primero
+  /**
+   * Descarga el audio con yt-dlp directo a `outputPath` como mp3 128K.
+   *
+   * Reemplaza al viejo `downloadWithYtDlp`, que devolvía un Buffer: leía el
+   * mp3 entero con readFileSync y después `prepareAudioFile` se lo pasaba a
+   * ffmpeg para "convertirlo a mp3" — o sea, una re-codificación mp3→mp3 que
+   * gastaba CPU y degradaba el audio para terminar en el mismo formato. Acá
+   * yt-dlp ya escribe el archivo final y no se toca más.
+   *
+   * `-f bestaudio` baja SÓLO la pista de audio (yt-dlp sí resuelve el
+   * PoToken, que es lo que obligaba a ytdl-core a usar el progresivo con
+   * video incluido).
+   */
+  private async downloadAudioWithYtDlp(
+    videoUrl: string,
+    outputPath: string,
+  ): Promise<void> {
     if (!this.ytdlp) {
       throw new Error('yt-dlp no está inicializado');
     }
-
-    const available = await this.isYtDlpAvailable();
-    if (!available) {
+    if (!(await this.isYtDlpAvailable())) {
       throw new Error('yt-dlp no está disponible en el sistema');
     }
 
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    const timestamp = Date.now();
-    const tempFilePath = path.join(tempDir, `ytdlp_${timestamp}.%(ext)s`);
+    // yt-dlp le agrega la extensión del formato final al nombre de salida,
+    // así que se le pasa la ruta sin `.mp3` y él produce exactamente
+    // `outputPath`.
+    const base = outputPath.replace(/\.mp3$/i, '');
     const args = [
       videoUrl,
+      '-f', 'bestaudio/best',
       '--extract-audio',
       '--audio-format', 'mp3',
       '--audio-quality', '128K',
-      '--output', tempFilePath,
+      '--output', `${base}.%(ext)s`,
       '--no-playlist',
-      '--ignore-errors',
       '--no-warnings',
-      '--user-agent', this.getRandomUserAgent()
+      '--quiet',
+      '--user-agent', this.getRandomUserAgent(),
     ];
 
-    // Agregar cookies si están disponibles
-    let cookiesFile = null;
+    let cookiesFile: string | null = null;
     if (this.youtubeCookies) {
-      cookiesFile = path.join(tempDir, `cookies_${timestamp}.txt`);
+      cookiesFile = `${base}.cookies.txt`;
       try {
-        // Convertir cookies JSON a formato Netscape para yt-dlp
-        const netscapeCookies = this.convertCookiesToNetscape(this.youtubeCookies);
-        fs.writeFileSync(cookiesFile, netscapeCookies);
+        fs.writeFileSync(
+          cookiesFile,
+          this.convertCookiesToNetscape(this.youtubeCookies),
+        );
         args.push('--cookies', cookiesFile);
-        console.log(`🍪 [YT-DLP] Usando archivo de cookies: ${cookiesFile}`);
       } catch (cookieError) {
-        console.warn(`⚠️ [YT-DLP] Error preparando cookies, continuando sin ellas:`, cookieError);
+        console.warn(`⚠️ [YT-DLP] Sin cookies:`, cookieError);
         cookiesFile = null;
       }
     }
 
     try {
-      console.log(`🚀 [YT-DLP] Ejecutando descarga...`);
-      
-      // Usar Promise para manejar el EventEmitter de yt-dlp
-      await new Promise<void>((resolve, reject) => {
-        try {
-          const ytdlpProcess = this.ytdlp!.exec(args);
-          
-          ytdlpProcess.on('close', (code) => {
-            if (code === 0) {
-              console.log(`✅ [YT-DLP] Descarga completada exitosamente`);
-              resolve();
-            } else {
-              reject(new Error(`yt-dlp salió con código ${code}`));
-            }
-          });
+      await this.safeYtDlpExec(args, 120_000);
 
-          ytdlpProcess.on('error', (error) => {
-            reject(error);
-          });
-
-          // Timeout para evitar que se cuelgue
-          setTimeout(() => {
-            reject(new Error('Timeout en descarga de yt-dlp (60s)'));
-          }, 60000);
-        } catch (error) {
-          reject(error);
-        }
-      });
-      
-      // Buscar el archivo descargado (puede tener diferentes extensiones)
-      const files = fs.readdirSync(tempDir).filter(file => 
-        file.startsWith(`ytdlp_${timestamp}`) && 
-        (file.endsWith('.mp3') || file.endsWith('.m4a') || file.endsWith('.webm') || file.endsWith('.ogg'))
-      );
-      
-      if (files.length === 0) {
-        // Listar todos los archivos para debug
-        const allFiles = fs.readdirSync(tempDir);
-        console.log(`🔍 [YT-DLP] Archivos en directorio temporal:`, allFiles);
-        throw new Error('No se encontró el archivo descargado por yt-dlp');
+      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+        throw new Error('yt-dlp no produjo un mp3 válido');
       }
-
-      const downloadedFile = path.join(tempDir, files[0]);
-      console.log(`📁 [YT-DLP] Archivo descargado: ${downloadedFile}`);
-      
-      // Verificar que el archivo existe y tiene contenido
-      const stats = fs.statSync(downloadedFile);
-      if (stats.size === 0) {
-        throw new Error('El archivo descargado está vacío');
-      }
-      
-      // Leer el archivo y convertirlo a buffer
-      const buffer = fs.readFileSync(downloadedFile);
-      console.log(`✅ [YT-DLP] Buffer creado: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
-      
-      // Limpiar archivos temporales
-      fs.unlinkSync(downloadedFile);
-      
-      return buffer;
-    } catch (error) {
-      console.error(`❌ [YT-DLP] Error en descarga:`, error);
-      
-      // Mejorar el mensaje de error
-      if (error instanceof Error) {
-        if (error.message.includes('spawn yt-dlp ENOENT')) {
-          throw new Error('yt-dlp no está instalado o no es ejecutable');
-        }
-        throw new Error(`yt-dlp falló: ${error.message}`);
-      }
-      throw new Error(`yt-dlp falló: ${String(error)}`);
     } finally {
-      // Limpiar archivo de cookies si se creó
-      if (cookiesFile && fs.existsSync(cookiesFile)) {
-        try {
-          fs.unlinkSync(cookiesFile);
-        } catch (e) {
-          // Ignorar errores de limpieza
-        }
-      }
+      if (cookiesFile) this.safeUnlink(cookiesFile);
     }
   }
 
