@@ -119,7 +119,8 @@ export class PromptBuilderService {
 - Ejemplo: "el anime de demon slayer está bueno?" → "¡Demasiado! 🔥 {{anilist:anime:Demon Slayer}}"
 - Si ${input.username} pide VARIAS obras en un mismo mensaje, emití un token por cada una en la misma respuesta.
 - NO emitas el token para charla casual ("me gusta el manga", "qué manga lees?", "buenos días") — solo cuando hay un título o descripción concreta a buscar.
-- NO inventes datos (score, capítulos, sinopsis) tú mismo; el sistema los obtiene de AniList y los muestra. Tu mensaje solo confirma con una frase breve.`;
+- NO inventes datos (score, capítulos, sinopsis) tú mismo; el sistema los obtiene de AniList y los muestra. Tu mensaje solo confirma con una frase breve.
+- Emití el token SIEMPRE que haya una obra concreta, aunque no la conozcas o no estés seguro de que exista: el sistema avisa solo si AniList no la encuentra. NUNCA reemplaces el token por una respuesta tuya sobre la obra (trama, autor, si está buena, si existe o no).`;
   }
 
   private blockIdentidad(input: PromptInput): string {

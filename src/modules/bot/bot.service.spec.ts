@@ -61,7 +61,8 @@ const noopErrandService = {
  * hace con otros métodos privados en specs del repo.
  */
 type BotServiceConCache = {
-  handleAniListRequest(kind: string, title: string, authorUsername: string): Promise<void>;
+  handleAniListRequest(kind: string, title: string, authorUsername: string): Promise<boolean>;
+  handleChatResponse(response: string, authorUsername: string): Promise<void>;
 };
 
 describe('BotService — handleAniListRequest (caché)', () => {
@@ -289,6 +290,66 @@ describe('BotService — handleAniListRequest (caché)', () => {
       // refreshCache: false — es un acierto completo, no habló con AniList,
       // así que no debe renovar `cachedAt` (fix crítico 1: TTL invertido).
       expect(ingest.ingestAniList).toHaveBeenCalledWith('Nico', ficha, 'Solo Leveling', { refreshCache: false });
+    });
+  });
+
+  describe('handleAniListRequest — sinopsis completa', () => {
+    const enviados = () => socket.sendMessage.mock.calls.map((c) => c[0] as string);
+
+    it('no recorta la sinopsis', async () => {
+      const larga = 'Palabra '.repeat(100).trim(); // ~800 caracteres, antes se cortaba a 320
+      cache.findWork.mockResolvedValue({ result: ficha, sinopsisEs: larga });
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+
+      expect(enviados()).toHaveLength(1);
+      expect(enviados()[0]).toContain(larga);
+      expect(enviados()[0]).not.toContain('…');
+    });
+
+    it('una sinopsis que no entra en un mensaje se parte sin perder texto ni pasar el tope', async () => {
+      const larga = Array.from({ length: 600 }, (_, i) => `w${i}`).join(' '); // ~2800 caracteres
+      cache.findWork.mockResolvedValue({ result: ficha, sinopsisEs: larga });
+
+      await invocar('manhwa', 'Solo Leveling', 'Nico');
+
+      const msgs = enviados();
+      expect(msgs.length).toBeGreaterThan(1);
+      for (const m of msgs) expect(m.length).toBeLessThanOrEqual(1800);
+      expect(msgs[0]).toContain('**Solo Leveling**');
+      expect(msgs[msgs.length - 1]).toContain(ficha.url);
+      const palabras = msgs.join(' ').split(/\s+/).filter((w) => /^w\d+$/.test(w));
+      expect(palabras).toEqual(larga.split(' '));
+    });
+  });
+
+  describe('handleChatResponse — confirmación de AniList', () => {
+    it('sin resultado en AniList no manda la frase del modelo, sólo el aviso', async () => {
+      cache.findWork.mockResolvedValue(null);
+      anilist.search.mockResolvedValue(null);
+
+      await (service as unknown as BotServiceConCache).handleChatResponse(
+        '¡Es un clásico! 📖 {{anilist:manga:Obra Inexistente}}',
+        'Nico',
+      );
+
+      const msgs = socket.sendMessage.mock.calls.map((c) => c[0] as string);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('No encontré "Obra Inexistente"');
+      expect(msgs.join('\n')).not.toContain('clásico');
+    });
+
+    it('con resultado manda la confirmación y después la tarjeta', async () => {
+      cache.findWork.mockResolvedValue({ result: ficha, sinopsisEs: 'texto' });
+
+      await (service as unknown as BotServiceConCache).handleChatResponse(
+        '¡Buena! ⚔️ {{anilist:manhwa:Solo Leveling}}',
+        'Nico',
+      );
+
+      const msgs = socket.sendMessage.mock.calls.map((c) => c[0] as string);
+      expect(msgs[0]).toContain('¡Buena!');
+      expect(msgs[1]).toContain('**Solo Leveling**');
     });
   });
 });
