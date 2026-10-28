@@ -81,12 +81,21 @@ export class MemoryService {
           .exec()
       : [];
 
-    const globalRows = await this.memoryModel
-      .find({ scope: 'global' })
-      .sort({ createdAt: -1 })
-      .limit(cleanUsername ? 3 : MAX_GLOBAL)
-      .lean()
-      .exec();
+    // Cuando hay username, no se traen memorias globales: la migración desde
+    // el memory.json legacy (ver MigrationService) importó el array plano
+    // entero como scope:'global', pero esos strings en realidad los había
+    // producido SAVE_MEMORY(...) sobre usuarios concretos (p.ej. "kei le
+    // gusta Solo Leveling"). Sin este filtro, esa fila se inyecta con
+    // prioridad alta a CUALQUIER usuario que hable con el bot. Sin username
+    // (por ejemplo, generateSummary) se mantiene el comportamiento previo.
+    const globalRows = cleanUsername
+      ? []
+      : await this.memoryModel
+          .find({ scope: 'global' })
+          .sort({ createdAt: -1 })
+          .limit(MAX_GLOBAL)
+          .lean()
+          .exec();
 
     const memoryContents = [...userRows, ...globalRows]
       .map((m) => this.utilsService.sanitizeMemoryContent(m.content ?? ''))

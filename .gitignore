@@ -1,5 +1,6 @@
 /node_modules
-.env
+.env*
+!.env.example
 context.json
 /data/context.json
 /data/messages_log.json
@@ -13,3 +14,7 @@ context.json
 
 # Backups creados por la migración one-shot a Mongo
 /data/*.bak
+
+
+# Espacio de trabajo de subagent-driven-development (scratch)
+/.superpowers/

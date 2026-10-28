@@ -2,10 +2,64 @@
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
+import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
 import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
+import { GraphIngestService } from '../graph/graph-ingest.service';
+import { GraphCacheService } from '../graph/graph-cache.service';
+import { GraphService, Candidate, MAX_CANDIDATES, MIN_CANDIDATES } from '../graph/graph.service';
+import {
+  GraphUserService,
+  UserFact,
+  MIN_FORGET_TERM_LENGTH,
+  MAX_FACTS_SHOWN,
+} from '../graph/graph-user.service';
+import { EdgeType } from '../../common/schemas/graph-edge.schema';
+import { UsageService } from '../chat/usage.service';
+import { RateLimitService } from './rate-limit.service';
+import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { ErrandService } from '../graph/errand.service';
+import { MusicProgress } from '../../common/interfaces';
+
+/**
+ * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
+ * estático a propósito: no llama al modelo para generarlo (eso sería pagar
+ * tokens justo para avisar que no hay más tokens para esa persona).
+ */
+const RATE_LIMITED_MESSAGE = '⏳ Estás mandando mensajes muy seguido. Esperá un poco antes de volver a escribirme.';
+
+/**
+ * Etiquetas legibles en segunda persona para cada tipo de arista que puede
+ * devolver `GraphUserService.describe`, usadas por `!quesabes`. `has_genre` y
+ * `by_artist` casi nunca cuelgan de un nodo `user` (nacen de `work`/`track`,
+ * ver `graph-ingest.service.ts`), pero se traducen igual para que el mensaje
+ * nunca muestre un `EdgeType` crudo si el grafo llegara a tener una arista
+ * así.
+ */
+const RELATION_LABELS: Record<EdgeType, string> = {
+  likes: 'Te gusta',
+  dislikes: 'No te gusta',
+  asked_about: 'Preguntaste por',
+  recommended_to: 'Te recomendé',
+  requested: 'Pediste',
+  interacts_with: 'Hablás seguido con',
+  has_genre: 'Género',
+  by_artist: 'Artista',
+};
+
+/** Orden fijo de las secciones del mensaje de `!quesabes`, independiente del orden por peso en que llegan los hechos. */
+const RELATION_ORDER: EdgeType[] = [
+  'likes',
+  'dislikes',
+  'asked_about',
+  'recommended_to',
+  'requested',
+  'interacts_with',
+  'has_genre',
+  'by_artist',
+];
 
 @Injectable()
 export class BotService implements OnModuleInit {
@@ -13,10 +67,19 @@ export class BotService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
     private readonly musicService: MusicService,
+    private readonly aniListService: AniListService,
     private readonly utilsService: UtilsService,
     private readonly loggingService: LoggingService,
     private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
+    private readonly graphIngestService: GraphIngestService,
+    private readonly graphCacheService: GraphCacheService,
+    private readonly graphService: GraphService,
+    private readonly graphUserService: GraphUserService,
+    private readonly usageService: UsageService,
+    private readonly rateLimitService: RateLimitService,
+    private readonly crossContextSettings: CrossContextSettingsService,
+    private readonly errandService: ErrandService,
   ) {}
 
   async onModuleInit() {
@@ -44,12 +107,65 @@ export class BotService implements OnModuleInit {
 
     const botUsername = this.chatSocketService.username ?? 'bot';
 
+    // El nombre propio del bot no se conoce hasta que el backend responde la
+    // autenticación, así que `ErrandService` no puede leerlo de la config: se
+    // lo pasamos acá, donde ya está resuelto, para que pueda hacer cumplir
+    // "el bot no puede ser destinatario de un recado" en el punto donde
+    // escribe la fila (revisión final de rama, deuda #3). Sólo cuando el
+    // socket lo sabe de verdad: el `?? 'bot'` de arriba es un fallback para
+    // los regex de mención, y usarlo acá haría que un usuario que se llame
+    // literalmente "bot" no pudiera recibir recados.
+    if (this.chatSocketService.username) {
+      this.errandService.setBotName(this.chatSocketService.username);
+    }
+
     await this.loggingService.saveLog(authorUsername, content);
+    // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
+    // por eso va acá y no después del filtro de menciones de abajo.
+    // Fire-and-forget: la ingesta es best-effort y no debe demorar la
+    // respuesta al usuario ni, si falla, disparar el manejador de error que
+    // le habla (este método no tiene un catch que hable al usuario, pero el
+    // patrón se mantiene uniforme con los otros tres sitios de ingesta).
+    void this.graphIngestService.ingestSocial(msg).catch(() => {});
 
     // Admin runtime command: switch the bot's personality without restarting.
     // Handled before the trigger gating so admins don't need to mention the
     // bot for the command to work.
     if (await this.handlePersonalityCommand(content, authorUsername, authorRole)) return;
+
+    // Interruptor de emergencia del contexto cruzado. Mismo motivo que
+    // !personality para ir antes del filtro de menciones.
+    if (await this.handleCrossContextCommand(content, authorUsername, authorRole)) return;
+
+    // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
+    // También va antes del filtro de menciones, mismo motivo que arriba.
+    if (await this.handleMemoryCommand(content, authorUsername)) return;
+
+    // "olvidate de X"/"olvidate de todo": borra del grafo. Mismo motivo que
+    // arriba para ir antes del filtro de menciones — y por ser la más
+    // delicada de las tres (borra datos), no debe depender de que el
+    // dispatcher la deje pasar por casualidad.
+    if (await this.handleForgetCommand(content, authorUsername)) return;
+
+    // Entrega de recados. Va antes del filtro de menciones a propósito: el
+    // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
+    // dirigirse al bot. Con el filtro delante, el recado no se entregaría
+    // nunca — que es exactamente lo que le pasa a la nota de regreso de la
+    // fase 5b, documentado y todavía sin arreglar.
+    //
+    // Revisión de código (Important #1): la entrega en sí SIEMPRE se intenta
+    // acá, incondicional — pero ya NO decide por su cuenta si el dispatcher
+    // corta (antes: `if (await this.deliverPendingErrand(...)) return;`).
+    // El mensaje que dispara la entrega puede A LA VEZ interpelar al bot
+    // (una mención, un pedido de música) — verificado ejecutando con
+    // `content: 'bot como va'` y un recado pendiente: `chatService.chat`
+    // recibía 0 llamadas y la pregunta real desaparecía en silencio detrás
+    // del recado ajeno. Cortar o no cortar es SIEMPRE la misma decisión que
+    // ya tomaba el filtro de mención de más abajo (`isReplyToBot` /
+    // `containsBotWord` / … `isVideoReq`) — la entrega no le agrega una
+    // razón nueva para cortar, sólo se monta encima sin cambiar esa
+    // decisión.
+    await this.deliverPendingErrand(authorUsername, botUsername);
 
     const containsExactBotName = (text: string): boolean =>
       new RegExp(`\\b${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
@@ -102,10 +218,160 @@ export class BotService implements OnModuleInit {
       return;
     }
 
+    // Guard de costo por usuario (Task 4, fase 5a): va acá, INMEDIATAMENTE
+    // antes de la única llamada al modelo del dispatcher normal — no al
+    // principio del método. Los fast-paths de arriba (música, video, usuarios
+    // online) y los tres comandos (!personality, !quesabes, !olvida) ya
+    // cortaron antes si aplicaban, y ninguno de ellos cuesta tokens: limitarlos
+    // sería peor que no limitar nada.
+    if (!this.rateLimitService.check(authorUsername, authorRole)) {
+      // Revisión final (Important #2): avisar en CADA mensaje rechazado abre
+      // un canal de flood gratuito — el bot corre con `role=bot`, que
+      // bypasea el anti-spam del gateway, así que nada del otro lado frena a
+      // alguien pasado de cupo que siga escribiendo. `shouldNotifyRejection`
+      // deja pasar un aviso por ventana de cooldown y calla el resto — nunca
+      // silencio total, porque la persona no entendería por qué el bot la
+      // empezó a ignorar.
+      if (this.rateLimitService.shouldNotifyRejection(authorUsername)) {
+        this.sendBotMessage(`@${authorUsername} ${RATE_LIMITED_MESSAGE}`);
+      }
+      return;
+    }
+
     const response = await this.chatService.chat(content, botUsername, authorUsername);
     if (!response) return;
 
     await this.handleChatResponse(response, authorUsername);
+
+    // Fire-and-forget, con su propio catch, como el resto de la ingesta al
+    // grafo: marca qué candidatas de la recomendación colaborativa (Task 3,
+    // fase 5b) terminaron de verdad mencionadas en la respuesta del modelo.
+    // SÓLO se marcan esas — marcar de más significa no volver a ofrecer algo
+    // bueno; marcar de menos significa repetirse.
+    void this.markCollaborativeRecommendations(authorUsername, response).catch(() => {});
+  }
+
+  // ─── Recomendación colaborativa (Task 3, fase 5b) ──────────────────────────
+
+  /**
+   * Tras responder, revisa cuáles de las candidatas de
+   * `GraphService.collaborative` aparecen mencionadas en el TEXTO que el
+   * modelo generó (la misma respuesta que ya se envió) y las marca con
+   * `recommended_to` — es lo único que evita que el bot vuelva a sugerir lo
+   * mismo la próxima vez (`collaborative` excluye lo ya marcado).
+   *
+   * Deliberadamente vuelve a consultar `collaborative` en vez de reutilizar
+   * las candidatas que `GraphContextService.build` ya calculó para el mismo
+   * turno: encadenar ese valor implicaría cambiar el tipo de retorno de
+   * `ChatService.chat()` (hoy `Promise<string>`) y el de
+   * `GraphContextService.build()` (hoy también `Promise<string>`) — no sólo
+   * en su único llamador productivo de cada uno, sino en sus specs (~13
+   * sitios en `chat.service.spec.ts` y ~20 en `graph-context.service.spec.ts`
+   * leen el resultado como texto plano). Se evaluó ese cambio y se decidió
+   * NO forzarlo por ese costo — ver el reporte de la Task 3 (ronda de
+   * corrección 1) para el detalle. La segunda lectura a Mongo es el precio
+   * de mantener esas firmas intactas.
+   *
+   * Esto sí tiene una consecuencia real, no sólo de costo: entre la lectura
+   * que ve `GraphContextService.build` y esta hay un `await` a la llamada al
+   * modelo (puede tardar varios segundos), y en ese hueco otro mensaje del
+   * mismo usuario podría escribir en `bot_edges` (un `likes` nuevo, otra
+   * recomendación ya marcada). La lista que ve esta función puede entonces
+   * diferir levemente de la que vio el modelo — no hay ninguna garantía de
+   * "misma lista" acá. Es inofensivo de todos modos: en el peor caso se
+   * marca (o se deja de marcar) una candidata puntual con ese desfasaje de
+   * por medio, nunca se corrompe nada, porque `findNode`/`upsertEdge` siguen
+   * resolviendo contra el estado real del grafo en el momento en que corren.
+   *
+   * La comparación es por `label` normalizado (minúsculas, sin acentos, vía
+   * `GraphService.normalizeKey`) contra el texto de la respuesta, exigiendo
+   * un límite de palabra real (ver `mentionedCandidates`) — no hace falta
+   * resolver alias: el label es tal como se lo mostramos al modelo en la
+   * línea de contexto, así que si lo menciona, lo hace con ese mismo texto
+   * (o una variación de mayúsculas/acentos que la normalización ya cubre).
+   */
+  private async markCollaborativeRecommendations(
+    authorUsername: string,
+    response: string,
+  ): Promise<void> {
+    const userNode = await this.graphService.findNode('user', authorUsername);
+    if (!userNode) return;
+
+    const candidates = await this.graphService.collaborative(userNode._id, MAX_CANDIDATES);
+    // Mismo umbral que decide si `GraphContextService.render` las muestra en
+    // la línea de contexto (`MIN_CANDIDATES`) — no un tope propio. Si
+    // divergieran, con menos candidatas que ese umbral el modelo nunca las
+    // vio en el prompt, y cualquier mención incidental (una pregunta factual
+    // sobre esa obra, no una recomendación) marcaría recommended_to para
+    // siempre algo que nadie llegó a ofrecer de verdad.
+    if (candidates.length < MIN_CANDIDATES) return;
+
+    const mentioned = this.mentionedCandidates(response, candidates);
+
+    for (const candidate of mentioned) {
+      const node = await this.graphService.findNode('work', candidate.key);
+      if (!node) continue;
+      await this.graphService.upsertEdge({
+        from: userNode._id,
+        to: node._id,
+        type: 'recommended_to',
+        source: 'signal',
+      });
+    }
+  }
+
+  /**
+   * De las candidatas de `collaborative`, cuáles aparecen de verdad en el
+   * texto de la respuesta — exigiendo que la coincidencia caiga en un límite
+   * de palabra real, no una subcadena cualquiera. `includes()` a secas marca
+   * de más, y marcar de más es el error más caro de los dos (significa no
+   * volver a ofrecer una buena recomendación, en silencio y para siempre):
+   *
+   * - "Air" es prefijo de "aire": sin límite de palabra, cualquier respuesta
+   *   que use la palabra "aire" marcaría la candidata "Air" (anime real de
+   *   Key) sin que el modelo la haya mencionado.
+   * - "Fate" es subcadena de "Fate/Zero" — y acá el límite de palabra NO
+   *   alcanza por sí solo: "/" también cuenta como límite de palabra para
+   *   una regex `\b`-like, así que "fate" matchea igual dentro de
+   *   "fate/zero". Por eso las candidatas se evalúan de la más larga a la
+   *   más corta, y el texto que ya matcheó una candidata larga se CONSUME
+   *   (se reemplaza por un espacio) antes de probar las más cortas: si el
+   *   modelo sólo escribió "Fate/Zero", esa aparición deja de estar
+   *   disponible para que "Fate" la vuelva a matchear por su cuenta. Si
+   *   "Fate" aparece en OTRO lugar del texto, separado de esa aparición,
+   *   sigue contando — sólo se consume la porción exacta ya atribuida a la
+   *   candidata más larga, no todas las apariciones de la palabra.
+   */
+  private mentionedCandidates(response: string, candidates: Candidate[]): Candidate[] {
+    const byLabelLengthDesc = [...candidates].sort(
+      (a, b) =>
+        this.graphService.normalizeKey(b.label).length - this.graphService.normalizeKey(a.label).length,
+    );
+
+    let remaining = this.graphService.normalizeKey(response);
+    const mentioned: Candidate[] = [];
+
+    for (const candidate of byLabelLengthDesc) {
+      const needle = this.graphService.normalizeKey(candidate.label);
+      if (!needle) continue;
+
+      // Mismo escape que ya usa `containsExactBotName` más arriba en este
+      // archivo, para el mismo propósito: el label puede traer caracteres
+      // especiales de regex (p. ej. el "/" de "Fate/Zero").
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Límite de palabra manual con lookbehind/lookahead Unicode en vez de
+      // `\b`: el comportamiento es el mismo para este alfabeto (ya pasado
+      // por `normalizeKey`), pero deja explícito qué cuenta como "letra u
+      // dígito" sin depender de la definición ASCII de `\w`.
+      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u');
+      const match = pattern.exec(remaining);
+      if (!match) continue;
+
+      mentioned.push(candidate);
+      remaining = remaining.slice(0, match.index) + ' ' + remaining.slice(match.index + match[0].length);
+    }
+
+    return mentioned;
   }
 
   // ─── Music ─────────────────────────────────────────────────────────────────
@@ -124,17 +390,229 @@ export class BotService implements OnModuleInit {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     this.musicService
-      .processMusic(query, authorUsername)
+      .processMusic(query, authorUsername, this.queueFeedback(authorUsername))
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          // Fire-and-forget: la ingesta es best-effort y no debe demorar
+          // esta respuesta ni poder disparar el .catch() de abajo (que le
+          // habla al usuario) si el grafo falla.
+          void this.graphIngestService.ingestTrack(authorUsername, query, result.track).catch(() => {});
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
       });
+  }
+
+  /**
+   * Avisa en el chat cuando el pedido tiene gente adelante. Sólo se manda el
+   * aviso de cola (no el de "descargando"/"subiendo"): con el pipeline por
+   * etapas esas fases son cortas, y un mensaje por cada una sería ruido.
+   * Es fire-and-forget — el pipeline ignora cualquier error de acá.
+   */
+  private queueFeedback(authorUsername: string) {
+    return (update: MusicProgress): void => {
+      if (update.stage !== 'searching' || update.position < 1) return;
+      this.sendBotMessage(`@${authorUsername} ${update.text}`);
+    };
+  }
+
+  // ─── AniList ───────────────────────────────────────────────────────────────
+
+  private async handleAniListRequest(
+    rawKind: string,
+    rawTitle: string,
+    authorUsername: string,
+  ): Promise<void> {
+    const kind = AniListService.normalizeKind(rawKind);
+    const title = (rawTitle ?? '').trim();
+    if (!kind || title.length < 1) {
+      this.sendBotMessage(
+        `@${authorUsername} 🤔 No entendí qué buscar en AniList (kind="${rawKind}", title="${rawTitle}").`,
+      );
+      return;
+    }
+
+    try {
+      // El caché evita el POST a AniList y, si la sinopsis ya se tradujo, una
+      // llamada al modelo de varios cientos de tokens.
+      const cached = await this.graphCacheService.findWork(kind, title).catch(() => null);
+
+      // Un acierto "completo" (ficha + traducción) es el único caso que se
+      // sirve sin tocar AniList. `findWork` siempre reconstruye la ficha con
+      // `description: null` (el caché no persiste el inglés crudo, sólo la
+      // traducción) — así que un acierto SIN traducción guardada no puede
+      // traducir nada por su cuenta: se trata como "miss parcial" y se va a
+      // AniList igual, sólo que conservando la arista `asked_about` como
+      // cualquier acierto (ver `refreshCache` más abajo).
+      const isFullHit = !!cached && !!cached.sinopsisEs;
+
+      const result = isFullHit ? cached!.result : await this.aniListService.search(kind, title);
+      if (!result) {
+        this.sendBotMessage(
+          `@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`,
+        );
+        return;
+      }
+
+      // Fire-and-forget: la ingesta es best-effort y no debe ni demorar el
+      // armado de la tarjeta ni poder disparar el catch de abajo (que le
+      // habla al usuario) si el grafo falla. Se hace SIEMPRE, incluso con
+      // acierto de caché: es un upsert idempotente cuyo efecto valioso es la
+      // arista `asked_about`, que registra que este usuario preguntó por esta
+      // obra — sin eso el grafo perdería señal de interés justo para las
+      // obras más populares, que son las que más aciertan en el caché.
+      //
+      // `refreshCache: !isFullHit` es la mitad de la corrección del TTL
+      // invertido: `cachedAt` sólo se renueva cuando esta llamada realmente
+      // habló con AniList (miss total, o el miss parcial de arriba). Un
+      // acierto completo no aporta ningún dato nuevo, así que no debe
+      // renovar la fecha — si lo hiciera, una obra `RELEASING` preguntada
+      // seguido quedaría congelada para siempre en el primer estado que vio.
+      void this.graphIngestService
+        .ingestAniList(authorUsername, result, title, { refreshCache: !isFullHit })
+        .catch(() => {});
+
+      let translatedDescription: string | null;
+
+      if (isFullHit) {
+        // Ya se tradujo antes: nos ahorramos la llamada al modelo y dejamos
+        // registro del ahorro para poder medir la tasa de acierto real.
+        translatedDescription = cached!.sinopsisEs;
+        void this.usageService
+          .record({
+            kind: 'translate',
+            user: authorUsername,
+            promptTokens: 0,
+            completionTokens: 0,
+            cacheHit: true,
+          })
+          .catch(() => {});
+      } else {
+        // AniList sólo expone sinopsis en inglés; traducimos con el mismo modelo
+        // OpenAI que ya usa el bot. Si la traducción falla o el modelo no
+        // responde, translateToSpanish cae al texto original en inglés para no
+        // romper la tarjeta.
+        translatedDescription = result.description
+          ? await this.chatService.translateToSpanish(result.description, authorUsername)
+          : null;
+
+        // La traducción cuesta una llamada al modelo por ficha. Persistirla en
+        // el nodo hace que la próxima consulta de esta obra no la pague — pero
+        // sólo si de verdad se tradujo: cuando `translateToSpanish` cae a su
+        // fallback (timeout, rate-limit, respuesta vacía) devuelve el mismo
+        // texto en inglés que recibió, y guardar ESO sería persistir un fallo
+        // transitorio como si fuera una traducción buena. Como una obra
+        // `FINISHED` no vence nunca, ese inglés quedaría servido para siempre.
+        if (translatedDescription && translatedDescription !== result.description) {
+          void this.graphCacheService.saveTranslation(result.id, translatedDescription).catch(() => {});
+        }
+      }
+
+      const localized: AniListResult = { ...result, description: translatedDescription };
+
+      this.sendBotMessage(this.formatAniListCard(localized));
+    } catch (err) {
+      const code = (err as Error)?.message ?? '';
+      if (code === 'RATE_LIMIT') {
+        this.sendBotMessage(`@${authorUsername} ⏱️ AniList me está limitando. Probá en un minuto.`);
+      } else if (code === 'NETWORK') {
+        this.sendBotMessage(`@${authorUsername} 📡 No pude alcanzar AniList. Intentalo de nuevo en un rato.`);
+      } else {
+        this.sendBotMessage(`@${authorUsername} 😕 AniList no respondió bien esta vez.`);
+      }
+    }
+  }
+
+  private formatAniListCard(r: AniListResult): string {
+    const kindLabel: Record<AniListResult['kind'], string> = {
+      manga: 'Manga',
+      manhwa: 'Manhwa',
+      manhua: 'Manhua',
+      anime: 'Anime',
+    };
+    const statusLabel: Record<string, string> = {
+      FINISHED: 'Finalizado',
+      RELEASING: 'En curso',
+      NOT_YET_RELEASED: 'Aún no publicado',
+      CANCELLED: 'Cancelado',
+      HIATUS: 'En pausa',
+    };
+    // AniList sólo expone géneros en inglés. La lista de géneros es fija y
+    // documentada — cubrimos los 18 oficiales con su traducción al español.
+    // Si aparece uno que no esté mapeado, lo dejamos tal cual.
+    const genreLabel: Record<string, string> = {
+      Action: 'Acción',
+      Adventure: 'Aventura',
+      Comedy: 'Comedia',
+      Drama: 'Drama',
+      Ecchi: 'Ecchi',
+      Fantasy: 'Fantasía',
+      Hentai: 'Hentai',
+      Horror: 'Terror',
+      'Mahou Shoujo': 'Mahou Shoujo',
+      Mecha: 'Mecha',
+      Music: 'Música',
+      Mystery: 'Misterio',
+      Psychological: 'Psicológico',
+      Romance: 'Romance',
+      'Sci-Fi': 'Ciencia ficción',
+      'Slice of Life': 'Slice of Life',
+      Sports: 'Deportes',
+      Supernatural: 'Sobrenatural',
+      Thriller: 'Suspenso',
+    };
+
+    const title = r.titleEnglish && r.titleEnglish !== r.titleRomaji
+      ? `${r.titleRomaji} (${r.titleEnglish})`
+      : r.titleRomaji;
+
+    const cover = r.coverImage ? `[img]${r.coverImage}[/img]` : '';
+
+    const facts: string[] = [`**${kindLabel[r.kind]}**`];
+    if (r.status && statusLabel[r.status]) facts.push(statusLabel[r.status]);
+    else if (r.status) facts.push(r.status.toLowerCase());
+    if (r.score) facts.push(`⭐ ${r.score}/100`);
+    if (r.startYear) facts.push(`${r.startYear}`);
+
+    const counts: string[] = [];
+    if (r.kind === 'anime') {
+      if (r.episodes) counts.push(`📺 ${r.episodes} eps`);
+    } else {
+      if (r.chapters) counts.push(`📖 ${r.chapters} caps`);
+      if (r.volumes) counts.push(`📚 ${r.volumes} vols`);
+    }
+
+    const translatedGenres = r.genres.slice(0, 5).map((g) => genreLabel[g] ?? g);
+    const genres = translatedGenres.length > 0 ? `🏷️ ${translatedGenres.join(', ')}` : '';
+
+    const synopsis = this.truncate(r.description ?? '', 320);
+
+    const parts: string[] = [
+      cover,
+      `**${title}**`,
+      facts.join(' · '),
+      counts.join(' · '),
+      genres,
+      synopsis,
+      `🔗 ${r.url}`,
+    ];
+
+    return parts.filter((p) => p && p.length > 0).join('\n');
+  }
+
+  private truncate(text: string, max: number): string {
+    if (!text) return '';
+    const clean = text.replace(/\s+\n/g, '\n').trim();
+    if (clean.length <= max) return clean;
+    const cut = clean.slice(0, max);
+    const lastSpace = cut.lastIndexOf(' ');
+    return (lastSpace > max * 0.7 ? cut.slice(0, lastSpace) : cut).trim() + '…';
   }
 
   // ─── Video ─────────────────────────────────────────────────────────────────
@@ -153,11 +631,17 @@ export class BotService implements OnModuleInit {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     this.musicService
-      .processVideo(query, authorUsername)
+      .processVideo(query, authorUsername, this.queueFeedback(authorUsername))
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result);
+        this.sendBotMessage(result.text);
+        if (result.track) {
+          // Fire-and-forget: la ingesta es best-effort y no debe demorar
+          // esta respuesta ni poder disparar el .catch() de abajo (que le
+          // habla al usuario) si el grafo falla.
+          void this.graphIngestService.ingestTrack(authorUsername, query, result.track).catch(() => {});
+        }
       })
       .catch(async (error: Error) => {
         await this.utilsService.sleep(responseDelay);
@@ -291,6 +775,26 @@ export class BotService implements OnModuleInit {
       return;
     }
 
+    // AniList intent tokens: the LLM emits {{anilist:<kind>:<title>}} when the
+    // user asks for info about a specific manga/manhwa/manhua/anime. We collect
+    // every token, send the confirmation text without tokens, then resolve each
+    // one against AniList and post the card. Same multi-query approach as music
+    // so the LLM can answer "buscame X y Y" in a single turn.
+    const anilistRe = /\{\{anilist:\s*([^:}]+?)\s*:\s*([^}]+?)\s*\}\}/gi;
+    const anilistTokens = [...response.matchAll(anilistRe)];
+    if (anilistTokens.length > 0) {
+      const confirmText = response.replace(anilistRe, '').replace(/\s{2,}/g, ' ').trim();
+      if (confirmText) {
+        this.sendBotMessage(`<@${authorUsername}> ${confirmText}`);
+        await this.utilsService.sleep(responseDelay);
+      }
+      for (const token of anilistTokens) {
+        await this.handleAniListRequest(token[1], token[2], authorUsername);
+        await this.utilsService.sleep(responseDelay);
+      }
+      return;
+    }
+
     if (response.includes('{{usuarios_online}}')) {
       const confirmText = response.replace('{{usuarios_online}}', '').trim();
       if (confirmText) {
@@ -329,8 +833,21 @@ export class BotService implements OnModuleInit {
 
     try {
       console.log('📋 Generando resumen del chat...');
-      const resumen = await this.chatService.generateSummary();
-      const resumenParts = this.utilsService.splitMessageIntoParts(resumen, maxLength);
+      const resumen = await this.chatService.generateSummary(authorUsername);
+
+      // Ingesta en lote de los hechos que el modelo extrajo del resumen
+      // (Task 5, fase 4b) — captura lo que se habla en el chat sin mencionar
+      // al bot, sin ninguna llamada nueva al modelo. Fire-and-forget: no
+      // puede demorar ni impedir el envío del resumen si la ingesta falla.
+      // `source: 'batch'` la distingue de un SAVE_FACT en vivo (source:
+      // 'fact'); la validación de relación/objeto la hace `ingestFact`.
+      for (const fact of resumen.facts) {
+        void this.graphIngestService
+          .ingestFact(fact.user, fact.relation, fact.object, 'batch')
+          .catch(() => {});
+      }
+
+      const resumenParts = this.utilsService.splitMessageIntoParts(resumen.text, maxLength);
       console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
@@ -348,9 +865,21 @@ export class BotService implements OnModuleInit {
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
-      await this.loggingService.saveEventsLog('Resumen', authorUsername);
-      const clearedCount = await this.loggingService.clearMessagesLog();
-      console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+      // Revisión final (Minor #6): `generateSummary` no LANZA cuando el
+      // parseo del modelo falla — devuelve normalmente `resumen.text` igual
+      // al mensaje de error (`ChatService.SUMMARY_PARSE_ERROR`), que el
+      // bucle de arriba ya mandó al chat como si fuera un resumen. Sin esta
+      // guarda, ese envío igual quemaba el cooldown de 10 minutos Y borraba
+      // los 50 mensajes del log — quien pidió el resumen quedaba sin poder
+      // reintentar por un fallo que no fue suyo. Sólo se consume el estado
+      // cuando de verdad se generó y envió un resumen.
+      if (resumen.text === ChatService.SUMMARY_PARSE_ERROR) {
+        console.log('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
+      } else {
+        await this.loggingService.saveEventsLog('Resumen', authorUsername);
+        const clearedCount = await this.loggingService.clearMessagesLog();
+        console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+      }
     } catch (error) {
       console.error('❌ Error generating summary:', error);
       this.sendBotMessage('❌ Error al generar el resumen. Inténtalo más tarde.');
@@ -427,6 +956,371 @@ export class BotService implements OnModuleInit {
     return true;
   }
 
+  // ─── Cross-context command (admins) ──────────────────────────────────────
+
+  /**
+   * `!contextocruzado on|off|reset|status`. Calcado de
+   * `handlePersonalityCommand`: por regex y sin gastar una llamada al modelo,
+   * y va antes del filtro de menciones para que un admin no tenga que
+   * nombrar al bot para apagar la feature. Ese detalle importa acá más que en
+   * personalidad — es el interruptor de emergencia.
+   */
+  private async handleCrossContextCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!(?:contextocruzado|crosscontext)(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar el contexto cruzado.`);
+      return true;
+    }
+
+    if (sub === 'on' || sub === 'off') {
+      this.crossContextSettings.setOverride(sub === 'on');
+      this.sendBotMessage(
+        `@${authorUsername} ✅ Contexto cruzado ${sub === 'on' ? 'activado' : 'desactivado'}.`,
+      );
+      console.log(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.crossContextSettings.setOverride(null);
+      const info = this.crossContextSettings.getInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Contexto cruzado reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
+      );
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.crossContextSettings.getInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 🔗 Contexto cruzado: ${info.enabled ? 'activado' : 'desactivado'}${note}.`,
+      );
+      return true;
+    }
+
+    this.sendBotMessage(`@${authorUsername} Uso: !contextocruzado on | off | reset | status`);
+    return true;
+  }
+
+  // ─── Memory command (!quesabes) ────────────────────────────────────────────
+
+  /**
+   * Recognize and execute the `!quesabes` command: le muestra a quien lo
+   * escribe todo lo que el bot tiene guardado sobre esa persona en el grafo
+   * de conocimiento. Devuelve `true` cuando el mensaje fue este comando
+   * (atendido de cualquier forma) para que el llamador corte el resto del
+   * dispatcher — mismo patrón que `handlePersonalityCommand`. Cero llamadas
+   * al modelo: se resuelve enteramente contra `GraphUserService.describe`.
+   *
+   * Privacidad: el comando SIEMPRE describe a quien lo escribe. Cualquier
+   * texto después de "!quesabes" (p. ej. "!quesabes Nico") se ignora a
+   * propósito — no hay forma de que alguien consulte lo que el bot guarda
+   * sobre otra persona.
+   */
+  private async handleMemoryCommand(content: string, authorUsername: string): Promise<boolean> {
+    const match = content.trim().match(/^!quesabes\b/i);
+    if (!match) return false;
+
+    const facts = await this.graphUserService.describe(authorUsername);
+
+    if (facts.length === 0) {
+      this.sendBotMessage(`@${authorUsername} 🤷 Todavía no tengo nada guardado sobre vos.`);
+      return true;
+    }
+
+    const message = this.formatMemoryFacts(facts);
+    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+    const parts = this.utilsService.splitMessageIntoParts(message, maxLength);
+
+    // Minor #7: única ruta multiparte del servicio que no respetaba
+    // `responseDelay` entre mensajes — con 40 hechos son varias partes de
+    // golpe. Mismo patrón que `handleChatResponse`/`handleSummaryRequest`.
+    for (let i = 0; i < parts.length; i++) {
+      const text = i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i];
+      this.sendBotMessage(text);
+      if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
+    }
+    return true;
+  }
+
+  /**
+   * Agrupa los hechos del grafo por relación, con una etiqueta legible en
+   * segunda persona (`Te gusta:`, `No te gusta:`, …) en vez del `EdgeType`
+   * crudo. `RELATION_ORDER` fija el orden de las secciones para que el
+   * mensaje sea estable entre llamados, no dependa del orden de llegada de
+   * `describe` (que es por peso, no por tipo).
+   *
+   * Minor #5: `RELATION_ORDER` es un array suelto (a diferencia de
+   * `RELATION_LABELS`, tipado `Record<EdgeType, string>`, que rompe la
+   * compilación si falta un tipo) — si se agrega un `EdgeType` nuevo y nadie
+   * actualiza `RELATION_ORDER`, esa categoría desaparecería del mensaje SIN
+   * AVISO. En un comando cuyo contrato es "esto es TODO lo que tengo sobre
+   * vos", ocultar una categoría es peor que mostrarla sin traducir. Por eso,
+   * después de recorrer `RELATION_ORDER`, cualquier relación agrupada que
+   * haya quedado afuera se emite igual (con el `EdgeType` crudo si no hay
+   * label) — el default es mostrar de más, nunca ocultar.
+   */
+  private formatMemoryFacts(facts: UserFact[]): string {
+    const grouped = new Map<EdgeType, string[]>();
+    for (const fact of facts) {
+      const labels = grouped.get(fact.relation) ?? [];
+      labels.push(fact.label);
+      grouped.set(fact.relation, labels);
+    }
+
+    const lines: string[] = [];
+    const seen = new Set<EdgeType>();
+    for (const relation of RELATION_ORDER) {
+      seen.add(relation);
+      const labels = grouped.get(relation);
+      if (!labels || labels.length === 0) continue;
+      lines.push(`${RELATION_LABELS[relation]}: ${labels.join(', ')}`);
+    }
+    for (const [relation, labels] of grouped) {
+      if (seen.has(relation) || labels.length === 0) continue;
+      lines.push(`${RELATION_LABELS[relation] ?? relation}: ${labels.join(', ')}`);
+    }
+
+    // Minor #6: sin este aviso, alguien con más de `MAX_FACTS_SHOWN` aristas
+    // ve una lista que parece completa acá y después, en "!olvida todo", un
+    // conteo mayor sin relación aparente con lo que acaba de leer.
+    if (facts.length >= MAX_FACTS_SHOWN) {
+      lines.push(`\n(te muestro las ${MAX_FACTS_SHOWN} más fuertes)`);
+    }
+
+    return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
+  }
+
+  // ─── Forget command (!olvida) ──────────────────────────────────────────────
+
+  /**
+   * Recognize and execute `!olvida`: borra del grafo lo que el bot tiene
+   * guardado sobre quien lo escribe. Devuelve `true` cuando el mensaje fue
+   * este comando (atendido de cualquier forma) para que el llamador corte el
+   * resto del dispatcher — mismo patrón que `handlePersonalityCommand` y
+   * `handleMemoryCommand`. Cero llamadas al modelo.
+   *
+   * Es la tarea más delicada de las tres: borra datos. El principio no
+   * negociable es que sólo se tocan las aristas SALIENTES de quien escribe
+   * el comando — nunca nodos, nunca aristas de otra persona, nunca más de lo
+   * que se pidió. Toda la resolución real vive en `GraphUserService`
+   * (`findForgettable`/`forget`/`forgetAll`); acá sólo se decide QUÉ pedirle
+   * y cómo confirmarlo.
+   *
+   * Privacidad: igual que `!quesabes`, el comando SIEMPRE opera sobre quien
+   * lo escribe. No existe (ni debe existir) una forma de que alguien borre
+   * lo que el bot sabe de otra persona.
+   *
+   * Formas soportadas:
+   * - `!olvida` (sin término): responde el uso, no borra nada.
+   * - `!olvida todo`: NO borra — responde cuántas cosas borraría y pide
+   *   `!olvida todo si` para confirmar. Requerir una confirmación explícita
+   *   para el borrado total (y sólo para ese caso) es a propósito: es el
+   *   único camino que puede vaciar TODO lo guardado sobre una persona de un
+   *   solo golpe.
+   * - `!olvida todo si`: confirma y borra todo lo saliente.
+   * - `!olvida <término>`: borra lo que matchee `término` (por etiqueta o
+   *   alias del destino) y confirma cuánto borró. No pide confirmación —el
+   *   usuario ya nombró el destino, así que la lista que se muestra es
+   *   informativa, no una pregunta. Se rechaza si el término tiene menos de
+   *   `MIN_FORGET_TERM_LENGTH` caracteres: es demasiado ambiguo para borrar
+   *   a ciegas.
+   */
+  private async handleForgetCommand(content: string, authorUsername: string): Promise<boolean> {
+    const match = content.trim().match(/^!olvida(?:\s+(.+))?$/is);
+    if (!match) return false;
+
+    const rawArg = (match[1] ?? '').trim();
+
+    if (!rawArg) {
+      this.sendBotMessage(
+        `@${authorUsername} Uso: !olvida <término> (p. ej. "!olvida berserk") | !olvida todo`,
+      );
+      return true;
+    }
+
+    const lower = rawArg.toLowerCase();
+    // Minor #4: la confirmación se compara sin acentos (mismo criterio que
+    // `isOnlineUsersRequest` en este archivo) para que "!olvida todo sí" —la
+    // forma natural de confirmar en español— no caiga al buscador de
+    // términos y responda "no encontré nada guardado sobre 'todo sí'". Si
+    // esto no matchea, el flujo cae más abajo a la rama de término/longitud
+    // mínima, que nunca borra nada por su cuenta — el modo de falla sigue
+    // siendo "no hace nada", nunca "borra de más".
+    const lowerNoAccents = this.stripAccents(lower);
+
+    if (lower === 'todo') {
+      const count = await this.graphUserService.countForgettableAll(authorUsername);
+      if (count === 0) {
+        this.sendBotMessage(`@${authorUsername} 🤷 Ya no tengo nada guardado sobre vos.`);
+        return true;
+      }
+      this.sendBotMessage(
+        `@${authorUsername} ⚠️ Esto borraría ${count} cosa${count !== 1 ? 's' : ''} que tengo guardadas sobre vos. Escribí "!olvida todo si" para confirmar.`,
+      );
+      return true;
+    }
+
+    if (/^todo\s+si$/i.test(lowerNoAccents)) {
+      const deleted = await this.graphUserService.forgetAll(authorUsername);
+      if (deleted === 0) {
+        this.sendBotMessage(`@${authorUsername} 🤷 Ya no tenía nada guardado sobre vos.`);
+        return true;
+      }
+      this.sendBotMessage(
+        `@${authorUsername} 🗑️ Listo, borré ${deleted} cosa${deleted !== 1 ? 's' : ''} que tenía guardadas sobre vos.`,
+      );
+      return true;
+    }
+
+    if (rawArg.length < MIN_FORGET_TERM_LENGTH) {
+      this.sendBotMessage(
+        `@${authorUsername} 🤔 "${rawArg}" es muy corto — necesito al menos ${MIN_FORGET_TERM_LENGTH} caracteres para no borrar a ciegas.`,
+      );
+      return true;
+    }
+
+    const matches = await this.graphUserService.findForgettable(authorUsername, rawArg);
+    if (matches.length === 0) {
+      this.sendBotMessage(`@${authorUsername} 🤷 No encontré nada guardado sobre "${rawArg}" para olvidar.`);
+      return true;
+    }
+
+    const deleted = await this.graphUserService.forget(authorUsername, rawArg);
+    const distinctLabels = Array.from(new Set(matches.map((m) => m.label)));
+    const detail = distinctLabels.length > 1 ? `: ${distinctLabels.join(', ')}` : ` sobre "${distinctLabels[0]}"`;
+    this.sendBotMessage(
+      `@${authorUsername} 🗑️ Borré ${deleted} cosa${deleted !== 1 ? 's' : ''}${detail}.`,
+    );
+    return true;
+  }
+
+  // ─── Entrega de recados (Task 5, contexto cruzado) ─────────────────────────
+
+  /**
+   * Entrega UN recado pendiente para quien acaba de escribir. Devuelve true
+   * si entregó algo.
+   *
+   * Revisión de código (Important #1): este valor de retorno YA NO decide si
+   * el dispatcher corta — antes lo hacía (`if (await
+   * this.deliverPendingErrand(...)) return;` en el llamador), bajo el
+   * supuesto de que "el mensaje que disparó la entrega no era para el bot".
+   * Ese supuesto es falso: este método corre ANTES del filtro de mención, así
+   * que en el momento en que se llama todavía no se sabe si el mensaje
+   * también interpelaba al bot. Con el supuesto viejo, un `content: 'bot
+   * como va'` con un recado pendiente entregaba el recado y CORTABA — la
+   * pregunta real desaparecía en silencio, sin que `chatService.chat` llegara
+   * a llamarse. Ahora el llamador entrega siempre (efecto secundario
+   * incondicional) y deja que el filtro de mención de siempre decida si además
+   * corresponde cortar.
+   *
+   * NO pasa por `rateLimitService.check`: el destinatario no pidió nada, y
+   * dejarlo sin cupo por recados ajenos lo dejaría sin poder hablarle al bot.
+   * Del lado del destinatario el gasto real está acotado por
+   * `MAX_PENDING_PER_TARGET` (recados de hasta 5 autores distintos, sin rate
+   * limit) — `MAX_PENDING_PER_AUTHOR` acota cuántos recados puede DEJAR un
+   * mismo autor, no cuántos puede RECIBIR una persona de varios autores
+   * distintos; el autor sí gastó su propio cupo al dejar cada recado.
+   */
+  private async deliverPendingErrand(
+    authorUsername: string,
+    botUsername: string,
+  ): Promise<boolean> {
+    if (!this.crossContextSettings.isEnabled()) return false;
+
+    const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
+    if (!errand) return false;
+
+    const drafted = await this.chatService
+      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
+      .catch(() => '');
+
+    // El recado ya está marcado como entregado (ver `claimNext`), así que si
+    // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
+    //
+    // Re-revisión (2.1): el texto pasa por `stripIntentTokens` ANTES de
+    // `handleChatResponse`. Si la limpieza no deja nada (el modelo redactó
+    // sólo un token), cae al mismo texto fijo que ya cubría el fallo del
+    // modelo — nunca se publica una mención pelada.
+    const message =
+      BotService.stripIntentTokens(drafted) ||
+      BotService.stripIntentTokens(`${errand.fromLabel} te dejó dicho: ${errand.text}`);
+
+    // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
+    // `handleChatResponse` y no por `sendBotMessage` directo. El camino
+    // directo salteaba TODO lo que ese método hace por cualquier otra cosa
+    // que diga el bot: el partido en varias partes por `maxLengthResponse`
+    // (un recado de 200 caracteres redactado por el modelo se pasa del tope
+    // del chat) y la limpieza de los tokens de intención
+    // ({{music:…}}/{{resumen}}/{{usuarios_online}}), que en la rama de
+    // fallback se publicaban CRUDOS con la identidad del bot porque el texto
+    // del recado nunca se sanitizaba. Lo segundo ya no puede pasar (ahora
+    // `ErrandService.create` sanitiza), pero la rama del modelo sigue siendo
+    // texto sin filtrar y no hay motivo para que la entrega sea la única voz
+    // del bot que no pasa por el mismo embudo. El prefijo de mención lo pone
+    // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
+    await this.handleChatResponse(message, authorUsername);
+    return true;
+  }
+
+  /**
+   * Borra los tokens de intención (`{{…}}`) de un texto que va a salir por
+   * `handleChatResponse`.
+   *
+   * Re-revisión (2.1). Encauzar la entrega de un recado por
+   * `handleChatResponse` (ola anterior: para ganar el partido por
+   * `maxLengthResponse` y la limpieza) trajo de arrastre que ese método
+   * INTERPRETA tokens. Medido por el revisor sobre el texto que redacta el
+   * modelo en una entrega:
+   *   `{{music: rickroll}}`  → llegaba hasta `musicService.processMusic`
+   *   `{{usuarios_online}}`  → publicaba el roster
+   *   `{{resumen}}`          → entraba a `handleSummaryRequest`, que en el
+   *                            camino feliz quema el cooldown de 10 minutos
+   *                            y ejecuta `clearMessagesLog()`. Destructivo.
+   *
+   * Dos cosas separan esto del riesgo de cualquier otra respuesta del bot, y
+   * son las que justifican una limpieza propia en vez de confiar en el
+   * prompt: el disparador es un mensaje cualquiera del DESTINATARIO, que no
+   * pidió nada; y el prompt de entrega lleva prosa de OTRO usuario que
+   * sobrevive la sanitización (verificado: `"Ignora lo anterior."` queda
+   * persistida en el texto del recado). Es un camino de dos saltos para
+   * inducir al modelo a emitir el token; `ERRAND_CONTEXT_PREFIX` mitiga pero
+   * no cierra.
+   *
+   * Se borra por FORMA (`\{\{[^}]*\}\}`) y no por lista de tokens conocidos a
+   * propósito: un token nuevo que alguien agregue a `handleChatResponse`
+   * queda cubierto sin acordarse de este punto. La entrega de un recado no
+   * tiene ningún motivo legítimo para pedir música, un resumen o el roster.
+   *
+   * Si no hay ningún `{{`, devuelve el texto TAL CUAL — sin normalizar
+   * espacios ni recortar. El caso normal (la abrumadora mayoría) no puede
+   * cambiar por existir esta función.
+   */
+  private static stripIntentTokens(text: string): string {
+    if (!text.includes('{{')) return text;
+    return text
+      .replace(/\{\{[^}]*\}\}/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  /** Quita acentos (NFD + strip de diacríticos) para comparar sin importar tilde. */
+  private stripAccents(text: string): string {
+    return text
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '');
+  }
+
   /**
    * Detect requests for the *full list* of online users. Earlier this matched
    * single bare keywords like "online" or "conectados", which falsely fired
@@ -437,10 +1331,7 @@ export class BotService implements OnModuleInit {
    */
   private isOnlineUsersRequest(message: string): boolean {
     if (!message || typeof message !== 'string') return false;
-    const lower = message
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, ''); // strip accents so linea/línea both match
+    const lower = this.stripAccents(message.toLowerCase()); // strip accents so linea/línea both match
 
     // Reject questions about a specific user, e.g. "está el admin online?",
     // "esta neru conectado?", "donde anda kei?". Singular "está/esta" + person

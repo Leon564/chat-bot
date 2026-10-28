@@ -1,3 +1,17 @@
+/**
+ * `parseInt` de un entero de `.env` con fallback seguro cuando el valor no es
+ * numérico. Existe porque `parseInt('abc', 10)` da `NaN`, y `NaN ?? default`
+ * NO cae al default (`NaN` no es nullish) — un operador editando el `.env` a
+ * mano y tipeando mal `RATE_LIMIT_PER_HOUR` apagaba el guard de costo por
+ * completo y en silencio: `NaN <= 0` es `false` (no toma la rama de
+ * "desactivado") y `fresh.length >= NaN` es `false` SIEMPRE, así que nadie se
+ * limitaba nunca, sin un solo log de aviso.
+ */
+function parseIntEnv(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export default () => ({
   port: parseInt(process.env.PORT || '3000', 10),
 
@@ -22,6 +36,19 @@ export default () => ({
     // guardrails irrompibles (sin hate speech a grupos, amenazas, menores,
     // doxxing — ver chat.service.ts).
     personality: (process.env.BOT_PERSONALITY === 'unfiltered' ? 'unfiltered' : 'default') as 'default' | 'unfiltered',
+    // Tope de llamadas al modelo por usuario y por hora (ventana móvil,
+    // ver RateLimitService). No limita los fast-paths deterministas
+    // (música, video, usuarios online) ni los comandos !personality/
+    // !quesabes/!olvida — ninguno de esos cuesta tokens. admin/superAdmin
+    // nunca se limitan. RATE_LIMIT_PER_HOUR=0 desactiva el límite por
+    // completo (todos pasan) — interruptor de emergencia sin tocar código.
+    rateLimitPerHour: parseIntEnv(process.env.RATE_LIMIT_PER_HOUR, 20),
+    // Contexto cruzado entre usuarios. Apagado por defecto: es opt-in.
+    // Enciende tres capacidades a la vez — que el bot lea del grafo de OTROS
+    // usuarios mencionados, que acepte hechos sobre terceros, y los recados
+    // diferidos. Se puede mover en caliente con !contextocruzado (admin), sin
+    // reiniciar — mismo rol de interruptor de emergencia que CACHE_ENABLED.
+    crossUserContext: process.env.CROSS_USER_CONTEXT === 'true',
   },
 
   // Music Configuration
@@ -63,5 +90,16 @@ export default () => ({
   // collection names to keep its data separate.
   database: {
     uri: process.env.MONGODB_URI || '',
+  },
+
+  // Graph cache (Fase 4a) — fichas de AniList y pistas ya subidas servidas
+  // desde el grafo en vez de re-procesarse. CACHE_ENABLED=false apaga el
+  // camino de lectura por completo (GraphCacheService.findWork/findTrack
+  // devuelven null sin consultar Mongo), forzando siempre el pipeline
+  // normal — pensado como interruptor de emergencia sin necesitar rollback.
+  // Las escrituras (saveTranslation/invalidateTrack/ingest*) no se gatean:
+  // persistir no hace daño aunque la lectura del caché esté apagada.
+  graph: {
+    cacheEnabled: process.env.CACHE_ENABLED !== 'false',
   },
 });

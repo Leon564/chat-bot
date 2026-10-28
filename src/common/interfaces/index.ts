@@ -46,18 +46,55 @@ export interface MessageData {
   message: string;
 }
 
+/** Metadatos de una pista ya resuelta y subida. */
+export interface TrackMeta {
+  title: string;
+  artist: string | null;
+  thumb: string | null;
+  youtubeUrl: string | null;
+  uploadUrl: string;
+  uploadService: string;
+}
+
+/**
+ * Lo que resuelve processMusic/processVideo. Antes era solo el string; se
+ * ensanchó para que el grafo pueda registrar la pista sin re-parsear el
+ * BBCode del mensaje.
+ */
+export interface MusicResult {
+  text: string;
+  track: TrackMeta | null;
+}
+
+/**
+ * Etapa en la que está un pedido dentro del pipeline. Se usa sólo para
+ * reportar estado (`getQueueStatus`, feedback al usuario); el avance real lo
+ * gobiernan los semáforos de MusicService.
+ */
+export type MusicStage = 'queued' | 'searching' | 'downloading' | 'uploading';
+
 export interface MusicRequest {
   query: string;
   username: string;
   kind?: 'audio' | 'video';
+  /** Etapa actual, para el reporte de posición en la cola. */
+  stage?: MusicStage;
   /**
-   * Search-ahead: pre-fetched ytsr result for this query, kicked off while
-   * the previous queue item was still downloading. `null` when prefetch
-   * failed transiently — caller should fall back to an inline search.
+   * Callback opcional para avisarle al usuario cómo va su pedido (posición en
+   * la cola, "descargando…"). Es best-effort: si lanza, el pipeline sigue.
    */
-  prefetch?: Promise<any[] | null>;
-  resolve: (result: string) => void;
+  onProgress?: (update: MusicProgress) => void;
+  resolve: (value: MusicResult) => void;
   reject: (error: Error) => void;
+}
+
+/** Avance reportado a quien encoló el pedido. */
+export interface MusicProgress {
+  stage: MusicStage;
+  /** 1 = es el próximo en entrar a la descarga. 0 = ya está en proceso. */
+  position: number;
+  /** Texto ya armado y listo para mostrarle al usuario. */
+  text: string;
 }
 
 export interface YouTubeCookie {
@@ -88,6 +125,10 @@ export interface BotSession {
 export interface QueueStatus {
   isProcessing: boolean;
   queueLength: number;
+  /** Desglose por etapa — el pipeline corre varias a la vez. */
+  searching: number;
+  downloading: number;
+  uploading: number;
 }
 
 export interface OnlineUser {
