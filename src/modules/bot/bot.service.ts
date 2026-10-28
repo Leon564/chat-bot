@@ -424,18 +424,49 @@ export class BotService implements OnModuleInit {
 
   // ─── AniList ───────────────────────────────────────────────────────────────
 
+  /**
+   * Resuelve el token y manda lo que haya que mandar (la tarjeta, o el aviso
+   * de que no se encontró / de error). Devuelve si hubo tarjeta.
+   */
   private async handleAniListRequest(
     rawKind: string,
     rawTitle: string,
     authorUsername: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const { found, messages } = await this.resolveAniListRequest(rawKind, rawTitle, authorUsername);
+    await this.sendAniListMessages(messages);
+    return found;
+  }
+
+  private async sendAniListMessages(messages: string[]): Promise<void> {
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+    for (let i = 0; i < messages.length; i++) {
+      this.sendBotMessage(messages[i]);
+      if (i < messages.length - 1) await this.utilsService.sleep(responseDelay);
+    }
+  }
+
+  /**
+   * Hace la búsqueda sin mandar nada: el que llama decide el orden. Así
+   * `handleChatResponse` puede esperar el resultado ANTES de publicar la
+   * frase de confirmación del modelo — si no, un "¡Es un clásico! 📖" salía
+   * igual para una obra que AniList no conoce, y el bot quedaba opinando de
+   * algo que después no podía mostrar.
+   */
+  private async resolveAniListRequest(
+    rawKind: string,
+    rawTitle: string,
+    authorUsername: string,
+  ): Promise<{ found: boolean; messages: string[] }> {
     const kind = AniListService.normalizeKind(rawKind);
     const title = (rawTitle ?? '').trim();
     if (!kind || title.length < 1) {
-      this.sendBotMessage(
-        `@${authorUsername} 🤔 No entendí qué buscar en AniList (kind="${rawKind}", title="${rawTitle}").`,
-      );
-      return;
+      return {
+        found: false,
+        messages: [
+          `@${authorUsername} 🤔 No entendí qué buscar en AniList (kind="${rawKind}", title="${rawTitle}").`,
+        ],
+      };
     }
 
     try {
@@ -454,10 +485,10 @@ export class BotService implements OnModuleInit {
 
       const result = isFullHit ? cached!.result : await this.aniListService.search(kind, title);
       if (!result) {
-        this.sendBotMessage(
-          `@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`,
-        );
-        return;
+        return {
+          found: false,
+          messages: [`@${authorUsername} 🔎 No encontré "${title}" en AniList. Probá con otro título.`],
+        };
       }
 
       // Fire-and-forget: la ingesta es best-effort y no debe ni demorar el
@@ -516,20 +547,34 @@ export class BotService implements OnModuleInit {
 
       const localized: AniListResult = { ...result, description: translatedDescription };
 
-      this.sendBotMessage(this.formatAniListCard(localized));
+      return { found: true, messages: this.formatAniListCard(localized) };
     } catch (err) {
       const code = (err as Error)?.message ?? '';
-      if (code === 'RATE_LIMIT') {
-        this.sendBotMessage(`@${authorUsername} ⏱️ AniList me está limitando. Probá en un minuto.`);
-      } else if (code === 'NETWORK') {
-        this.sendBotMessage(`@${authorUsername} 📡 No pude alcanzar AniList. Intentalo de nuevo en un rato.`);
-      } else {
-        this.sendBotMessage(`@${authorUsername} 😕 AniList no respondió bien esta vez.`);
-      }
+      const text =
+        code === 'RATE_LIMIT'
+          ? `@${authorUsername} ⏱️ AniList me está limitando. Probá en un minuto.`
+          : code === 'NETWORK'
+            ? `@${authorUsername} 📡 No pude alcanzar AniList. Intentalo de nuevo en un rato.`
+            : `@${authorUsername} 😕 AniList no respondió bien esta vez.`;
+      return { found: false, messages: [text] };
     }
   }
 
-  private formatAniListCard(r: AniListResult): string {
+  /**
+   * Tope por mensaje de la tarjeta. El backend DESCARTA en silencio cualquier
+   * mensaje del bot más largo que `maxBotMessageLength` (2000 por default),
+   * así que una sinopsis completa larga no se puede mandar de una: se parte
+   * en mensajes de continuación. El margen cubre el prefijo de color
+   * (`^#rrggbb `) que agrega `sendBotMessage`.
+   */
+  private static readonly ANILIST_CARD_MAX_LENGTH = 1800;
+
+  /**
+   * Arma la tarjeta como una lista de mensajes: casi siempre uno solo, y más
+   * cuando la sinopsis completa no entra. La sinopsis ya NO se recorta — antes
+   * se cortaba a 320 caracteres y se leía siempre a medias.
+   */
+  private formatAniListCard(r: AniListResult): string[] {
     const kindLabel: Record<AniListResult['kind'], string> = {
       manga: 'Manga',
       manhwa: 'Manhwa',
@@ -591,28 +636,53 @@ export class BotService implements OnModuleInit {
     const translatedGenres = r.genres.slice(0, 5).map((g) => genreLabel[g] ?? g);
     const genres = translatedGenres.length > 0 ? `🏷️ ${translatedGenres.join(', ')}` : '';
 
-    const synopsis = this.truncate(r.description ?? '', 320);
+    const synopsis = (r.description ?? '').replace(/\s+\n/g, '\n').trim();
 
-    const parts: string[] = [
-      cover,
-      `**${title}**`,
-      facts.join(' · '),
-      counts.join(' · '),
-      genres,
-      synopsis,
-      `🔗 ${r.url}`,
-    ];
+    const head = [cover, `**${title}**`, facts.join(' · '), counts.join(' · '), genres]
+      .filter((p) => p && p.length > 0)
+      .join('\n');
+    const link = `🔗 ${r.url}`;
+    const max = BotService.ANILIST_CARD_MAX_LENGTH;
 
-    return parts.filter((p) => p && p.length > 0).join('\n');
+    const whole = [head, synopsis, link].filter((p) => p.length > 0).join('\n');
+    if (whole.length <= max) return [whole];
+
+    // El primer trozo comparte mensaje con la cabecera; los siguientes van
+    // solos. El link cierra el último trozo si entra, si no va aparte.
+    const chunks = this.chunkText(synopsis, max - head.length - 1, max);
+    const messages = [chunks[0] ? `${head}\n${chunks[0]}` : head, ...chunks.slice(1)];
+    const last = messages.length - 1;
+    if (messages[last].length + 1 + link.length <= max) messages[last] += `\n${link}`;
+    else messages.push(link);
+    return messages;
   }
 
-  private truncate(text: string, max: number): string {
-    if (!text) return '';
-    const clean = text.replace(/\s+\n/g, '\n').trim();
-    if (clean.length <= max) return clean;
-    const cut = clean.slice(0, max);
-    const lastSpace = cut.lastIndexOf(' ');
-    return (lastSpace > max * 0.7 ? cut.slice(0, lastSpace) : cut).trim() + '…';
+  /**
+   * Parte un texto en trozos sin cortar palabras: prefiere un salto de línea,
+   * después un espacio. `firstBudget` es el lugar que deja la cabecera en el
+   * primer mensaje (puede ser 0: entonces el primer trozo queda vacío y la
+   * sinopsis arranca en el mensaje siguiente).
+   */
+  private chunkText(text: string, firstBudget: number, budget: number): string[] {
+    const chunks: string[] = [];
+    let rest = text;
+    let limit = Math.max(firstBudget, 0);
+    while (rest.length > limit) {
+      if (limit === 0) {
+        chunks.push('');
+        limit = budget;
+        continue;
+      }
+      const window = rest.slice(0, limit + 1);
+      let cut = window.lastIndexOf('\n');
+      if (cut < limit * 0.5) cut = window.lastIndexOf(' ');
+      if (cut < limit * 0.5) cut = limit;
+      chunks.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+      limit = budget;
+    }
+    if (rest) chunks.push(rest);
+    return chunks;
   }
 
   // ─── Video ─────────────────────────────────────────────────────────────────
@@ -784,12 +854,20 @@ export class BotService implements OnModuleInit {
     const anilistTokens = [...response.matchAll(anilistRe)];
     if (anilistTokens.length > 0) {
       const confirmText = response.replace(anilistRe, '').replace(/\s{2,}/g, ' ').trim();
-      if (confirmText) {
+      // Primero se busca, después se habla: la frase de confirmación del
+      // modelo ("¡Es un clásico!") sólo tiene sentido si hay al menos una
+      // tarjeta que mostrar. Si AniList no encontró nada, sale únicamente el
+      // aviso de "no encontré" y no una opinión sobre algo inexistente.
+      const results: Array<{ found: boolean; messages: string[] }> = [];
+      for (const token of anilistTokens) {
+        results.push(await this.resolveAniListRequest(token[1], token[2], authorUsername));
+      }
+      if (confirmText && results.some((r) => r.found)) {
         this.sendBotMessage(`<@${authorUsername}> ${confirmText}`);
         await this.utilsService.sleep(responseDelay);
       }
-      for (const token of anilistTokens) {
-        await this.handleAniListRequest(token[1], token[2], authorUsername);
+      for (const result of results) {
+        await this.sendAniListMessages(result.messages);
         await this.utilsService.sleep(responseDelay);
       }
       return;
