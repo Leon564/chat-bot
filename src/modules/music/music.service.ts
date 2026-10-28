@@ -24,6 +24,7 @@ import {
 import { GraphCacheService } from "../graph/graph-cache.service";
 import { GraphService } from "../graph/graph.service";
 import { Semaphore } from "./semaphore";
+import { pickVideo } from "./video-picker";
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -590,7 +591,7 @@ export class MusicService {
       if (videos.length === 0) {
         throw new Error(`No se encontraron resultados para "${request.query}"`);
       }
-      const video = videos[0] as any;
+      const video = this.chooseVideo(videos, request.query, isVideo);
       console.log(`🎯 [FOUND] "${video.title}" - ${video.url}`);
 
       // ── Etapa 2: descarga + transcodificación (serializada) ──────────────
@@ -662,13 +663,42 @@ export class MusicService {
   }
 
   /**
+   * Elige qué resultado descargar (ver `video-picker.ts`): descarta los que
+   * pasan el límite de duración buscando el siguiente que siga siendo la
+   * misma canción, y en audio prioriza audio oficial / lyrics sobre el
+   * videoclip. Si todos los relevantes son demasiado largos lanza el mismo
+   * error que `assertDurationWithin`.
+   */
+  private chooseVideo(videos: any[], query: string, isVideo: boolean): any {
+    const maxMinutes = isVideo
+      ? this.configService.get<number>('video.maxDurationMinutes') || 5
+      : this.configService.get<number>('music.maxDurationMinutes') || 8;
+    const { video, tooLong } = pickVideo(videos, query, {
+      maxMinutes,
+      preferAudio: !isVideo,
+    });
+    if (video) {
+      if (video !== videos[0]) {
+        console.log(
+          `🔀 [PICK] Se prefirió "${video.title}" (${video.duration ?? '?'}) sobre el primer resultado "${videos[0]?.title}" (${videos[0]?.duration ?? '?'})`,
+        );
+      }
+      return video;
+    }
+    if (tooLong) this.assertDurationWithin(tooLong, maxMinutes);
+    throw new Error(`No se encontraron resultados para "${query}"`);
+  }
+
+  /**
    * Busca un query en YouTube y devuelve los items tipo "video". Helper
    * extraído para reutilizar entre el flujo de audio, el de video, y el
    * search-ahead que dispara processQueue antes de tocar al siguiente item.
    */
   private async searchYouTube(query: string): Promise<any[]> {
+    // 10 y no 5: la elección de resultado necesita alternativas para cuando
+    // el primero es demasiado largo o es el videoclip en vez del audio.
     const searchResults = await ytsr(query, {
-      limit: 5,
+      limit: 10,
       requestOptions: {
         maxRedirects: 10,
         maxRetries: 3,
