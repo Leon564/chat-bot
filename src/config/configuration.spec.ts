@@ -43,6 +43,27 @@ describe('configuration — bot.rateLimitPerHour', () => {
   });
 });
 
+describe('configuration — bot.sharedContext', () => {
+  const ORIGINAL_ENV = process.env.SHARED_CONTEXT;
+
+  afterEach(() => {
+    if (ORIGINAL_ENV === undefined) delete process.env.SHARED_CONTEXT;
+    else process.env.SHARED_CONTEXT = ORIGINAL_ENV;
+  });
+
+  it('está apagado cuando la variable no está seteada', () => {
+    delete process.env.SHARED_CONTEXT;
+    expect(configuration().bot.sharedContext).toBe(false);
+  });
+
+  it("se enciende SÓLO con el literal 'true'", () => {
+    process.env.SHARED_CONTEXT = 'true';
+    expect(configuration().bot.sharedContext).toBe(true);
+    process.env.SHARED_CONTEXT = '1';
+    expect(configuration().bot.sharedContext).toBe(false);
+  });
+});
+
 /**
  * `CROSS_USER_CONTEXT` es el único interruptor de toda la rama de contexto
  * cruzado y se lee con una comparación estricta `=== 'true'`

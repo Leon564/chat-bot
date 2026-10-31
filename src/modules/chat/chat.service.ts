@@ -26,6 +26,7 @@ export class ChatService {
    * over again. Set via the !personality admin command in chat.
    */
   private personalityOverride: BotPersonality | null = null;
+  private sharedContextOverride: boolean | null = null;
 
   /**
    * Asegura un único warn por proceso cuando el proveedor detrás de
@@ -102,7 +103,10 @@ export class ChatService {
         this.logger.warn(`El router falló, se usa el prompt completo: ${(err as Error)?.message}`);
         return [...ALL_BLOCKS];
       });
-    const contextPromise = this.contextService.getForUser(username ?? '');
+    const sharedContext = this.isSharedContextEnabled();
+    const contextPromise = sharedContext
+      ? this.contextService.getShared()
+      : this.contextService.getForUser(username ?? '');
     const graphContextPromise = this.graphContext
       .build(username ?? '', message)
       .catch(() => '');
@@ -117,6 +121,9 @@ export class ChatService {
       botName, username, maxLength: maxResponseLength ?? 200,
       personality, useMemory, now: new Date(), blocks,
       crossContext: this.crossContext.isEnabled(),
+      // Sólo si de verdad hay otra persona en el historial: sin eso la nota no
+      // aclara nada y se pagarían sus tokens en cada mensaje.
+      sharedContext: sharedContext && context.some((pair) => pair.user !== username),
     });
 
     // Optimized payload structure to reduce token usage
@@ -215,6 +222,7 @@ export class ChatService {
       const intents: string[] = [personality === 'unfiltered' ? 'persona:unfiltered' : 'persona:default'];
       if (isSimpleGreeting) intents.push('greeting');
       if (graphContextInjected) intents.push('graph');
+      if (sharedContext) intents.push('shared-context');
       intents.push(...blocks);
 
       this.recordUsage('chat', response, username, intents);
@@ -1355,6 +1363,28 @@ escribas nada después del delimitador.`
   /** Set or clear the runtime personality override. Pass null to revert to .env. */
   setPersonalityOverride(value: BotPersonality | null): void {
     this.personalityOverride = value;
+  }
+
+  /**
+   * Si el historial que se replaya es el de toda la sala en vez del de quien
+   * escribe. Mismo patrón que la personalidad: `.env` como default y override
+   * de `!sharedcontext` en memoria, que se pierde al reiniciar.
+   */
+  isSharedContextEnabled(): boolean {
+    if (this.sharedContextOverride !== null) return this.sharedContextOverride;
+    return this.configService.get<boolean>('bot.sharedContext') === true;
+  }
+
+  getSharedContextInfo(): { enabled: boolean; source: 'override' | 'env' } {
+    return {
+      enabled: this.isSharedContextEnabled(),
+      source: this.sharedContextOverride === null ? 'env' : 'override',
+    };
+  }
+
+  /** Pass null to revert to .env. */
+  setSharedContextOverride(value: boolean | null): void {
+    this.sharedContextOverride = value;
   }
 
   /**

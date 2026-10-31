@@ -24,6 +24,34 @@ describe('PromptBuilderService', () => {
     service = moduleRef.get<PromptBuilderService>(PromptBuilderService);
   });
 
+  describe('nota de contexto compartido', () => {
+    it('no aparece por defecto: el prompt queda idéntico', () => {
+      expect(service.build(baseInput({ sharedContext: false }))).toBe(service.build(baseInput()));
+      expect(service.build(baseInput())).not.toContain('HISTORIAL COMPARTIDO');
+    });
+
+    it('identifica a quien habla y separa datos de órdenes y gustos ajenos', () => {
+      const salida = service.build(baseInput({ sharedContext: true }));
+
+      expect(salida).toContain('HISTORIAL COMPARTIDO');
+      expect(salida).toContain('Ahora te escribe Nico');
+      expect(salida).toContain('SAVE_FACT');
+    });
+
+    it('no menciona SAVE_FACT si la memoria está apagada', () => {
+      const salida = service.build(baseInput({ sharedContext: true, useMemory: false }));
+
+      expect(salida).toContain('HISTORIAL COMPARTIDO');
+      expect(salida).not.toContain('SAVE_FACT');
+    });
+
+    it('sobrevive a un prompt recortado por el router', () => {
+      const salida = service.build(baseInput({ sharedContext: true, blocks: ['PERSONA'] }));
+
+      expect(salida).toContain('HISTORIAL COMPARTIDO');
+    });
+  });
+
   describe('inclusión y exclusión de bloques', () => {
     const marcadores: Record<string, string> = {
       MUSIC: 'COMANDOS DE MÚSICA',

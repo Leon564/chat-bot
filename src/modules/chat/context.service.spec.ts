@@ -7,7 +7,7 @@ import {
   syncAllIndexes,
 } from '../../common/testing/mongo-test.helper';
 import { Context, ContextSchema, ContextDocument } from '../../common/schemas/context.schema';
-import { ContextService } from './context.service';
+import { ContextService, MAX_SHARED_PAIRS } from './context.service';
 
 describe('ContextService', () => {
   let connection: Connection;
@@ -110,6 +110,41 @@ describe('ContextService', () => {
 
     expect(pares).toHaveLength(1);
     expect(pares[0].question).toBe('reciente');
+  });
+
+  describe('getShared (contexto compartido)', () => {
+    it('devuelve los pares de todos los usuarios en orden cronológico', async () => {
+      await seed('Nico', 'conoces a Guts?', 3);
+      await seed('kei', 'se refiere a Berserk', 2);
+      await seed('Lyna', 'otra cosa', 1);
+
+      const pares = await service.getShared();
+
+      expect(pares.map((p) => [p.user, p.question])).toEqual([
+        ['Nico', 'conoces a Guts?'],
+        ['kei', 'se refiere a Berserk'],
+        ['Lyna', 'otra cosa'],
+      ]);
+    });
+
+    it('se queda con los más recientes al superar el tope', async () => {
+      for (let i = MAX_SHARED_PAIRS + 2; i >= 1; i--) await seed(`user${i}`, `pregunta ${i}`, i);
+
+      const pares = await service.getShared();
+
+      expect(pares).toHaveLength(MAX_SHARED_PAIRS);
+      expect(pares[pares.length - 1].question).toBe('pregunta 1');
+      expect(pares[0].question).toBe(`pregunta ${MAX_SHARED_PAIRS}`);
+    });
+
+    it('descarta pares de más de 30 minutos', async () => {
+      await seed('Nico', 'vieja', 31);
+      await seed('kei', 'reciente', 5);
+
+      const pares = await service.getShared();
+
+      expect(pares.map((p) => p.question)).toEqual(['reciente']);
+    });
   });
 
   it('save persiste el par', async () => {

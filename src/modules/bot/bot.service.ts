@@ -137,6 +137,8 @@ export class BotService implements OnModuleInit {
     // !personality para ir antes del filtro de menciones.
     if (await this.handleCrossContextCommand(content, authorUsername, authorRole)) return;
 
+    if (await this.handleSharedContextCommand(content, authorUsername, authorRole)) return;
+
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
     if (await this.handleMemoryCommand(content, authorUsername)) return;
@@ -1086,6 +1088,60 @@ export class BotService implements OnModuleInit {
     }
 
     this.sendBotMessage(`@${authorUsername} Uso: !contextocruzado on | off | reset | status`);
+    return true;
+  }
+
+  // ─── Shared-context command (admins) ─────────────────────────────────────
+
+  /**
+   * `!sharedcontext on|off|reset|status`: historial de toda la sala o de
+   * cada usuario. Calcado de `handlePersonalityCommand`, y como aquel el
+   * override vive en `ChatService`.
+   */
+  private async handleSharedContextCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!sharedcontext(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar el contexto compartido.`);
+      return true;
+    }
+
+    if (sub === 'on' || sub === 'off') {
+      this.chatService.setSharedContextOverride(sub === 'on');
+      this.sendBotMessage(
+        `@${authorUsername} ✅ Contexto compartido ${sub === 'on' ? 'activado' : 'desactivado'}.`,
+      );
+      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.chatService.setSharedContextOverride(null);
+      const info = this.chatService.getSharedContextInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ Contexto compartido reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
+      );
+      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → reset (.env: ${info.enabled})`);
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.chatService.getSharedContextInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 👥 Contexto compartido: ${info.enabled ? 'activado' : 'desactivado'}${note}.`,
+      );
+      return true;
+    }
+
+    this.sendBotMessage(`@${authorUsername} Uso: !sharedcontext on | off | reset | status`);
     return true;
   }
 

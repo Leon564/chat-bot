@@ -49,6 +49,10 @@ export default () => ({
     // diferidos. Se puede mover en caliente con !contextocruzado (admin), sin
     // reiniciar — mismo rol de interruptor de emergencia que CACHE_ENABLED.
     crossUserContext: process.env.CROSS_USER_CONTEXT === 'true',
+    // Historial de conversación común a toda la sala en vez de uno por usuario.
+    // Independiente de crossUserContext (que trata del grafo). Se puede mover
+    // en caliente con !sharedcontext (admin), sin reiniciar.
+    sharedContext: process.env.SHARED_CONTEXT === 'true',
   },
 
   // Music Configuration
