@@ -21,7 +21,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
-    "@distube/ytdl-core": "github:Leon564/ytdl-core",
+    "@distube/ytdl-core": "github:Leon564/distube-ytdl-core#release",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.0.0",
@@ -81,6 +81,9 @@
       "ts"
     ],
     "rootDir": "src",
+    "moduleNameMapper": {
+      "^@distube/ytdl-core$": "<rootDir>/common/testing/ytdl-core.stub.ts"
+    },
     "testRegex": ".*\\.spec\\.ts$",
     "testTimeout": 60000,
     "transform": {

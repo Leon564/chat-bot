@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import * as ytdl from "@distube/ytdl-core";
+import { Client, Quality, Ytdl } from "@distube/ytdl-core";
 import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import * as ytsr from "ytsr";
@@ -75,6 +75,11 @@ export class MusicService {
   private uploadService: "catbox" | "litterbox" | "nullpointer" | "filegarden" | "uguu";
   private litterboxExpiry: string;
   private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
+  // Una sola instancia: guarda la sesión que YouTube le da (visitor data, player).
+  private readonly yt: Ytdl;
+  // VisionOS, el primer cliente por defecto, no ofrece formatos con audio y
+  // video juntos; estos dos sí traen el itag 18, que es el que se sube sin ffmpeg.
+  private readonly ytMuxed: Ytdl;
   private ytdlp: YTDlpWrap | null = null;
   private ytdlpAvailable: boolean = false;
   // testConnectivity() pinged dns.google before every upload, which added a
@@ -122,6 +127,15 @@ export class MusicService {
     } else {
       console.log(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
     }
+
+    const cookie: string | undefined = this.youtubeCookies
+      ?.map((c: YouTubeCookie) => `${c.name}=${c.value}`)
+      .join("; ");
+    this.yt = new Ytdl(cookie ? { cookie } : {});
+    this.ytMuxed = new Ytdl({
+      clients: [Client.WebEmbedded, Client.Tv],
+      ...(cookie ? { cookie } : {}),
+    });
 
     // Inicializar yt-dlp de forma segura
     this.initializeYtDlp();
@@ -710,27 +724,6 @@ export class MusicService {
     return searchResults.items.filter((item: any) => item.type === 'video');
   }
 
-  // El cliente TVHTML5 anuncia un itag 18 cuyas URLs responden 403 en la
-  // primera petición, con o sin cabecera Range. Como sus formatos suelen
-  // encabezar info.formats, chooseFormat() los elegía y la descarga moría
-  // antes de empezar; los de ANDROID / ANDROID_VR sí sirven el archivo.
-  private static readonly DEAD_FORMAT_CLIENT = /[?&]c=TVHTML5(&|$)/;
-
-  /**
-   * Los formatos adaptativos (audio-only) sólo entregan ~60s de media si la
-   * URL no lleva PoToken: cualquier rango posterior responde 403, así que
-   * `filter: "audioonly"` rompía toda canción de más de un minuto. Los
-   * progresivos (itag 18, audio+video) no tienen ese tope, y ffmpeg descarta
-   * la pista de video al convertir a mp3 en convertBufferToMp3().
-   */
-  private static isUsableProgressive(format: any): boolean {
-    return (
-      format.hasAudio &&
-      format.hasVideo &&
-      !MusicService.DEAD_FORMAT_CLIENT.test(format.url)
-    );
-  }
-
   /**
    * Resultado de la etapa pesada: un archivo ya listo en disco. Nunca se
    * devuelve el contenido en memoria — ese era el origen del pico de RAM.
@@ -746,10 +739,7 @@ export class MusicService {
     const outputPath = this.tempFilePath('music', username, 'mp3');
 
     // yt-dlp primero: resuelve PoToken, baja SÓLO el audio y ya entrega un
-    // mp3 128K escrito en disco. El camino viejo (ytdl-core) pedía un
-    // formato progresivo — audio+VIDEO, itag 18 — porque los adaptativos se
-    // cortan a los ~60s sin PoToken, y después tiraba la pista de video en
-    // ffmpeg: se descargaban 25-40 MB para quedarse con ~4 MB de audio.
+    // mp3 128K escrito en disco.
     if (await this.isYtDlpAvailable()) {
       try {
         await this.downloadAudioWithYtDlp(video.url, outputPath);
@@ -778,26 +768,14 @@ export class MusicService {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         console.log(`⬇️ [YTDL-CORE] Intento ${attempt}/2 — ${video.url}`);
-        const ytdlOptions: any = {
-          filter: MusicService.isUsableProgressive,
-          requestOptions: {
-            maxRedirects: 10,
-            maxRetries: 3,
-            maxReconnects: 2,
-            backoff: { inc: 500, max: 5000 },
-            headers: {
-              'User-Agent': this.getRandomUserAgent(),
-              Accept:
-                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-us,en;q=0.5',
-              'Sec-Fetch-Mode': 'navigate',
-            },
-          },
-        };
-        if (this.youtubeCookies) ytdlOptions.cookies = this.youtubeCookies;
-        if (attempt === 2) ytdlOptions.lang = 'en';
-
-        await this.streamToFile(ytdl(video.url, ytdlOptions), rawPath, 60_000);
+        await this.streamToFile(
+          this.yt.download(video.url, {
+            quality: Quality.HighestAudio,
+            filter: { hasAudio: true, hasVideo: false },
+          }),
+          rawPath,
+          60_000,
+        );
         console.log(`✅ [YTDL-CORE] Descargado: ${this.fileSizeMb(rawPath)} MB`);
 
         await this.transcodeToMp3(rawPath, outputPath);
@@ -838,16 +816,17 @@ export class MusicService {
     let lastError: unknown = null;
 
     try {
-      const ytdlOptions: any = {
-        quality: 'highest',
-        filter: (format: any) =>
-          format.hasVideo &&
-          format.hasAudio &&
-          (format.container === 'mp4' || !format.container),
-      };
-      if (this.youtubeCookies) ytdlOptions.cookies = this.youtubeCookies;
-
-      await this.streamToFile(ytdl(video.url, ytdlOptions), outputPath, 5 * 60 * 1000);
+      await this.streamToFile(
+        this.ytMuxed.download(video.url, {
+          quality: Quality.Highest,
+          filter: (format) =>
+            format.hasVideo &&
+            format.hasAudio &&
+            (format.container === 'mp4' || !format.container),
+        }),
+        outputPath,
+        5 * 60 * 1000,
+      );
       console.log(`✅ [VIDEO] ytdl-core OK: ${this.fileSizeMb(outputPath)} MB`);
       return { path: outputPath };
     } catch (error) {
