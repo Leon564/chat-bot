@@ -31,7 +31,7 @@ const mockCompletion = (content: string) => crearMock.mockResolvedValue(respuest
 describe('ChatService — instrumentación de tokens', () => {
   let service: ChatService;
   let usage: { record: jest.Mock };
-  let context: { getForUser: jest.Mock; save: jest.Mock };
+  let context: { getForUser: jest.Mock; getShared: jest.Mock; save: jest.Mock };
   let builder: { build: jest.Mock };
   let router: { route: jest.Mock; isSimpleGreeting: jest.Mock };
   let graphContext: { build: jest.Mock };
@@ -52,6 +52,7 @@ describe('ChatService — instrumentación de tokens', () => {
     usage = { record: jest.fn().mockResolvedValue(undefined) };
     context = {
       getForUser: jest.fn().mockResolvedValue([]),
+      getShared: jest.fn().mockResolvedValue([]),
       save: jest.fn().mockResolvedValue(undefined),
     };
     builder = { build: jest.fn().mockReturnValue('system prompt de prueba') };
@@ -178,6 +179,77 @@ describe('ChatService — instrumentación de tokens', () => {
     await service.chat('hola', 'Aria', 'Nico');
 
     expect(context.getForUser).toHaveBeenCalledWith('Nico');
+    expect(context.getShared).not.toHaveBeenCalled();
+  });
+
+  describe('contexto compartido', () => {
+    const parDeOtro = { question: 'conoces a Guts?', answer: 'no lo conozco', user: 'kei' };
+
+    it('el .env lo enciende: replaya el historial de todos con el nombre de cada autor', async () => {
+      configValues['bot.sharedContext'] = true;
+      context.getShared.mockResolvedValue([parDeOtro]);
+      crearMock.mockResolvedValue(respuesta('ah, Berserk'));
+
+      await service.chat('bot, se refiere a Berserk', 'Aria', 'Nico');
+
+      expect(context.getForUser).not.toHaveBeenCalled();
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes).toEqual(
+        expect.arrayContaining([
+          { role: 'user', content: 'kei: conoces a Guts?' },
+          { role: 'assistant', content: 'no lo conozco' },
+          { role: 'user', content: 'Nico: bot, se refiere a Berserk' },
+        ]),
+      );
+      expect(builder.build).toHaveBeenCalledWith(expect.objectContaining({ sharedContext: true }));
+    });
+
+    it('sin nadie más en el historial no paga la nota del prompt', async () => {
+      configValues['bot.sharedContext'] = true;
+      context.getShared.mockResolvedValue([{ ...parDeOtro, user: 'Nico' }]);
+      crearMock.mockResolvedValue(respuesta('hola'));
+
+      await service.chat('hola', 'Aria', 'Nico');
+
+      expect(builder.build).toHaveBeenCalledWith(expect.objectContaining({ sharedContext: false }));
+    });
+
+    it('el override le gana al .env en ambos sentidos y reset lo devuelve', () => {
+      configValues['bot.sharedContext'] = true;
+      expect(service.getSharedContextInfo()).toEqual({ enabled: true, source: 'env' });
+
+      service.setSharedContextOverride(false);
+      expect(service.getSharedContextInfo()).toEqual({ enabled: false, source: 'override' });
+
+      configValues['bot.sharedContext'] = false;
+      service.setSharedContextOverride(true);
+      expect(service.getSharedContextInfo()).toEqual({ enabled: true, source: 'override' });
+
+      service.setSharedContextOverride(null);
+      expect(service.getSharedContextInfo()).toEqual({ enabled: false, source: 'env' });
+    });
+
+    it('el override en runtime cambia de qué historial lee el siguiente mensaje', async () => {
+      crearMock.mockResolvedValue(respuesta('hola'));
+
+      service.setSharedContextOverride(true);
+      await service.chat('hola', 'Aria', 'Nico');
+
+      expect(context.getShared).toHaveBeenCalledTimes(1);
+      expect(context.getForUser).not.toHaveBeenCalled();
+    });
+
+    it('marca la fila de uso para poder auditar el costo del modo compartido', async () => {
+      service.setSharedContextOverride(true);
+      crearMock.mockResolvedValue(respuesta('hola'));
+
+      await service.chat('hola', 'Aria', 'Nico');
+      await dejarCorrer();
+
+      expect(usage.record).toHaveBeenCalledWith(
+        expect.objectContaining({ intents: expect.arrayContaining(['shared-context']) }),
+      );
+    });
   });
 
   it('rutea el mensaje y arma el prompt sólo con los bloques que devolvió el router', async () => {

@@ -1361,6 +1361,8 @@ type ErrandDouble = {
 type ChatDouble = {
   chat?: jest.Mock;
   deliverErrand?: jest.Mock;
+  setSharedContextOverride?: jest.Mock;
+  getSharedContextInfo?: jest.Mock;
 };
 
 type RateLimitDouble = {
@@ -1476,6 +1478,64 @@ const buildBotService = async (
 
   return { service, sent, errands, chat, utils, socket, logging };
 };
+
+describe('!sharedcontext', () => {
+  const dobles = (enabled: boolean, source: 'env' | 'override') => ({
+    setSharedContextOverride: jest.fn(),
+    getSharedContextInfo: jest.fn().mockReturnValue({ enabled, source }),
+  });
+
+  it('rechaza a quien no es admin y no toca el interruptor', async () => {
+    const chat = dobles(false, 'env');
+    const { service, sent } = await buildBotService({ chat });
+
+    const handled = await service['handleSharedContextCommand']('!sharedcontext on', 'lyna', 'mod');
+
+    expect(handled).toBe(true);
+    expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Solo admins');
+  });
+
+  it.each([
+    ['on', true],
+    ['off', false],
+    ['reset', null],
+  ])('un admin ejecuta "%s"', async (sub, esperado) => {
+    const chat = dobles(false, 'env');
+    const { service } = await buildBotService({ chat });
+
+    await service['handleSharedContextCommand'](`!sharedcontext ${sub}`, 'leon', 'superAdmin');
+
+    expect(chat.setSharedContextOverride).toHaveBeenCalledWith(esperado);
+  });
+
+  it('sin subcomando informa el estado y de dónde sale', async () => {
+    const chat = dobles(true, 'override');
+    const { service, sent } = await buildBotService({ chat });
+
+    await service['handleSharedContextCommand']('!sharedcontext', 'leon', 'admin');
+
+    expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('activado (override en runtime)');
+  });
+
+  it('un subcomando desconocido muestra el uso', async () => {
+    const chat = dobles(false, 'env');
+    const { service, sent } = await buildBotService({ chat });
+
+    await service['handleSharedContextCommand']('!sharedcontext quizas', 'leon', 'admin');
+
+    expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso:');
+  });
+
+  it('devuelve false para un mensaje que no es el comando, incluido !contextocruzado', async () => {
+    const { service } = await buildBotService({});
+
+    expect(await service['handleSharedContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
+    expect(await service['handleSharedContextCommand']('!contextocruzado on', 'leon', 'admin')).toBe(false);
+  });
+});
 
 describe('!contextocruzado', () => {
   it('rechaza a quien no es admin y no toca el interruptor', async () => {

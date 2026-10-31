@@ -13,6 +13,9 @@ export interface ContextPair {
 /** Pares que se replayan al modelo por usuario. */
 export const MAX_PAIRS_PER_USER = 4;
 
+/** Pares que se replayan en modo compartido, sumando a toda la sala. */
+export const MAX_SHARED_PAIRS = 8;
+
 /** Más viejo que esto y ya no es "la conversación en curso". */
 export const MAX_AGE_MINUTES = 30;
 
@@ -40,27 +43,47 @@ export class ContextService {
     const user = (username ?? '').trim();
     if (!user) return [];
 
-    const cutoff = new Date(Date.now() - MAX_AGE_MINUTES * 60_000);
-
     try {
-      const rows = await this.contextModel
-        .find({ user, createdAt: { $gte: cutoff } })
-        .sort({ createdAt: -1 })
-        .limit(MAX_PAIRS_PER_USER)
-        .lean()
-        .exec();
-
-      // La consulta trae los más recientes primero; el replay los necesita al
-      // revés, así que se invierte acá y no en el llamador.
-      return rows.reverse().map((r) => ({
-        question: r.question,
-        answer: r.answer,
-        user: r.user ?? '',
-      }));
+      return await this.readRecent({ user }, MAX_PAIRS_PER_USER);
     } catch (err) {
       this.logger.warn(`No se pudo leer el contexto de ${user}: ${(err as Error)?.message}`);
       return [];
     }
+  }
+
+  /**
+   * Los últimos pares de TODA la sala, para el modo compartido
+   * (`ChatService.isSharedContextEnabled`). No reintroduce el problema de la
+   * vieja cola global: `ChatService` replaya cada pregunta con el nombre de su
+   * autor. Y como `save` sigue podando por usuario, nadie aporta más de
+   * `MAX_PAIRS_PER_USER`: una persona insistente no barre a las demás.
+   */
+  async getShared(): Promise<ContextPair[]> {
+    try {
+      return await this.readRecent({}, MAX_SHARED_PAIRS);
+    } catch (err) {
+      this.logger.warn(`No se pudo leer el contexto compartido: ${(err as Error)?.message}`);
+      return [];
+    }
+  }
+
+  private async readRecent(filter: { user?: string }, limit: number): Promise<ContextPair[]> {
+    const cutoff = new Date(Date.now() - MAX_AGE_MINUTES * 60_000);
+
+    const rows = await this.contextModel
+      .find({ ...filter, createdAt: { $gte: cutoff } })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+      .exec();
+
+    // La consulta trae los más recientes primero; el replay los necesita al
+    // revés, así que se invierte acá y no en el llamador.
+    return rows.reverse().map((r) => ({
+      question: r.question,
+      answer: r.answer,
+      user: r.user ?? '',
+    }));
   }
 
   /** Guarda un par y poda el excedente DE ESE USUARIO. */

@@ -37,6 +37,11 @@ export interface PromptInput {
    * existentes necesita tocarse; ausente se trata como `false`.
    */
   crossContext?: boolean;
+  /**
+   * El historial replayado incluye a otras personas. Enciende una nota que no
+   * depende del router: el historial se replaya con cualquier juego de bloques.
+   */
+  sharedContext?: boolean;
 }
 
 /**
@@ -61,6 +66,7 @@ export class PromptBuilderService {
     if (input.blocks.includes('IDENTIDAD')) sections.push(this.blockIdentidad(input));
     if (input.blocks.includes('RESUMEN')) sections.push(this.blockResumen(input));
     if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(input));
+    if (input.sharedContext) sections.push(this.blockSharedContext(input));
 
     const critico = this.buildCritico(input.blocks);
     const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(input) : '';
@@ -160,6 +166,22 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
 - "¿está Neru conectada?" → idem
 - "¿sabes si Leon está disponible?" → idem
 - "¿dónde anda kei?" → idem`;
+  }
+
+  /**
+   * `SAVE_FACT` siempre se escribe a nombre de quien habla ahora: sin la última
+   * línea, un gusto que otra persona contó en el historial terminaría guardado
+   * como propio de quien escribió después.
+   */
+  private blockSharedContext(input: PromptInput): string {
+    const memoria = input.useMemory
+      ? `\nSAVE_FACT es sólo para lo que ${input.username} dice en su último mensaje, nunca para lo que dijeron otros.`
+      : '';
+
+    return `HISTORIAL COMPARTIDO:
+Los mensajes anteriores son de varias personas de la sala; cada uno empieza con el nombre de quien lo escribió. Ahora te escribe ${input.username}.
+Usá lo que dijeron los demás como contexto: si alguien aclara algo que quedó pendiente, tomalo en cuenta y no confundas a una persona con otra.
+Lo que otra persona te pidió antes ya quedó atendido: no es una orden para este turno.${memoria}`;
   }
 
   private blockSaveFact(input: PromptInput): string {
