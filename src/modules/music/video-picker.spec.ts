@@ -1,4 +1,4 @@
-import { audioScore, parseDurationMinutes, pickVideo, queryCoverage } from './video-picker';
+import { audioScore, parseDurationMinutes, pickSong, pickVideo, queryCoverage } from './video-picker';
 
 const v = (title: string, duration: string | null, author = 'Canal', extra: any = {}) => ({
   title,
@@ -20,6 +20,40 @@ describe('parseDurationMinutes', () => {
     expect(parseDurationMinutes(null)).toBeNull();
     expect(parseDurationMinutes('')).toBeNull();
     expect(parseDurationMinutes('abc')).toBeNull();
+  });
+});
+
+describe('pickSong', () => {
+  const original = v('Love Me Not', '3:34', 'Ravyn Lenae');
+  const withGuest = v('Love Me Not (feat. Rex Orange County)', '3:09', 'Ravyn Lenae');
+  const slowed = v('Love Me Not (Slowed)', '3:57', 'adamxyz');
+
+  it('elige el primer resultado que cubre la búsqueda: la versión original', () => {
+    expect(pickSong([original, withGuest], 'love me not-ravyn', 8)).toBe(original);
+  });
+
+  it('prefiere la versión que nombra lo que se pidió aunque esté más abajo', () => {
+    expect(pickSong([original, withGuest], 'love me not ravyn rex orange county', 8)).toBe(withGuest);
+  });
+
+  it('saltea variantes no pedidas', () => {
+    expect(pickSong([slowed, original], 'love me not', 8)).toBe(original);
+  });
+
+  it('devuelve null si se pide una versión específica', () => {
+    expect(pickSong([original, slowed], 'love me not slowed', 8)).toBeNull();
+    expect(pickSong([v('Despacito (Ao Vivo)', '1:49', 'Otro')], 'despacito en vivo', 8)).toBeNull();
+  });
+
+  it('devuelve null si la mejor coincidencia es demasiado larga, en vez de bajar a un cover', () => {
+    const real = v('Stairway to Heaven', '8:02', 'Led Zeppelin');
+    const cover = v('Stairway to Heaven (Led Zeppelin)', '6:12', 'Karolina Protsenko');
+    expect(pickSong([real, cover], 'stairway to heaven led zeppelin', 8)).toBeNull();
+  });
+
+  it('devuelve null si nada se parece a lo pedido', () => {
+    expect(pickSong([v('Otra Cosa', '3:00', 'Otro')], 'love me not ravyn', 8)).toBeNull();
+    expect(pickSong([], 'love me not ravyn', 8)).toBeNull();
   });
 });
 

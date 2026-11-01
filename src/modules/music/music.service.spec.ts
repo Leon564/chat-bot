@@ -325,9 +325,43 @@ describe('MusicService — orden de la cola y posición reportada', () => {
       text: video.title,
       track: null,
     }));
+    jest.spyOn(internals(), 'searchYouTubeMusic').mockResolvedValue([]);
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  describe('elección de la fuente de búsqueda', () => {
+    const song = { title: 'Love Me Not', url: 'https://www.youtube.com/watch?v=HfpR4tAmI7E', author: { name: 'Ravyn Lenae' } };
+    const video = { title: 'Ravyn Lenae - Love Me Not (Official Audio)', url: 'yt', duration: '3:09' };
+    const query = 'love me not-ravyn';
+    let musicSearch: jest.SpyInstance;
+    let videoSearch: jest.SpyInstance;
+
+    beforeEach(() => {
+      musicSearch = jest.spyOn(internals(), 'searchYouTubeMusic').mockResolvedValue([song]);
+      videoSearch = jest.spyOn(internals(), 'searchYouTube').mockResolvedValue([video]);
+    });
+
+    it('un pedido de audio usa YouTube Music sin tocar YouTube', async () => {
+      await expect(internals().findVideo(query, false)).resolves.toBe(song);
+      expect(videoSearch).not.toHaveBeenCalled();
+    });
+
+    it('un pedido de video va directo a YouTube', async () => {
+      await expect(internals().findVideo(query, true)).resolves.toBe(video);
+      expect(musicSearch).not.toHaveBeenCalled();
+    });
+
+    it('si YouTube Music falla, el pedido de audio sigue por YouTube', async () => {
+      musicSearch.mockRejectedValue(new Error('HTTP 400'));
+      await expect(internals().findVideo(query, false)).resolves.toBe(video);
+    });
+
+    it('si YouTube Music no tiene nada parecido, el pedido de audio sigue por YouTube', async () => {
+      musicSearch.mockResolvedValue([{ title: 'Otra Cosa', url: 'x', author: { name: 'Otro' } }]);
+      await expect(internals().findVideo(query, false)).resolves.toBe(video);
+    });
+  });
 
   it('la descarga respeta el orden de llegada aunque una búsqueda posterior termine antes', async () => {
     const searches: Record<string, ReturnType<typeof deferred<any[]>>> = {
