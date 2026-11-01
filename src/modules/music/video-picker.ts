@@ -121,11 +121,51 @@ export function audioScore(query: string, video: any): number {
   }
   if (VIDEO_MARKERS.test(title)) score -= 2;
 
-  for (const variant of UNWANTED_VARIANTS) {
-    const re = new RegExp(`\\b${variant}\\b`);
-    if (re.test(title) && !re.test(q)) score -= 4;
-  }
+  if (isUnwantedVariant(title, q)) score -= 4;
   return score;
+}
+
+/** Recibe título y búsqueda ya normalizados. */
+function isUnwantedVariant(title: string, query: string): boolean {
+  return UNWANTED_VARIANTS.some((variant) => {
+    const re = new RegExp(`\\b${variant}\\b`);
+    return re.test(title) && !re.test(query);
+  });
+}
+
+/**
+ * Elige entre los resultados de YouTube Music: gana el que más cubre la
+ * búsqueda y, a igual cobertura, el que YouTube Music puso más arriba. No hay
+ * puntaje de audio porque ahí todo es audio.
+ *
+ * `null` significa "seguí por YouTube", y sale en tres casos:
+ *  - Ningún resultado se parece a lo pedido: el catálogo devuelve canciones
+ *    aunque el pedido no esté en él, así que siempre hay algo que descartar.
+ *  - La mejor coincidencia es demasiado larga. No se baja a la siguiente porque
+ *    suele ser un cover: "stairway to heaven led zeppelin" dura 8 minutos y
+ *    detrás viene un cover con "(Led Zeppelin)" en el título.
+ *  - Se pidió una versión ("en vivo", "remix"). El catálogo las nombra de
+ *    formas que la cobertura no empareja ("Live", "Ao Vivo"), y "despacito en
+ *    vivo" terminaba en una versión desconocida en vez del en vivo de Fonsi.
+ */
+export function pickSong(songs: any[], query: string, maxMinutes: number): any | null {
+  const q = normalizeText(query);
+  if (isUnwantedVariant(q, '')) return null;
+
+  let best: any | null = null;
+  let bestCoverage = 0;
+  for (const song of songs || []) {
+    if (isUnwantedVariant(normalizeText(song?.title ?? ''), q)) continue;
+
+    const coverage = queryCoverage(query, song);
+    if (coverage >= MIN_ALT_COVERAGE && coverage > bestCoverage) {
+      best = song;
+      bestCoverage = coverage;
+    }
+  }
+
+  const minutes = parseDurationMinutes(best?.duration);
+  return minutes !== null && minutes > maxMinutes ? null : best;
 }
 
 export function pickVideo(videos: any[], query: string, options: PickOptions): PickResult {
