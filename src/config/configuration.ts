@@ -74,6 +74,11 @@ export default () => ({
     // Falls back to FILEGARDEN_USER_ID when not set (some accounts share the
     // same value for both — see the Reddit ShareX tutorial).
     filegardenPublicId: process.env.FILEGARDEN_PUBLIC_ID || '',
+    // X02 (https://x02.me). Optional; when set, X02 is the SECOND option of
+    // every upload chain (right after the configured primary). Its API only
+    // accepts uploads from outside x02.me with a key — get it from the X02
+    // dashboard. Empty = X02 is skipped.
+    x02ApiKey: process.env.X02_API_KEY || '',
   },
 
   // Video Configuration — !video command, disabled by default because uploads
