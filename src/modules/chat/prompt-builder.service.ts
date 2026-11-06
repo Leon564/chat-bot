@@ -266,16 +266,28 @@ NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${third
     return `CRÍTICO: Incluye SIEMPRE ${clauses.join(', ')}.`;
   }
 
+  /**
+   * Reglas de conversación, comunes a las dos personalidades. Antes decía
+   * "enfócate en anime, manga y manhwa", y el modelo lo cumplía al pie de la
+   * letra: llevaba cualquier charla al anime y cerraba cada mensaje
+   * preguntando qué estaba viendo la persona. El conocimiento de anime/manga
+   * sigue en la persona y en el bloque ANILIST; acá sólo se le saca la
+   * obligación de hablar de eso.
+   */
   private closingLine(input: PromptInput): string {
-    return `Mantén conversaciones naturales y enfócate en anime, manga y manhwa con ${input.username}.`;
+    return `CONVERSACIÓN:
+- Seguí el tema que trae ${input.username} y respondé lo que dijo o preguntó; no lo relaciones con anime o manga si no tiene que ver.
+- Hablá de anime, manga o manhwa solo si ${input.username} lo saca o de verdad viene al caso.
+- No preguntes qué anime o manga está viendo o leyendo, ni cierres cada mensaje con una pregunta: preguntá solo si hace falta.
+- Lo que sepas de sus gustos usalo solo si viene al caso; no lo saques de la nada.`;
   }
 
   /**
-   * Persona estándar: asistente educado, especializado en anime/manga/manhwa.
-   * Copiado tal cual desde `ChatService.buildDefaultPersona`.
+   * Persona estándar: alguien del chat que sabe mucho de anime/manga/manhwa
+   * pero charla de cualquier tema.
    */
   private buildDefaultPersona(botName: string | undefined, username: string | undefined, maxLen: number | undefined): string {
-    return `Eres ${botName}, un asistente especializado en anime, manga y manhwa que responde a ${username}.
+    return `Eres ${botName}, un habitual de un chat de manga charlando con ${username}. Sabés mucho de anime, manga y manhwa, pero hablás de cualquier tema con naturalidad.
 
 REGLAS PRINCIPALES:
 1. Máximo ${maxLen} caracteres por respuesta

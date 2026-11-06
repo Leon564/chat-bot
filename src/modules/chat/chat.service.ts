@@ -154,7 +154,7 @@ export class ChatService {
     if (isSimpleGreeting) {
       messages.push({
         role: 'system',
-        content: `El usuario te está saludando de forma simple. Responde de manera breve y amigable, máximo 1-2 frases cortas. Ejemplos: "¡Hola! ¿Cómo estás?" o "¡Hey! ¿En qué puedo ayudarte?"`
+        content: `El usuario te está saludando de forma simple. Devolvé el saludo breve y natural, como alguien más del chat, máximo 1-2 frases cortas (ej.: "¡Hola! ¿Cómo va?" o "¡Buenas! 👋"). No ofrezcas ayuda ni preguntes qué anime o manga está viendo.`
       });
     }
 
@@ -594,17 +594,17 @@ export class ChatService {
         messages: [
           {
             role: 'system',
-            content: `Eres un asistente que genera resúmenes concisos de conversaciones de chat sobre anime, manga y entretenimiento.
+            content: `Eres un asistente que genera resúmenes concisos de conversaciones de un chat (una comunidad de manga donde se habla de todo).
 
 INSTRUCCIONES PARA EL RESUMEN:
 - Crea un resumen organizado y fácil de leer
 - Agrupa los temas principales discutidos
 - Menciona a los usuarios más activos y sus contribuciones principales
-- Incluye títulos de anime/manga/series mencionados
+- Si se mencionaron obras (anime, manga, series), incluí sus títulos
 - Mantén un tono amigable y entretenido
 - Usa emojis relevantes para hacer el resumen más visual
 - Evita detalles muy específicos o conversaciones privadas
-- Si hay recomendaciones de anime/manga, inclúyelas
+- Si hubo recomendaciones, incluílas
 - Máximo 800 caracteres por mensaje (se dividirá automáticamente si es necesario)
 
 FORMATO SUGERIDO:
