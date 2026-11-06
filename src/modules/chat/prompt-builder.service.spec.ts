@@ -111,7 +111,10 @@ describe('PromptBuilderService', () => {
     it('nombra sólo los tokens de los bloques incluidos', () => {
       const salida = service.build(baseInput({ blocks: ['PERSONA', 'ANILIST'] }));
       expect(salida).toContain('{{anilist:');
-      expect(salida).not.toContain('{{music:');
+      // `{{music:` sí puede aparecer fuera de la línea CRÍTICO: la capacidad
+      // de pasar canciones va siempre (ver el describe de música).
+      const critico = salida.split('\n').find((l) => l.startsWith('CRÍTICO')) ?? '';
+      expect(critico).not.toContain('{{music:');
       expect(salida).not.toContain('{{resumen}}');
       expect(salida).not.toContain('{{usuarios_online}}');
     });
@@ -119,6 +122,21 @@ describe('PromptBuilderService', () => {
     it('no aparece cuando ningún bloque de token está incluido', () => {
       const salida = service.build(baseInput({ blocks: ['PERSONA', 'TEMPORAL'] }));
       expect(salida).not.toContain('CRÍTICO');
+    });
+  });
+
+  describe('música: el modelo sabe que puede pasar canciones', () => {
+    it('sin el bloque MUSIC, la línea fija avisa la capacidad y trae el token', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA', 'TEMPORAL'] }));
+      expect(salida).toContain('Sí podés pasar canciones');
+      expect(salida).toContain('{{music:');
+      expect(salida).toContain('Nunca digas que no podés poner música');
+    });
+
+    it('con el bloque MUSIC no se repite la línea fija', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA', 'MUSIC'] }));
+      expect(salida).not.toContain('Sí podés pasar canciones al chat');
+      expect(salida).toContain('SÍ podés pasar canciones');
     });
   });
 

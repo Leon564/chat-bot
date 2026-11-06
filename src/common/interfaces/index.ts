@@ -64,6 +64,13 @@ export interface TrackMeta {
 export interface MusicResult {
   text: string;
   track: TrackMeta | null;
+  /**
+   * El BBCode del archivo (`[audio …]…[/audio]` / `[video]…[/video]`) sin
+   * texto alrededor. Presente sólo cuando el pedido salió bien: con esto el
+   * bot arma su propio mensaje de entrega (una frase corta del modelo + el
+   * archivo) en vez del `text` fijo, que queda como fallback.
+   */
+  media?: string;
 }
 
 /**

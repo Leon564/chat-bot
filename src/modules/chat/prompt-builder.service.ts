@@ -106,6 +106,7 @@ export class PromptBuilderService {
 
   private blockMusic(input: PromptInput): string {
     return `COMANDOS DE MÚSICA:
+- SÍ podés pasar canciones: el sistema las busca, las descarga y las envía al chat. Nunca digas que no podés poner o enviar música.
 - Cuando ${input.username} pida música (frases como "reproduce X", "pon X", "ponme X", "dale a X", "quiero escuchar X", "tocá/toca X", o cualquier variante similar), responde con un mensaje breve confirmando + el token literal {{music:nombre de la canción y artista si lo dieron}} en la misma línea.
 - Ejemplo: si dice "Aria pon Yorushika" → responde "¡Va Yorushika! 🎵 {{music:Yorushika}}"
 - Ejemplo: si dice "reproduce gods de league" → responde "¡Dale! 🎶 {{music:gods league of legends}}"
@@ -279,7 +280,20 @@ NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${third
 - Seguí el tema que trae ${input.username} y respondé lo que dijo o preguntó; no lo relaciones con anime o manga si no tiene que ver.
 - Hablá de anime, manga o manhwa solo si ${input.username} lo saca o de verdad viene al caso.
 - No preguntes qué anime o manga está viendo o leyendo, ni cierres cada mensaje con una pregunta: preguntá solo si hace falta.
-- Lo que sepas de sus gustos usalo solo si viene al caso; no lo saques de la nada.`;
+- Lo que sepas de sus gustos usalo solo si viene al caso; no lo saques de la nada.${this.musicCapability(input)}`;
+  }
+
+  /**
+   * Una línea fija para cuando el router NO metió el bloque MUSIC: si el
+   * pedido de música se le escapa al regex, el modelo no sabía que podía
+   * pasar canciones y contestaba "no puedo poner música". Lleva el token para
+   * que, aun sin el bloque, el pedido funcione (`handleChatResponse` procesa
+   * el token sin importar qué bloques tuvo el prompt). Con el bloque presente
+   * sobra: ahí ya está todo explicado.
+   */
+  private musicCapability(input: PromptInput): string {
+    if (input.blocks.includes('MUSIC')) return '';
+    return `\n- Sí podés pasar canciones al chat (se buscan y se envían solas): si te piden una, confirmá corto y agregá {{music:canción y artista}}. Nunca digas que no podés poner música.`;
   }
 
   /**

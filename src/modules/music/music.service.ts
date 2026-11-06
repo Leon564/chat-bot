@@ -529,6 +529,7 @@ export class MusicService {
     return {
       text: `🎵 <@${username}> Aquí tienes "${track.title}": ${audioTag}`,
       track,
+      media: audioTag,
     };
   }
 
@@ -970,6 +971,7 @@ export class MusicService {
           uploadUrl,
           uploadService: this.serviceFromUploadUrl(uploadUrl),
         },
+        media: body,
       };
     } catch (uploadError) {
       const msg =
