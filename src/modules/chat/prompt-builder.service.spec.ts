@@ -85,6 +85,28 @@ describe('PromptBuilderService', () => {
     });
   });
 
+  describe('conversación natural (sin forzar el anime)', () => {
+    it.each(['default', 'unfiltered'] as const)(
+      'con personalidad %s no obliga a enfocarse en anime y pide seguir el tema',
+      (personality) => {
+        const salida = service.build(baseInput({ personality, blocks: ['PERSONA'] }));
+        expect(salida).not.toContain('enfócate en anime');
+        expect(salida).not.toContain('especializado en anime');
+        expect(salida).toContain('Seguí el tema que trae Nico');
+        expect(salida).toContain('No preguntes qué anime o manga está viendo');
+        expect(salida).toContain('solo si viene al caso');
+      },
+    );
+
+    it('la persona por defecto sigue sabiendo de anime/manga y conserva sus reglas', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA'] }));
+      expect(salida).toContain('Sabés mucho de anime, manga y manhwa');
+      expect(salida).toContain('hablás de cualquier tema');
+      expect(salida).toContain('Máximo 200 caracteres');
+      expect(salida).toContain('No menciones que eres un bot');
+    });
+  });
+
   describe('línea CRÍTICO dinámica', () => {
     it('nombra sólo los tokens de los bloques incluidos', () => {
       const salida = service.build(baseInput({ blocks: ['PERSONA', 'ANILIST'] }));

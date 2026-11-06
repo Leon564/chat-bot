@@ -182,6 +182,65 @@ describe('ChatService — instrumentación de tokens', () => {
     expect(context.getShared).not.toHaveBeenCalled();
   });
 
+  describe('reply a otro mensaje', () => {
+    const reply = { author: 'kei', content: 'terminé de leer Berserk anoche' };
+
+    it('mete el mensaje padre justo antes del mensaje actual, como cita', async () => {
+      crearMock.mockResolvedValue(respuesta('buenísimo'));
+
+      await service.chat('bot qué opinás?', 'Aria', 'Nico', { replyTo: reply });
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      const ultimo = mensajes[mensajes.length - 1];
+      const penultimo = mensajes[mensajes.length - 2];
+      expect(ultimo).toEqual({ role: 'user', content: 'Nico: bot qué opinás?' });
+      expect(penultimo.role).toBe('user');
+      expect(penultimo.content).toContain('Nico está respondiendo a este mensaje de kei');
+      expect(penultimo.content).toContain('«terminé de leer Berserk anoche»');
+    });
+
+    it('un reply a un mensaje del propio bot se presenta como "un mensaje tuyo"', async () => {
+      crearMock.mockResolvedValue(respuesta('sí'));
+
+      await service.chat('en serio?', 'Aria', 'Nico', { replyTo: { author: 'aria', content: 'Guts es el mejor' } });
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes[mensajes.length - 2].content).toContain('respondiendo a un mensaje tuyo');
+    });
+
+    it('el router ve también el texto del padre', async () => {
+      crearMock.mockResolvedValue(respuesta('ok'));
+
+      await service.chat('bot qué tal está?', 'Aria', 'Nico', { replyTo: reply });
+
+      expect(router.route).toHaveBeenCalledWith(
+        'terminé de leer Berserk anoche\nbot qué tal está?',
+        expect.anything(),
+      );
+    });
+
+    it('el historial guardado conserva a qué se respondía', async () => {
+      crearMock.mockResolvedValue(respuesta('buenísimo'));
+
+      await service.chat('bot qué opinás?', 'Aria', 'Nico', { replyTo: reply });
+
+      expect(context.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          question: '(respondiendo a kei: «terminé de leer Berserk anoche») bot qué opinás?',
+        }),
+      );
+    });
+
+    it('sin reply no agrega nada', async () => {
+      crearMock.mockResolvedValue(respuesta('hola'));
+
+      await service.chat('hola', 'Aria', 'Nico');
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes.some((m: { content: string }) => m.content.includes('[Contexto]'))).toBe(false);
+    });
+  });
+
   describe('contexto compartido', () => {
     const parDeOtro = { question: 'conoces a Guts?', answer: 'no lo conozco', user: 'kei' };
 

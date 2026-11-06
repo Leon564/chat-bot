@@ -2,6 +2,15 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { io, Socket } from 'socket.io-client';
 import { randomUUID } from 'crypto';
+import { normalizeMessageText, ReplyContext } from './reply-context';
+
+/**
+ * Cuántos mensajes recientes se recuerdan para resolver el texto COMPLETO del
+ * mensaje al que alguien responde. El snapshot `replyTo.contentExcerpt` del
+ * backend viene cortado a 140 caracteres; si el padre pasó por el socket
+ * mientras el bot estaba conectado, se usa el texto entero desde acá.
+ */
+const RECENT_MESSAGES_LIMIT = 500;
 
 export interface ChatMessage {
   _id: string;
@@ -32,6 +41,8 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   private messageHandler: ((msg: ChatMessage) => void) | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pendingAcks = new Map<string, { resolve: (id: string | null) => void; timer: NodeJS.Timeout }>();
+  /** Mensajes recientes por `_id` (orden de inserción = antigüedad), incluidos los del propio bot. */
+  private recentMessages = new Map<string, { authorUsername: string; content: string; type?: string }>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -118,6 +129,9 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
           pending.resolve(msg._id);
         }
       }
+      // Se registra ANTES del early-return de mensajes propios: responderle a
+      // un mensaje del bot es el caso más común de reply dirigido al bot.
+      this.rememberMessage(msg);
       if (msg.authorUsername?.toLowerCase() === this.botUsername?.toLowerCase()) return;
       this.messageHandler?.(msg);
     });
@@ -142,6 +156,40 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       this.socket = null;
       await this.connect();
     }, delayMs);
+  }
+
+  private rememberMessage(msg: ChatMessage): void {
+    if (!msg?._id || !msg.authorUsername) return;
+    this.recentMessages.set(msg._id, {
+      authorUsername: msg.authorUsername,
+      content: msg.content ?? '',
+      type: msg.type,
+    });
+    while (this.recentMessages.size > RECENT_MESSAGES_LIMIT) {
+      const oldest = this.recentMessages.keys().next().value as string;
+      this.recentMessages.delete(oldest);
+    }
+  }
+
+  /**
+   * Contexto del mensaje al que responde `msg`, o `null` si no es un reply.
+   * Prefiere el texto completo del buffer y cae al `contentExcerpt` del
+   * snapshot (cortado a 140) si el padre es más viejo que el buffer o llegó
+   * antes de que el bot se conectara.
+   *
+   * Con `repliesEnabled=false` el backend no manda `replyTo` (reescribe el
+   * contenido con una mención), así que no hay forma de saber a qué mensaje
+   * se respondía: devuelve `null`.
+   */
+  getReplyContext(msg: ChatMessage): ReplyContext | null {
+    const replyTo = msg.replyTo;
+    if (!replyTo?.authorUsername) return null;
+    const known = replyTo.messageId ? this.recentMessages.get(replyTo.messageId) : undefined;
+    const content = known
+      ? normalizeMessageText(known.content, known.type)
+      : normalizeMessageText(replyTo.contentExcerpt);
+    if (!content) return null;
+    return { author: known?.authorUsername ?? replyTo.authorUsername, content };
   }
 
   /** Send a text message to the chat */

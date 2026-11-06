@@ -73,6 +73,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
   let ingest: { ingestAniList: jest.Mock; ingestSocial: jest.Mock; ingestTrack: jest.Mock };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -113,6 +114,7 @@ describe('BotService — handleAniListRequest (caché)', () => {
     };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -374,6 +376,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
   };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -393,6 +396,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
     };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -533,6 +537,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
   let logging: { saveLog: jest.Mock };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -548,6 +553,7 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
     logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -733,6 +739,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
   let logging: { saveLog: jest.Mock };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -754,6 +761,7 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
     logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -918,6 +926,7 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
   let logging: { saveLog: jest.Mock };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -936,6 +945,7 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
     logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -1046,6 +1056,17 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
     expect(chat.chat).toHaveBeenCalledWith('bot decime algo', 'Aria', 'Nico');
     expect(socket.sendMessage).toHaveBeenCalledWith(expect.stringContaining('respuesta del modelo'));
   });
+
+  it('si el mensaje es un reply, le pasa al modelo el mensaje al que se responde', async () => {
+    rateLimit.check.mockReturnValue(true);
+    const contexto = { author: 'kei', content: 'terminé de leer Berserk anoche' };
+    socket.getReplyContext.mockReturnValue(contexto);
+
+    await invocar('bot qué opinás?', 'Nico', 'user');
+    await dejarCorrer();
+
+    expect(chat.chat).toHaveBeenCalledWith('bot qué opinás?', 'Aria', 'Nico', { replyTo: contexto });
+  });
 });
 
 describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b)', () => {
@@ -1059,6 +1080,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
   };
   let socket: {
     onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
     sendMessage: jest.Mock;
     sendMessageAndAwaitId: jest.Mock;
     deleteMessage: jest.Mock;
@@ -1110,6 +1132,7 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     };
     socket = {
       onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
       sendMessage: jest.fn(),
       sendMessageAndAwaitId: jest.fn().mockResolvedValue(null),
       deleteMessage: jest.fn(),
@@ -1391,6 +1414,7 @@ const buildBotService = async (
   const sent: string[] = [];
   const socket = {
     onMessage: jest.fn(),
+    getReplyContext: jest.fn().mockReturnValue(null),
     sendMessage: jest.fn((text: string) => {
       sent.push(text);
     }),
