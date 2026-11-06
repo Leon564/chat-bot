@@ -170,8 +170,21 @@ describe('IntentRouterService', () => {
       },
     );
 
+    // Pedidos explícitos que antes se escapaban y el modelo, sin el bloque,
+    // contestaba que no podía poner música.
+    it.each([
+      'bot pon yorushika',
+      'bot mandame unas canciones tristes',
+      'aria un temazo de queen',
+      'bot ponga algo de jazz',
+      'bot enviame canciones de ado',
+    ])('incluye MUSIC para un pedido explícito: %s', async (msg) => {
+      expect(await rutear(msg)).toContain('MUSIC');
+    });
+
     it('omite MUSIC en una charla cualquiera', async () => {
       expect(await rutear('hola cómo va todo')).not.toContain('MUSIC');
+      expect(await rutear('bot qué pasa hoy')).not.toContain('MUSIC');
     });
   });
 

@@ -1910,3 +1910,122 @@ describe('entrega de recados', () => {
     expect(errands.setBotName).not.toHaveBeenCalled();
   });
 });
+
+describe('BotService — entrega de canciones', () => {
+  let service: BotService;
+  let chat: { chat: jest.Mock; songDeliveryLine: jest.Mock; rememberSongSent: jest.Mock };
+  let music: { processMusic: jest.Mock; getQueueStatus: jest.Mock };
+  let socket: {
+    onMessage: jest.Mock;
+    getReplyContext: jest.Mock;
+    sendMessage: jest.Mock;
+    sendMessageAndAwaitId: jest.Mock;
+    deleteMessage: jest.Mock;
+    username: string;
+  };
+
+  const track = {
+    title: 'Ita Song',
+    artist: 'Yorushika',
+    thumb: null,
+    youtubeUrl: null,
+    uploadUrl: 'https://files.catbox.moe/x.mp3',
+    uploadService: 'catbox',
+  };
+  const media = '[audio title="Ita Song"]https://files.catbox.moe/x.mp3[/audio]';
+
+  beforeEach(async () => {
+    chat = {
+      chat: jest.fn(),
+      songDeliveryLine: jest.fn().mockResolvedValue('¡Ahí va! 🎧'),
+      rememberSongSent: jest.fn().mockResolvedValue(undefined),
+    };
+    music = {
+      processMusic: jest.fn().mockResolvedValue({ text: 'TEXTO FIJO', track, media }),
+      getQueueStatus: jest.fn(),
+    };
+    socket = {
+      onMessage: jest.fn(),
+      getReplyContext: jest.fn().mockReturnValue(null),
+      sendMessage: jest.fn(),
+      sendMessageAndAwaitId: jest.fn().mockResolvedValue('buscando-id'),
+      deleteMessage: jest.fn(),
+      username: 'Aria',
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        BotService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ChatService, useValue: chat },
+        { provide: MusicService, useValue: music },
+        { provide: AniListService, useValue: {} },
+        { provide: UtilsService, useValue: { sleep: jest.fn().mockResolvedValue(undefined) } },
+        { provide: LoggingService, useValue: {} },
+        { provide: MemoryService, useValue: {} },
+        { provide: ChatSocketService, useValue: socket },
+        { provide: GraphIngestService, useValue: { ingestTrack: jest.fn().mockResolvedValue(undefined) } },
+        { provide: GraphCacheService, useValue: {} },
+        { provide: GraphService, useValue: noopGraphService },
+        { provide: GraphUserService, useValue: {} },
+        { provide: UsageService, useValue: {} },
+        { provide: RateLimitService, useValue: {} },
+        { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
+        { provide: ErrandService, useValue: noopErrandService },
+      ],
+    }).compile();
+
+    service = moduleRef.get<BotService>(BotService);
+  });
+
+  type ConMusica = { handleMusicRequest(message: string, authorUsername: string): Promise<void> };
+  const pedir = async (message: string) => {
+    await (service as unknown as ConMusica).handleMusicRequest(message, 'Nico');
+    // processMusic(...).then(...) no se espera dentro de handleMusicRequest.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it('entrega con la frase del modelo + el reproductor, sin repetir el título fijo', async () => {
+    await pedir('!music yorushika');
+
+    expect(chat.songDeliveryLine).toHaveBeenCalledWith('Aria', 'Nico', {
+      title: 'Ita Song',
+      artist: 'Yorushika',
+      query: 'yorushika',
+    });
+    expect(socket.deleteMessage).toHaveBeenCalledWith('buscando-id');
+    expect(socket.sendMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining(`🎵 <@Nico> ¡Ahí va! 🎧 ${media}`),
+    );
+    expect(socket.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('TEXTO FIJO'));
+  });
+
+  it('recuerda la canción enviada en el historial', async () => {
+    await pedir('!music yorushika');
+
+    expect(chat.rememberSongSent).toHaveBeenCalledWith(
+      'Nico',
+      { title: 'Ita Song', artist: 'Yorushika', query: 'yorushika' },
+      '¡Ahí va! 🎧',
+    );
+  });
+
+  it('si el modelo no redacta nada, sale el texto fijo de siempre', async () => {
+    chat.songDeliveryLine.mockResolvedValue('');
+
+    await pedir('!music yorushika');
+
+    expect(socket.sendMessage).toHaveBeenLastCalledWith(expect.stringContaining('TEXTO FIJO'));
+    expect(chat.rememberSongSent).toHaveBeenCalledWith('Nico', expect.anything(), '');
+  });
+
+  it('sin pista (subida caída) no llama al modelo ni guarda nada', async () => {
+    music.processMusic.mockResolvedValue({ text: 'SE PROCESÓ PERO…', track: null });
+
+    await pedir('!music yorushika');
+
+    expect(chat.songDeliveryLine).not.toHaveBeenCalled();
+    expect(chat.rememberSongSent).not.toHaveBeenCalled();
+    expect(socket.sendMessage).toHaveBeenLastCalledWith(expect.stringContaining('SE PROCESÓ PERO…'));
+  });
+});

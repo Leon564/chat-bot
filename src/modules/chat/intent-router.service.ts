@@ -44,8 +44,14 @@ export class IntentRouterService {
   // "dale a X" o "ponme X" que este regex no reconocía — "poneme", "ponele",
   // "pasame", "rola", "oir", "reproduc" (cubre "reproduci"/"reproduce") y
   // "subi" tapan ese hueco.
+  //
+  // Segunda ampliación: pedidos explícitos como "pon yorushika", "mandame
+  // unas canciones" o "un temazo de X" no matcheaban (plurales, "pon" y
+  // "manda" sueltos), y sin el bloque el modelo contestaba que no podía poner
+  // música. "pasa" a secas queda afuera a propósito: "qué pasa" es demasiado
+  // común.
   private static readonly MUSIC_VOCAB_RE =
-    /\b(cancion|musica|tema|escuchar|ponme|poneme|ponele|pasame|toca|tocar|suena|playlist|rola|oir|reproduc|sonar|subi)\b|dale a/;
+    /\b(canciones|cancion|cancioncita|musica|temas?|temazos?|escuchar|pon|pone|ponme|poneme|ponele|ponga|pasame|pasate|pasanos|manda|mandame|enviame|toca|tocar|suena|playlist|rolas?|oir|reproduc\w*|sonar|subi|song|album|cantante|banda)\b|dale a/;
 
   // RESUMEN: mismo regex que ya usa `chat()` en chat.service.ts, reescrito
   // sin acentos porque acá trabajamos sobre el mensaje ya normalizado.

@@ -399,9 +399,23 @@ export class BotService implements OnModuleInit {
     this.musicService
       .processMusic(query, authorUsername, this.queueFeedback(authorUsername))
       .then(async (result) => {
-        await this.utilsService.sleep(responseDelay);
+        // La frase de entrega la redacta el modelo, en paralelo con la pausa
+        // de siempre para que no sume espera. Nunca rechaza: si falla
+        // devuelve '' y sale el texto fijo de MusicService.
+        const song = result.track ? { title: result.track.title, artist: result.track.artist, query } : null;
+        const [line] = await Promise.all([
+          song && result.media
+            ? this.chatService.songDeliveryLine(this.chatSocketService.username ?? 'bot', authorUsername, song)
+            : Promise.resolve(''),
+          this.utilsService.sleep(responseDelay),
+        ]);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
-        this.sendBotMessage(result.text);
+        this.sendBotMessage(line && result.media ? `🎵 <@${authorUsername}> ${line} ${result.media}` : result.text);
+        if (song) {
+          // Que el bot recuerde qué canciones pasó, como un turno más del
+          // historial. Fire-and-forget como la ingesta de abajo.
+          void this.chatService.rememberSongSent(authorUsername, song, line).catch(() => {});
+        }
         if (result.track) {
           // Fire-and-forget: la ingesta es best-effort y no debe demorar
           // esta respuesta ni poder disparar el .catch() de abajo (que le
