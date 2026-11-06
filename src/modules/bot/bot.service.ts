@@ -240,7 +240,12 @@ export class BotService implements OnModuleInit {
       return;
     }
 
-    const response = await this.chatService.chat(content, botUsername, authorUsername);
+    // Si el mensaje responde a otro, el modelo necesita ese otro mensaje para
+    // entender de qué se habla ("bot qué opinás?" sobre lo que dijo alguien).
+    const replyContext = this.chatSocketService.getReplyContext(msg);
+    const response = replyContext
+      ? await this.chatService.chat(content, botUsername, authorUsername, { replyTo: replyContext })
+      : await this.chatService.chat(content, botUsername, authorUsername);
     if (!response) return;
 
     await this.handleChatResponse(response, authorUsername);
