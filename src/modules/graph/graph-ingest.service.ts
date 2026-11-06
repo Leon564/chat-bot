@@ -39,7 +39,7 @@ const GENRE_ES: Record<string, string> = {
 };
 
 /** Servicios cuyas URLs no expiran. Litterbox sí expira (LITTERBOX_EXPIRY). */
-const PERMANENT_UPLOADS = ['catbox', 'filegarden'];
+const PERMANENT_UPLOADS = ['catbox', 'filegarden', 'x02'];
 
 /**
  * Enum cerrado de relaciones que un `SAVE_FACT` puede emitir (Task 4, fase

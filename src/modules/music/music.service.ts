@@ -1082,8 +1082,10 @@ export class MusicService {
         }
       }
 
-      // Cadena de fallback: Catbox → Litterbox → FileGarden (último recurso si
-      // está configurado).
+      // Cadena de fallback: X02 (si está configurado) → Catbox → Litterbox →
+      // FileGarden (último recurso si está configurado).
+      const x02 = await this.tryX02Fallback(filePath);
+      if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
         console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
@@ -1146,8 +1148,11 @@ export class MusicService {
           }
         }
 
-        // Cadena de fallback: Catbox → Litterbox (filegarden ya falló como
-        // primario, no tiene sentido reintentar como último recurso).
+        // Cadena de fallback: X02 (si está configurado) → Catbox → Litterbox
+        // (filegarden ya falló como primario, no tiene sentido reintentar
+        // como último recurso).
+        const x02 = await this.tryX02Fallback(filePath);
+        if (x02) return x02;
         try {
           const result = await this.uploadToCatboxWithRetry(filePath);
           console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
@@ -1202,7 +1207,9 @@ export class MusicService {
         }
       }
 
-      // Cadena de fallback: Catbox → Litterbox
+      // Cadena de fallback: X02 (si está configurado) → Catbox → Litterbox
+      const x02 = await this.tryX02Fallback(filePath);
+      if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
         console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
@@ -1257,7 +1264,9 @@ export class MusicService {
         }
       }
 
-      // Fallback a Litterbox
+      // Segunda opción: X02 (si está configurado), después Litterbox
+      const x02 = await this.tryX02Fallback(filePath);
+      if (x02) return x02;
       try {
         const result = await this.uploadToLitterboxFallback(filePath);
         console.log(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
@@ -1307,7 +1316,9 @@ export class MusicService {
         }
       }
 
-      // Fallback a Catbox
+      // Segunda opción: X02 (si está configurado), después Catbox
+      const x02 = await this.tryX02Fallback(filePath);
+      if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
         console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox como fallback`);
@@ -1597,6 +1608,80 @@ export class MusicService {
   }
 
   /**
+   * Upload a single file to X02 (POST https://up.x02.me/api/upload).
+   * Multipart with field `file`, auth via `x-api-key` (the API rejects
+   * keyless requests from outside x02.me with 401). No `expiry` is sent, so
+   * the file is kept like on catbox. `?format=json` → `data.url`.
+   */
+  private async uploadToX02(filePath: string): Promise<string> {
+    const apiKey = this.configService.get<string>("music.x02ApiKey");
+    if (!apiKey) {
+      throw new Error("X02 no configurado (X02_API_KEY vacío)");
+    }
+
+    const form = new FormData();
+    form.append("file", fs.createReadStream(filePath));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+    try {
+      const response = await fetch("https://up.x02.me/api/upload?format=json", {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "User-Agent": "chat-bot/1.0" },
+        body: form,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      const raw = await response.text().catch(() => "");
+      let json: { success?: boolean; error?: string; data?: { url?: string } } | null = null;
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        json = null;
+      }
+
+      if (!response.ok || json?.success === false) {
+        throw new Error(
+          `Error subiendo a X02 (${response.status}): ${json?.error || raw || response.statusText}`,
+        );
+      }
+
+      const url = json?.data?.url;
+      if (!url || !url.startsWith("https://")) {
+        throw new Error(`Respuesta inválida de X02: ${raw.slice(0, 300)}`);
+      }
+      return url;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("Timeout al subir archivo a X02 (60s)");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Second option of every upload chain: try X02 once if the key is set.
+   * Returns null (never throws) so the caller continues with the rest of the
+   * chain exactly as before when X02 is not configured or fails.
+   */
+  private async tryX02Fallback(filePath: string): Promise<string | null> {
+    if (!this.configService.get<string>("music.x02ApiKey")) return null;
+    try {
+      console.log(`📤 [X02] Fallback — subiendo archivo...`);
+      const url = await this.uploadToX02(filePath);
+      console.log(`✅ [X02] Subida exitosa: ${url}`);
+      return url;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`❌ [X02] Falló como fallback: ${msg}`);
+      return null;
+    }
+  }
+
+  /**
    * Upload a single file to uguu.se. Multipart with field name `files[]`,
    * JSON response with `files[0].url` carrying the public link. uguu is a
    * temporary host (~3h retention) — fine for chat playback.
@@ -1848,6 +1933,7 @@ export class MusicService {
     if (/file\.garden/i.test(url)) return 'filegarden';
     if (/uguu\.se/i.test(url)) return 'uguu';
     if (/0x0\.st/i.test(url)) return '0x0';
+    if (/(^|[./])x02\.me/i.test(url)) return 'x02';
     return 'unknown';
   }
 
