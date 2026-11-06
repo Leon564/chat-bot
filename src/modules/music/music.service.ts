@@ -24,7 +24,12 @@ import {
 import { GraphCacheService } from "../graph/graph-cache.service";
 import { GraphService } from "../graph/graph.service";
 import { Semaphore } from "./semaphore";
-import { pickVideo } from "./video-picker";
+import { pickSong, pickVideo } from "./video-picker";
+import {
+  YOUTUBE_MUSIC_SEARCH_URL,
+  buildSongSearchBody,
+  parseSongResults,
+} from "./youtube-music-search";
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -40,7 +45,7 @@ export class MusicService {
    * Ahora cada pedido avanza por su cuenta y cada etapa tiene su propio
    * límite, elegido según qué recurso satura:
    *
-   *  - BÚSQUEDA (ytsr): sólo latencia de red y unos KB de metadata. Varias en
+   *  - BÚSQUEDA (YouTube Music / ytsr): sólo latencia de red y unos KB de metadata. Varias en
    *    paralelo no cuestan nada y sacan la latencia del camino crítico.
    *  - DESCARGA + ffmpeg: CPU y disco. Se mantiene en 1 a propósito — es la
    *    etapa que de verdad hay que serializar para no reventar la RAM ni
@@ -93,6 +98,9 @@ export class MusicService {
   // nunca responde cabecera no puede sumarle minutos a un camino que antes
   // arrancaba de inmediato.
   private readonly CACHED_URL_HEAD_TIMEOUT_MS = 4_000;
+  // Corto porque si vence el pedido sigue por YouTube: es latencia que se suma
+  // a la búsqueda normal, no un intento único.
+  private readonly YOUTUBE_MUSIC_SEARCH_TIMEOUT_MS = 5_000;
   // Dedup de pedidos en vuelo: si dos solicitudes idénticas (misma query
   // normalizada) llegan mientras la primera todavía está resolviéndose (cache
   // miss + pipeline en curso), la segunda no encola un item nuevo — comparte
@@ -599,13 +607,9 @@ export class MusicService {
     try {
       // ── Etapa 1: búsqueda ────────────────────────────────────────────────
       this.setStage(request, 'searching');
-      const videos = await this.searchSem.run(() =>
-        this.searchYouTube(request.query),
+      const video = await this.searchSem.run(() =>
+        this.findVideo(request.query, isVideo),
       );
-      if (videos.length === 0) {
-        throw new Error(`No se encontraron resultados para "${request.query}"`);
-      }
-      const video = this.chooseVideo(videos, request.query, isVideo);
       console.log(`🎯 [FOUND] "${video.title}" - ${video.url}`);
 
       // ── Etapa 2: descarga + transcodificación (serializada) ──────────────
@@ -673,6 +677,67 @@ export class MusicService {
       request.onProgress({ stage, position: ahead, text });
     } catch {
       // El feedback es best-effort: nunca debe tumbar el pipeline.
+    }
+  }
+
+  /**
+   * Los pedidos de audio prueban primero el catálogo de YouTube Music y usan
+   * YouTube cuando ahí no aparece lo pedido. Los pedidos de video van directo a
+   * YouTube, porque lo que quieren es justamente el video.
+   */
+  private async findVideo(query: string, isVideo: boolean): Promise<any> {
+    if (!isVideo) {
+      const song = await this.findSong(query);
+      if (song) return song;
+    }
+    const videos = await this.searchYouTube(query);
+    if (videos.length === 0) {
+      throw new Error(`No se encontraron resultados para "${query}"`);
+    }
+    return this.chooseVideo(videos, query, isVideo);
+  }
+
+  /** Nunca lanza: si YouTube Music falla, el pedido sigue por YouTube. */
+  private async findSong(query: string): Promise<any | null> {
+    const maxMinutes =
+      this.configService.get<number>('music.maxDurationMinutes') || 8;
+    try {
+      const song = pickSong(await this.searchYouTubeMusic(query), query, maxMinutes);
+      if (!song) {
+        console.log(`🔎 [YT-MUSIC] Sin coincidencia para "${query}", se busca en YouTube`);
+      }
+      return song;
+    } catch (error) {
+      console.warn(
+        `⚠️ [YT-MUSIC] Búsqueda fallida, se busca en YouTube:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  }
+
+  private async searchYouTubeMusic(query: string): Promise<any[]> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      this.YOUTUBE_MUSIC_SEARCH_TIMEOUT_MS,
+    );
+    try {
+      const response = await fetch(YOUTUBE_MUSIC_SEARCH_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': this.getRandomUserAgent(),
+          Origin: 'https://music.youtube.com',
+          Referer: 'https://music.youtube.com/',
+        },
+        body: JSON.stringify(buildSongSearchBody(query)),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return parseSongResults(await response.json());
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
