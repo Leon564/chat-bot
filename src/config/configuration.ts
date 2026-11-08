@@ -12,6 +12,12 @@ function parseIntEnv(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** Igual que `parseIntEnv` pero para decimales (p. ej. una probabilidad). */
+function parseFloatEnv(raw: string | undefined, fallback: number): number {
+  const parsed = parseFloat(raw ?? '');
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export default () => ({
   port: parseInt(process.env.PORT || '3000', 10),
 
@@ -53,6 +59,12 @@ export default () => ({
     // Independiente de crossUserContext (que trata del grafo). Se puede mover
     // en caliente con !sharedcontext (admin), sin reiniciar.
     sharedContext: process.env.SHARED_CONTEXT === 'true',
+    // Stickers espontáneos: probabilidad (0..1) de ofrecerle al modelo mandar
+    // un sticker en una respuesta normal. 0 apaga los espontáneos; un pedido
+    // explícito ("mandame un sticker") se atiende igual. Ver StickerGateService.
+    stickerChance: Math.min(1, Math.max(0, parseFloatEnv(process.env.STICKER_CHANCE, 0.15))),
+    // Minutos mínimos entre dos stickers espontáneos, en todo el chat.
+    stickerCooldownMinutes: Math.max(0, parseFloatEnv(process.env.STICKER_COOLDOWN_MINUTES, 5)),
   },
 
   // Music Configuration

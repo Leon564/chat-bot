@@ -22,6 +22,15 @@ export const ALL_BLOCKS: PromptBlock[] = [
   'SAVE_FACT',
 ];
 
+/**
+ * Oferta de sticker para esta respuesta (ver StickerGateService). `list` son
+ * los nombres agrupados por categoría; `requested` = el usuario pidió uno.
+ */
+export interface StickerPromptOffer {
+  list: string;
+  requested: boolean;
+}
+
 export interface PromptInput {
   botName?: string;
   username?: string;
@@ -42,6 +51,8 @@ export interface PromptInput {
    * depende del router: el historial se replaya con cualquier juego de bloques.
    */
   sharedContext?: boolean;
+  /** Presente sólo cuando el código decidió ofrecer un sticker en esta respuesta. */
+  stickers?: StickerPromptOffer | null;
 }
 
 /**
@@ -67,6 +78,7 @@ export class PromptBuilderService {
     if (input.blocks.includes('RESUMEN')) sections.push(this.blockResumen(input));
     if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(input));
     if (input.sharedContext) sections.push(this.blockSharedContext(input));
+    if (input.stickers?.list) sections.push(this.blockStickers(input.stickers, input.username));
 
     const critico = this.buildCritico(input.blocks);
     const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(input) : '';
@@ -82,6 +94,20 @@ export class PromptBuilderService {
     return input.personality === 'unfiltered'
       ? this.buildUnfilteredPersona(input.botName, input.username, input.maxLength)
       : this.buildDefaultPersona(input.botName, input.username, input.maxLength);
+  }
+
+  private blockStickers(offer: StickerPromptOffer, username: string | undefined): string {
+    const who = username ?? 'el usuario';
+    const rule = offer.requested
+      ? `- ${who} te pidió un sticker: elegí el que mejor encaje con lo que dijo y ponelo sí o sí.`
+      : '- Es opcional: ponelo sólo si encaja de verdad con el tono de tu respuesta. Si dudás, no pongas ninguno.';
+    return `STICKERS DEL CHAT:
+- Podés acompañar tu respuesta con UN sticker escribiendo al final STICKER(nombre exacto de la lista).
+${rule}
+- No describas ni anuncies el sticker: el sistema lo envía solo, después de tu mensaje. Si no tenés nada que decir, podés responder únicamente con STICKER(...).
+- Cuando alguien mande un sticker lo vas a ver como [sticker: nombre].
+Lista (categoría: nombres separados por " | "):
+${offer.list}`;
   }
 
   private blockTemporal(input: PromptInput): string {

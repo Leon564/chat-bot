@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { io, Socket } from 'socket.io-client';
 import { randomUUID } from 'crypto';
 import { normalizeMessageText, ReplyContext } from './reply-context';
+import { CatalogCategory, CatalogSticker, StickerCatalogService } from './sticker-catalog.service';
 
 /**
  * Cuántos mensajes recientes se recuerdan para resolver el texto COMPLETO del
@@ -44,7 +45,10 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   /** Mensajes recientes por `_id` (orden de inserción = antigüedad), incluidos los del propio bot. */
   private recentMessages = new Map<string, { authorUsername: string; content: string; type?: string }>();
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly stickerCatalog: StickerCatalogService,
+  ) {}
 
   async onModuleInit() {
     await this.connect();
@@ -113,6 +117,18 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       if (data.success) {
         this.logger.log(`🤖 Joined chat as ${this.botUsername}`);
       }
+    });
+
+    // Catálogo de stickers: llega con el `init` de cada conexión y se refresca
+    // con `stickersUpdated` (alta/edición/categorías desde el panel admin).
+    // `stickers` son los activos del set activo; `allStickers` no se usa (trae
+    // también los privados y los borrados, que el bot no debe ofrecer).
+    type StickerPayload = { stickers?: CatalogSticker[]; stickerCategories?: CatalogCategory[] };
+    this.socket.on('init', (data: StickerPayload) => {
+      this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
+    });
+    this.socket.on('stickersUpdated', (data: StickerPayload) => {
+      this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
     });
 
     this.socket.on('joinError', (data: { message: string }) => {
@@ -185,8 +201,10 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     const replyTo = msg.replyTo;
     if (!replyTo?.authorUsername) return null;
     const known = replyTo.messageId ? this.recentMessages.get(replyTo.messageId) : undefined;
+    // Un sticker padre se describe por su nombre ("[sticker: Gato llorando]")
+    // en vez del "[sticker]" genérico de normalizeMessageText.
     const content = known
-      ? normalizeMessageText(known.content, known.type)
+      ? normalizeMessageText(this.stickerCatalog.describeContent(known.content, known.type))
       : normalizeMessageText(replyTo.contentExcerpt);
     if (!content) return null;
     return { author: known?.authorUsername ?? replyTo.authorUsername, content };
@@ -221,6 +239,15 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       this.pendingAcks.set(clientId, { resolve, timer });
       this.socket!.emit('sendMessage', { content, type: 'text', clientId });
     });
+  }
+
+  /** Envía un sticker del catálogo (`code` sin los dos puntos). */
+  sendSticker(code: string): void {
+    if (!this.socket?.connected) {
+      this.logger.warn('Cannot send sticker — not connected');
+      return;
+    }
+    this.socket.emit('sendMessage', { content: `:${code}:`, type: 'sticker' });
   }
 
   /** Delete a message by id (the bot has 'bot' role and may delete its own messages) */

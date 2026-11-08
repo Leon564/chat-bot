@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { ChatMessage, ChatSocketService } from './chat-socket.service';
+import { StickerCatalogService } from './sticker-catalog.service';
 import { MAX_REPLY_CONTEXT_CHARS, normalizeMessageText } from './reply-context';
 
 describe('normalizeMessageText', () => {
@@ -35,7 +36,10 @@ describe('ChatSocketService.getReplyContext', () => {
 
   let service: ChatSocketService;
   beforeEach(() => {
-    service = new ChatSocketService({ get: () => undefined } as unknown as ConfigService);
+    service = new ChatSocketService(
+      { get: () => undefined } as unknown as ConfigService,
+      new StickerCatalogService(),
+    );
   });
 
   it('sin replyTo devuelve null', () => {
