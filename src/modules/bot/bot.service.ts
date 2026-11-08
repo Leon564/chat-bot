@@ -19,6 +19,8 @@ import {
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
+import { StickerGateService } from './sticker-gate.service';
+import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { MusicProgress } from '../../common/interfaces';
@@ -80,6 +82,8 @@ export class BotService implements OnModuleInit {
     private readonly rateLimitService: RateLimitService,
     private readonly crossContextSettings: CrossContextSettingsService,
     private readonly errandService: ErrandService,
+    private readonly stickerCatalog: StickerCatalogService,
+    private readonly stickerGate: StickerGateService,
   ) {}
 
   async onModuleInit() {
@@ -243,12 +247,30 @@ export class BotService implements OnModuleInit {
     // Si el mensaje responde a otro, el modelo necesita ese otro mensaje para
     // entender de qué se habla ("bot qué opinás?" sobre lo que dijo alguien).
     const replyContext = this.chatSocketService.getReplyContext(msg);
-    const response = replyContext
-      ? await this.chatService.chat(content, botUsername, authorUsername, { replyTo: replyContext })
-      : await this.chatService.chat(content, botUsername, authorUsername);
-    if (!response) return;
+    // Los stickers llegan al modelo por su nombre ("[sticker: Gato llorando]")
+    // en vez de ":stk_xxxxx:", así puede reaccionar a ellos con sentido.
+    const modelText = this.stickerCatalog.describeContent(content, msg.type);
+    const stickers = this.buildStickerOffer(content);
+    const chatOptions = {
+      ...(replyContext ? { replyTo: replyContext } : {}),
+      ...(stickers ? { stickers } : {}),
+    };
+    const rawResponse = Object.keys(chatOptions).length > 0
+      ? await this.chatService.chat(modelText, botUsername, authorUsername, chatOptions)
+      : await this.chatService.chat(modelText, botUsername, authorUsername);
+    const { text: response, sticker } = this.takeStickerToken(rawResponse);
+    if (!response && !sticker) return;
 
-    await this.handleChatResponse(response, authorUsername);
+    if (response) await this.handleChatResponse(response, authorUsername);
+    // El sticker va DESPUÉS del texto y sólo en respuestas de charla: en una
+    // de música, AniList, resumen o usuarios online el token del flujo
+    // (`{{...}}`) manda y un sticker encima sería ruido.
+    if (sticker && !/\{\{/.test(response)) {
+      if (response) await this.utilsService.sleep(this.configService.get<number>('bot.responseDelay') || 1000);
+      this.chatSocketService.sendSticker(sticker.code);
+      this.stickerGate.markSent();
+      console.log(`🧩 Sticker enviado: ${sticker.name}`);
+    }
 
     // Fire-and-forget, con su propio catch, como el resto de la ingesta al
     // grafo: marca qué candidatas de la recomendación colaborativa (Task 3,
@@ -256,6 +278,34 @@ export class BotService implements OnModuleInit {
     // SÓLO se marcan esas — marcar de más significa no volver a ofrecer algo
     // bueno; marcar de menos significa repetirse.
     void this.markCollaborativeRecommendations(authorUsername, response).catch(() => {});
+  }
+
+  // ─── Stickers ──────────────────────────────────────────────────────────────
+
+  /** Oferta de sticker para esta respuesta, o null si no corresponde. */
+  private buildStickerOffer(content: string): { list: string; requested: boolean } | null {
+    if (this.stickerCatalog.size === 0) return null;
+    const decision = this.stickerGate.decide(content);
+    if (decision === 'none') return null;
+    return { list: this.stickerCatalog.promptList(), requested: decision === 'requested' };
+  }
+
+  /**
+   * Separa el `{{sticker:nombre}}` que devuelve ChatService y lo resuelve
+   * contra el catálogo. Un nombre que no existe se descarta en silencio: es
+   * preferible no mandar nada a mandar un sticker equivocado.
+   */
+  private takeStickerToken(response: string): {
+    text: string;
+    sticker: { code: string; name: string } | null;
+  } {
+    const re = /\{\{sticker:\s*([^}]+?)\s*\}\}/gi;
+    const match = re.exec(response ?? '');
+    if (!match) return { text: response ?? '', sticker: null };
+    const text = response.replace(re, '').replace(/[ \t]{2,}/g, ' ').trim();
+    const found = this.stickerCatalog.findByName(match[1]);
+    if (!found) console.log(`🧩 El modelo eligió un sticker que no existe: "${match[1]}"`);
+    return { text, sticker: found ? { code: found.code, name: found.name } : null };
   }
 
   // ─── Recomendación colaborativa (Task 3, fase 5b) ──────────────────────────

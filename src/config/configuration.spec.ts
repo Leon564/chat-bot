@@ -103,3 +103,44 @@ describe('configuration — bot.crossUserContext', () => {
     expect(configuration().bot.crossUserContext).toBe(false);
   });
 });
+
+describe('configuration — stickers', () => {
+  const ORIGINAL = { chance: process.env.STICKER_CHANCE, cooldown: process.env.STICKER_COOLDOWN_MINUTES };
+
+  afterEach(() => {
+    if (ORIGINAL.chance === undefined) delete process.env.STICKER_CHANCE;
+    else process.env.STICKER_CHANCE = ORIGINAL.chance;
+    if (ORIGINAL.cooldown === undefined) delete process.env.STICKER_COOLDOWN_MINUTES;
+    else process.env.STICKER_COOLDOWN_MINUTES = ORIGINAL.cooldown;
+  });
+
+  it('usa 15% y 5 minutos por defecto', () => {
+    delete process.env.STICKER_CHANCE;
+    delete process.env.STICKER_COOLDOWN_MINUTES;
+    expect(configuration().bot.stickerChance).toBe(0.15);
+    expect(configuration().bot.stickerCooldownMinutes).toBe(5);
+  });
+
+  it('acepta decimales y recorta la probabilidad a 0..1', () => {
+    process.env.STICKER_CHANCE = '0.3';
+    expect(configuration().bot.stickerChance).toBe(0.3);
+    process.env.STICKER_CHANCE = '5';
+    expect(configuration().bot.stickerChance).toBe(1);
+    process.env.STICKER_CHANCE = '-1';
+    expect(configuration().bot.stickerChance).toBe(0);
+  });
+
+  it('un valor no numérico cae al default', () => {
+    process.env.STICKER_CHANCE = 'mucho';
+    process.env.STICKER_COOLDOWN_MINUTES = 'abc';
+    expect(configuration().bot.stickerChance).toBe(0.15);
+    expect(configuration().bot.stickerCooldownMinutes).toBe(5);
+  });
+
+  it('acepta 0 en ambas (sin espontáneos / sin cooldown)', () => {
+    process.env.STICKER_CHANCE = '0';
+    process.env.STICKER_COOLDOWN_MINUTES = '0';
+    expect(configuration().bot.stickerChance).toBe(0);
+    expect(configuration().bot.stickerCooldownMinutes).toBe(0);
+  });
+});

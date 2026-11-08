@@ -5,7 +5,7 @@ import { LoggingService } from '../../common/utils/logging.service';
 import { ContextService } from './context.service';
 import { UsageService } from './usage.service';
 import { LlmKind } from '../../common/schemas/llm-usage.schema';
-import { PromptBuilderService, ALL_BLOCKS } from './prompt-builder.service';
+import { PromptBuilderService, ALL_BLOCKS, StickerPromptOffer } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphContextService } from '../graph/graph-context.service';
 import { GraphIngestService, FACT_RELATIONS } from '../graph/graph-ingest.service';
@@ -91,9 +91,10 @@ export class ChatService {
     message: string,
     botName?: string,
     username?: string,
-    options: { replyTo?: ReplyContext | null } = {},
+    options: { replyTo?: ReplyContext | null; stickers?: StickerPromptOffer | null } = {},
   ): Promise<string> {
     const replyTo = options.replyTo ?? null;
+    const stickerOffer = options.stickers ?? null;
     const useMemory = this.configService.get<boolean>('bot.useMemory');
     const maxResponseLength = this.configService.get<number>('bot.maxLengthResponse');
     const personality = this.getPersonality();
@@ -139,6 +140,7 @@ export class ChatService {
       // Sólo si de verdad hay otra persona en el historial: sin eso la nota no
       // aclara nada y se pagarían sus tokens en cada mensaje.
       sharedContext: sharedContext && context.some((pair) => pair.user !== username),
+      stickers: stickerOffer,
     });
 
     // Optimized payload structure to reduce token usage
@@ -278,6 +280,15 @@ export class ChatService {
         console.log(`📍 Posición del token en respuesta original: ${content.indexOf('{{resumen}}')}`);
       }
       
+      // STICKER(nombre) sale ANTES que cualquier otro extractor: el regex de
+      // SAVE_FACT exige fin de respuesta u otro SAVE_FACT( después del objeto,
+      // y un STICKER( detrás lo haría fusionar las dos llamadas. Se limpia
+      // siempre (aunque no se haya ofrecido, por si el modelo lo imita del
+      // historial) pero el nombre sólo se devuelve si se ofreció.
+      const stickerExtraction = ChatService.extractStickerVerb(content);
+      content = stickerExtraction.content;
+      const chosenSticker = stickerOffer ? stickerExtraction.name : null;
+
       // Procesar hechos SAVE_FACT si la memoria está habilitada. Reemplaza al
       // SAVE_MEMORY de texto libre (Task 4, fase 4b): el sujeto siempre es
       // `username` (nunca se lee del texto del modelo), y la relación tiene
@@ -509,7 +520,13 @@ export class ChatService {
       }
 
       console.log(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
-      
+
+      // El historial (arriba) se guarda SIN el sticker: si quedara, el modelo
+      // lo vería en turnos siguientes e imitaría el verbo sin que se lo
+      // ofrezcan. BotService resuelve y envía el token.
+      if (chosenSticker) {
+        return `${content} {{sticker:${chosenSticker}}}`.trim();
+      }
       return content;
     } catch (error) {
       console.error('Error en chat GPT:', error);
@@ -1029,6 +1046,27 @@ escribas nada después del delimitador.`
     const opens = (object.match(/\(/g) ?? []).length;
     const closes = (object.match(/\)/g) ?? []).length;
     return closes > opens;
+  }
+
+  /**
+   * Saca `STICKER(nombre)` del texto y devuelve el primer nombre. Un solo
+   * sticker por respuesta: si el modelo pone varios, se envía el primero y el
+   * resto se descarta. Tolera comillas y espacios; un `STICKER(` sin cerrar
+   * también se borra (sin nombre).
+   */
+  static extractStickerVerb(content: string): { content: string; name: string | null } {
+    if (!/\bSTICKER\s*\(/i.test(content)) return { content, name: null };
+    let name: string | null = null;
+    const cleaned = content
+      .replace(/\bSTICKER\s*\(\s*([^)]*?)\s*\)/gi, (_m, raw: string) => {
+        const n = raw.replace(/^["'«“]+|["'»”]+$/g, '').trim();
+        if (!name && n) name = n;
+        return '';
+      })
+      .replace(/\bSTICKER\s*\([^)]*$/i, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+    return { content: cleaned, name };
   }
 
   /**
