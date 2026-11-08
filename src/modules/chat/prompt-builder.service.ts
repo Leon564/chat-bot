@@ -86,22 +86,48 @@ export class PromptBuilderService {
 
   private blockTemporal(input: PromptInput): string {
     const now = input.now;
-    const specialDay = this.getSpecialDay(now);
+    // Todo en hora de El Salvador: el server corre en UTC, y leer fecha/día/
+    // hora con los getters locales adelantaba el día desde las 18:00 SV.
+    const local = this.salvadorParts(now);
+    const specialDay = this.getSpecialDay(local);
     const specialDayText = specialDay ? `\n- Evento especial: ${specialDay}` : '';
 
     return `CONTEXTO TEMPORAL ACTUAL:
-- Fecha: ${now.toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
+- Fecha: ${now.toLocaleDateString('es-ES', {
+  weekday: 'long',
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  timeZone: PromptBuilderService.TIME_ZONE,
 })}
-- Hora: ${now.toLocaleTimeString('es-ES', { 
-  hour: '2-digit', 
+- Hora: ${now.toLocaleTimeString('es-ES', {
+  hour: '2-digit',
   minute: '2-digit',
-  timeZone: 'America/El_Salvador'
+  timeZone: PromptBuilderService.TIME_ZONE,
 })} (hora de El Salvador)
-- Es ${this.getTimeOfDay(now)} del ${this.getDayType(now)}${specialDayText}`;
+- Es ${this.getTimeOfDay(local)} del ${this.getDayType(local)}${specialDayText}`;
+  }
+
+  private static readonly TIME_ZONE = 'America/El_Salvador';
+
+  /** Componentes de fecha/hora de `date` vistos en hora de El Salvador. */
+  private salvadorParts(date: Date): { month: number; day: number; weekday: number; hour: number } {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: PromptBuilderService.TIME_ZONE,
+      month: 'numeric',
+      day: 'numeric',
+      weekday: 'short',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return {
+      month: Number(get('month')),
+      day: Number(get('day')),
+      weekday: weekdays.indexOf(get('weekday')),
+      hour: Number(get('hour')) % 24,
+    };
   }
 
   private blockMusic(input: PromptInput): string {
@@ -356,8 +382,8 @@ REGLAS PRINCIPALES:
    * Obtiene el periodo del día basado en la hora. Copiado tal cual desde
    * `ChatService.getTimeOfDay`.
    */
-  private getTimeOfDay(date: Date): string {
-    const hour = date.getHours();
+  private getTimeOfDay(local: { hour: number }): string {
+    const hour = local.hour;
     
     if (hour >= 6 && hour < 12) {
       return 'mañana';
@@ -374,8 +400,8 @@ REGLAS PRINCIPALES:
    * Obtiene el tipo de día (laboral/fin de semana). Copiado tal cual desde
    * `ChatService.getDayType`.
    */
-  private getDayType(date: Date): string {
-    const dayOfWeek = date.getDay();
+  private getDayType(local: { weekday: number }): string {
+    const dayOfWeek = local.weekday;
     
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       return 'fin de semana';
@@ -392,9 +418,8 @@ REGLAS PRINCIPALES:
    * Detecta días especiales o eventos. Copiado tal cual desde
    * `ChatService.getSpecialDay`.
    */
-  private getSpecialDay(date: Date): string | null {
-    const month = date.getMonth() + 1; // getMonth() returns 0-11
-    const day = date.getDate();
+  private getSpecialDay(local: { month: number; day: number }): string | null {
+    const { month, day } = local;
     
     // Días festivos y eventos especiales
     const specialDays: { [key: string]: string } = {
