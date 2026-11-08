@@ -158,6 +158,25 @@ describe('PromptBuilderService', () => {
       );
       expect(salida).toContain('Navidad');
     });
+
+    it('de noche en El Salvador no adelanta el día aunque en UTC ya sea mañana', () => {
+      // Sábado 7/11 a las 20:00 SV = domingo 8/11 02:00 UTC.
+      const salida = service.build(
+        baseInput({ blocks: ['PERSONA', 'TEMPORAL'], now: new Date('2026-11-07T20:00:00-06:00') }),
+      );
+      expect(salida).toContain('sábado, 7 de noviembre de 2026');
+      expect(salida).not.toContain('domingo');
+      expect(salida).toContain('Es noche del fin de semana');
+    });
+
+    it('el evento especial se calcula con el día de El Salvador', () => {
+      // 24/12 a las 21:00 SV = 25/12 03:00 UTC: todavía es Nochebuena.
+      const salida = service.build(
+        baseInput({ blocks: ['PERSONA', 'TEMPORAL'], now: new Date('2026-12-24T21:00:00-06:00') }),
+      );
+      expect(salida).toContain('Nochebuena');
+      expect(salida).not.toContain('Navidad');
+    });
   });
 
   describe('bloque SAVE_FACT (Task 4, fase 4b — reemplaza a SAVE_MEMORY)', () => {
