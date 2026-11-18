@@ -21,6 +21,18 @@ const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
  */
 const SWEEP_EVERY_N_CHECKS = 200;
 
+/** Roles que nunca se limitan (ni siquiera cuentan). */
+const UNLIMITED_ROLES = new Set(['mod', 'admin', 'superAdmin']);
+
+/**
+ * Roles registrados con tope propio (`bot.rateLimitRegistered` cada
+ * `bot.rateLimitRegisteredWindowMinutes`). Cualquier otro rol —`guest`, sin
+ * rol o desconocido— cae en el tope de invitados (`bot.rateLimitPerHour`):
+ * son listas explícitas a propósito, para que un campo faltante no deje a
+ * nadie con el tope generoso.
+ */
+const REGISTERED_ROLES = new Set(['user']);
+
 /**
  * Guard de costo por usuario (Task 4, fase 5a): limita cuántas veces por
  * hora una persona puede disparar una llamada al modelo. `maxLengthResponse`
@@ -56,24 +68,26 @@ export class RateLimitService {
   /**
    * `true` si `username` puede disparar otra llamada al modelo ahora mismo.
    *
-   * - `admin`/`superAdmin` nunca se limitan (ni siquiera cuentan: no se
+   * - `mod`/`admin`/`superAdmin` nunca se limitan (ni siquiera cuentan: no se
    *   registra marca de tiempo para ellos).
-   * - Con `bot.rateLimitPerHour` en `0` el límite queda desactivado por
-   *   completo — es el interruptor para apagar la feature sin tocar código.
-   * - La ventana es móvil: se cuentan sólo las marcas de la última hora, no
-   *   un contador que resetea en un límite de reloj fijo.
+   * - Registrados (`user`): `bot.rateLimitRegistered` llamadas por
+   *   ventana de `bot.rateLimitRegisteredWindowMinutes` minutos.
+   * - Invitados (o sin rol): `bot.rateLimitPerHour` llamadas por hora.
+   * - Un tope en `0` desactiva el límite de ese grupo.
+   * - La ventana es móvil: se cuentan sólo las marcas dentro de la ventana,
+   *   no un contador que resetea en un límite de reloj fijo.
    */
   check(username: string, role?: string): boolean {
-    if (role === 'admin' || role === 'superAdmin') return true;
+    if (role && UNLIMITED_ROLES.has(role)) return true;
 
-    const limit = this.configService.get<number>('bot.rateLimitPerHour') ?? 20;
+    const { limit, windowMs } = this.limitFor(role);
     if (limit <= 0) return true;
 
     const now = Date.now();
     this.maybeSweep(now);
 
     const key = this.normalize(username);
-    const fresh = (this.hits.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
+    const fresh = (this.hits.get(key) ?? []).filter((t) => now - t < windowMs);
 
     if (fresh.length >= limit) {
       // Persistimos la lista ya podada aunque rechacemos: evita que una
@@ -115,6 +129,21 @@ export class RateLimitService {
     return true;
   }
 
+  private limitFor(role?: string): { limit: number; windowMs: number } {
+    if (role && REGISTERED_ROLES.has(role)) {
+      const limit = this.configService.get<number>('bot.rateLimitRegistered') ?? 100;
+      return { limit, windowMs: this.registeredWindowMs() };
+    }
+    const limit = this.configService.get<number>('bot.rateLimitPerHour') ?? 20;
+    return { limit, windowMs: WINDOW_MS };
+  }
+
+  /** Ventana de los registrados, con piso de 1 minuto (un 0 o negativo no tiene sentido). */
+  private registeredWindowMs(): number {
+    const minutes = this.configService.get<number>('bot.rateLimitRegisteredWindowMinutes') ?? 15;
+    return Math.max(1, minutes) * 60 * 1000;
+  }
+
   private normalize(username: string): string {
     return username.trim().toLowerCase();
   }
@@ -137,8 +166,11 @@ export class RateLimitService {
       if (now - lastNotified >= NOTIFY_COOLDOWN_MS) this.lastNotifiedAt.delete(key);
     }
 
+    // El barrido no sabe el rol de cada clave: conserva lo que entre en la
+    // ventana más larga de las dos, así no poda marcas que todavía cuentan.
+    const keepMs = Math.max(WINDOW_MS, this.registeredWindowMs());
     for (const [key, timestamps] of this.hits) {
-      const fresh = timestamps.filter((t) => now - t < WINDOW_MS);
+      const fresh = timestamps.filter((t) => now - t < keepMs);
       if (fresh.length === 0) this.hits.delete(key);
       else this.hits.set(key, fresh);
     }

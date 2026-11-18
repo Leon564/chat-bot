@@ -62,15 +62,83 @@ describe('RateLimitService', () => {
     expect(service.check('Kei')).toBe(false);
   });
 
-  it('admin y superAdmin nunca se limitan', () => {
+  it('mod, admin y superAdmin nunca se limitan', () => {
     conLimite(1);
 
+    for (let i = 0; i < 5; i++) {
+      expect(service.check('Mod', 'mod')).toBe(true);
+    }
+
     expect(service.check('Nico', 'admin')).toBe(true);
     expect(service.check('Nico', 'admin')).toBe(true);
     expect(service.check('Nico', 'admin')).toBe(true);
 
     expect(service.check('Kei', 'superAdmin')).toBe(true);
     expect(service.check('Kei', 'superAdmin')).toBe(true);
+  });
+
+  const conTopes = (invitados: number, registrados: number, minutos: number) => {
+    config.get.mockImplementation((key: string) => {
+      if (key === 'bot.rateLimitPerHour') return invitados;
+      if (key === 'bot.rateLimitRegistered') return registrados;
+      if (key === 'bot.rateLimitRegisteredWindowMinutes') return minutos;
+      return undefined;
+    });
+  };
+
+  it('los registrados (user) usan su propio tope, no el de invitados', () => {
+    conTopes(1, 3, 15);
+
+    expect(service.check('Nico', 'user')).toBe(true);
+    expect(service.check('Nico', 'user')).toBe(true);
+    expect(service.check('Nico', 'user')).toBe(true);
+    expect(service.check('Nico', 'user')).toBe(false);
+
+    // mod no se ve afectado por el tope de registrados.
+    for (let i = 0; i < 5; i++) {
+      expect(service.check('Mod', 'mod')).toBe(true);
+    }
+  });
+
+  it('la ventana de los registrados es la configurada en minutos', () => {
+    conTopes(1, 2, 15);
+
+    expect(service.check('Nico', 'user')).toBe(true);
+    expect(service.check('Nico', 'user')).toBe(true);
+    expect(service.check('Nico', 'user')).toBe(false);
+
+    jest.advanceTimersByTime(14 * 60 * 1000);
+    expect(service.check('Nico', 'user')).toBe(false);
+
+    jest.advanceTimersByTime(60 * 1000 + 1000);
+    expect(service.check('Nico', 'user')).toBe(true);
+  });
+
+  it('con el tope de registrados en 0 no se los limita', () => {
+    conTopes(1, 0, 15);
+
+    for (let i = 0; i < 20; i++) {
+      expect(service.check('Nico', 'user')).toBe(true);
+    }
+    expect(service.check('Invitado', 'guest')).toBe(true);
+    expect(service.check('Invitado', 'guest')).toBe(false);
+  });
+
+  it('los invitados sí se limitan', () => {
+    conLimite(1);
+
+    expect(service.check('Invitado', 'guest')).toBe(true);
+    expect(service.check('Invitado', 'guest')).toBe(false);
+  });
+
+  it('sin rol o con rol desconocido se limita (no queda libre por un campo faltante)', () => {
+    conLimite(1);
+
+    expect(service.check('Anon')).toBe(true);
+    expect(service.check('Anon')).toBe(false);
+
+    expect(service.check('Raro', 'loquesea')).toBe(true);
+    expect(service.check('Raro', 'loquesea')).toBe(false);
   });
 
   it('el conteo tolera mayúsculas y espacios en el nombre', () => {

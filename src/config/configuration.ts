@@ -45,10 +45,18 @@ export default () => ({
     // Tope de llamadas al modelo por usuario y por hora (ventana móvil,
     // ver RateLimitService). No limita los fast-paths deterministas
     // (música, video, usuarios online) ni los comandos !personality/
-    // !quesabes/!olvida — ninguno de esos cuesta tokens. admin/superAdmin
-    // nunca se limitan. RATE_LIMIT_PER_HOUR=0 desactiva el límite por
-    // completo (todos pasan) — interruptor de emergencia sin tocar código.
+    // !quesabes/!olvida — ninguno de esos cuesta tokens. RATE_LIMIT_PER_HOUR
+    // es el tope de los INVITADOS (o sin rol); RATE_LIMIT_PER_HOUR=0 lo
+    // desactiva — interruptor de emergencia sin tocar código.
     rateLimitPerHour: parseIntEnv(process.env.RATE_LIMIT_PER_HOUR, 20),
+    // Tope aparte para registrados (user): N llamadas por ventana móvil
+    // de M minutos. RATE_LIMIT_REGISTERED=0 los deja sin límite.
+    // mod/admin/superAdmin nunca se limitan.
+    rateLimitRegistered: parseIntEnv(process.env.RATE_LIMIT_REGISTERED, 100),
+    rateLimitRegisteredWindowMinutes: parseIntEnv(
+      process.env.RATE_LIMIT_REGISTERED_WINDOW_MINUTES,
+      15,
+    ),
     // Contexto cruzado entre usuarios. Apagado por defecto: es opt-in.
     // Enciende tres capacidades a la vez — que el bot lea del grafo de OTROS
     // usuarios mencionados, que acepte hechos sobre terceros, y los recados
