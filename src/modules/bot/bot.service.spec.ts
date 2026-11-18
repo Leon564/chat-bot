@@ -17,6 +17,19 @@ import { RateLimitService } from './rate-limit.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 
+import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
+import { StickerGateService } from './sticker-gate.service';
+
+// Catálogo vacío: con size 0 BotService nunca ofrece stickers, así que los
+// tests existentes ven exactamente el flujo de antes.
+const emptyStickerCatalog = {
+  size: 0,
+  describeContent: (c: string) => c,
+  promptList: () => '',
+  findByName: () => null,
+};
+const noStickerGate = { decide: () => 'none', markSent: () => {} };
+
 /**
  * Stub de `GraphService` para los describes que no ejercitan la
  * recomendación colaborativa (Task 3, fase 5b): `findNode` resuelve `null`,
@@ -148,6 +161,8 @@ describe('BotService — handleAniListRequest (caché)', () => {
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -429,6 +444,8 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -587,6 +604,8 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -792,6 +811,8 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: RateLimitService, useValue: { check: jest.fn().mockReturnValue(true) } },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -976,6 +997,8 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: RateLimitService, useValue: rateLimit },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -1168,6 +1191,8 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
         },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
@@ -1494,6 +1519,8 @@ const buildBotService = async (
       { provide: RateLimitService, useValue: rateLimit },
       { provide: CrossContextSettingsService, useValue: crossContext },
       { provide: ErrandService, useValue: errands },
+      { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+      { provide: StickerGateService, useValue: noStickerGate },
     ],
   }).compile();
 
@@ -1972,6 +1999,8 @@ describe('BotService — entrega de canciones', () => {
         { provide: RateLimitService, useValue: {} },
         { provide: CrossContextSettingsService, useValue: noopCrossContextSettings },
         { provide: ErrandService, useValue: noopErrandService },
+        { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+        { provide: StickerGateService, useValue: noStickerGate },
       ],
     }).compile();
 
