@@ -15,6 +15,9 @@ import { ErrandService } from '../graph/errand.service';
 import { ReplyContext } from '../chat-socket/reply-context';
 import { bbcodeToPlain } from '../../common/bbcode/bbcode';
 import { RoomInstructionsService, MAX_ROOM_INSTRUCTIONS } from './room-instructions.service';
+import { createLog } from '../../common/utils/log';
+
+const log = createLog('ChatService');
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -249,10 +252,10 @@ export class ChatService {
       let maxTokens = baseMaxTokens;
       if (isSimpleGreeting) {
         maxTokens = Math.min(50, baseMaxTokens); // Máximo 50 tokens para saludos
-        console.log(`🤝 Saludo simple detectado, limitando a ${maxTokens} tokens`);
+        log.info(`🤝 Saludo simple detectado, limitando a ${maxTokens} tokens`);
       } else if (isResumenRequest) {
         maxTokens = Math.max(baseMaxTokens, 300); // Mínimo 300 tokens para resúmenes
-        console.log(`📋 Solicitud de resumen detectada, usando ${maxTokens} tokens`);
+        log.info(`📋 Solicitud de resumen detectada, usando ${maxTokens} tokens`);
       }
       
       const response = await this.openai.chat.completions.create({
@@ -277,16 +280,16 @@ export class ChatService {
       this.recordUsage('chat', response, username, intents);
 
       let content = response.choices[0].message.content || '';
-      console.log(`Respuesta de OpenAI: ${content}`);
+      log.info(`Respuesta de OpenAI: ${content}`);
       
       // Verificar si contiene token de resumen ANTES del procesamiento
       const containsResumenToken = content.includes('{{resumen}}');
-      console.log(`🔍 Contiene token {{resumen}}: ${containsResumenToken}`);
-      console.log(`🎯 Es solicitud de resumen: ${!!isResumenRequest}`);
+      log.debug(`🔍 Contiene token {{resumen}}: ${containsResumenToken}`);
+      log.info(`🎯 Es solicitud de resumen: ${!!isResumenRequest}`);
       
       // Si es una solicitud de resumen pero OpenAI no incluyó el token, forzarlo
       if (isResumenRequest && !containsResumenToken) {
-        console.log('🔧 Forzando inserción del token {{resumen}} porque OpenAI lo omitió...');
+        log.info('🔧 Forzando inserción del token {{resumen}} porque OpenAI lo omitió...');
         if (content.includes('📋✨')) {
           content = content.replace('📋✨', '📋✨ {{resumen}}');
         } else if (content.toLowerCase().includes('resumen del chat')) {
@@ -297,11 +300,11 @@ export class ChatService {
           // Como último recurso, agregarlo al final
           content += ' {{resumen}}';
         }
-        console.log(`✅ Token {{resumen}} insertado forzadamente. Nueva respuesta: ${content}`);
+        log.info(`✅ Token {{resumen}} insertado forzadamente. Nueva respuesta: ${content}`);
       }
       
       if (containsResumenToken) {
-        console.log(`📍 Posición del token en respuesta original: ${content.indexOf('{{resumen}}')}`);
+        log.info(`📍 Posición del token en respuesta original: ${content.indexOf('{{resumen}}')}`);
       }
       
       // STICKER(nombre) sale ANTES que cualquier otro extractor: el regex de
@@ -328,7 +331,7 @@ export class ChatService {
       if (canInstruct && username) {
         for (const text of instructionExtraction.instructions) {
           const result = await this.roomInstructions!.add(text, username, 'model');
-          console.log(`📌 Instrucción de sala de ${username}: "${text}" → ${result.ok ? `#${result.position}` : result.reason}`);
+          log.info(`📌 Instrucción de sala de ${username}: "${text}" → ${result.ok ? `#${result.position}` : result.reason}`);
           // El modelo ya confirmó "hecho": si no entró por el tope, hay que
           // decirlo, si no el mod cree que quedó guardada.
           if (!result.ok && result.reason === 'full') {
@@ -451,7 +454,7 @@ export class ChatService {
         // Verificación adicional: el token debería estar preservado por extractFactsFromResponse
         const finalContainsResumenToken = content.includes('{{resumen}}');
         if (containsResumenToken && !finalContainsResumenToken) {
-          console.log('⚠️ FALLO CRÍTICO: Token {{resumen}} se perdió a pesar de las protecciones, forzando restauración...');
+          log.info('⚠️ FALLO CRÍTICO: Token {{resumen}} se perdió a pesar de las protecciones, forzando restauración...');
           // Forzar restauración como último recurso
           if (content.includes('📋✨')) {
             content = content.replace('📋✨', '📋✨ {{resumen}}');
@@ -474,7 +477,7 @@ export class ChatService {
         if (username) {
           for (const fact of factResults.facts) {
             void this.graphIngest.ingestFact(username, fact.relation, fact.object).catch(() => {});
-            console.log(`💾 Hecho enviado a ingestar para ${username}: SAVE_FACT(${fact.relation}, ${fact.object})`);
+            log.info(`💾 Hecho enviado a ingestar para ${username}: SAVE_FACT(${fact.relation}, ${fact.object})`);
           }
         }
       }
@@ -554,7 +557,7 @@ export class ChatService {
         const discordSanitizeRegex = /[\(\[\<"'\uFF08\uFF09]*?(https?:\/\/(?:www\.)?discord\.gg\/[A-Za-z0-9_-]+)[\)\]\>"'\uFF08\uFF09]*/gi;
         content = content.replace(discordSanitizeRegex, '$1');
       } catch (e) {
-        console.log('Error sanitizando enlace de Discord:', e);
+        log.info('Error sanitizando enlace de Discord:', e);
       }
 
       // Sin usuario no hay hilo al que pertenecer: antes se guardaba como
@@ -575,7 +578,7 @@ export class ChatService {
         });
       }
 
-      console.log(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+      log.info(`Respuesta generada: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
 
       // El historial (arriba) se guarda SIN el sticker: si quedara, el modelo
       // lo vería en turnos siguientes e imitaría el verbo sin que se lo
@@ -586,7 +589,7 @@ export class ChatService {
       ].filter(Boolean);
       return tokens.length > 0 ? `${content} ${tokens.join(' ')}`.trim() : content;
     } catch (error) {
-      console.error('Error en chat GPT:', error);
+      log.error('Error en chat GPT:', error);
       return 'Lo siento, ocurrió un error al procesar tu mensaje. 😅';
     }
   }
@@ -621,7 +624,7 @@ export class ChatService {
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
     } catch (err) {
-      console.error('Error traduciendo al español:', err);
+      log.error('Error traduciendo al español:', err);
       return input;
     }
   }
@@ -711,11 +714,11 @@ escribas nada después del delimitador.`
 
       const raw = summaryResponse.choices[0].message.content || '';
       const { text, facts } = this.parseSummaryAndFacts(raw, knownAuthors);
-      console.log(`✅ Resumen generado: ${text.substring(0, 100)}...`);
+      log.info(`✅ Resumen generado: ${text.substring(0, 100)}...`);
 
       return { text, facts };
     } catch (error) {
-      console.error('Error generando resumen:', error);
+      log.error('Error generando resumen:', error);
       return { text: ChatService.SUMMARY_PARSE_ERROR, facts: [] };
     }
   }
@@ -1523,7 +1526,7 @@ escribas nada después del delimitador.`
 
     // Restaurar {{resumen}} si se perdió durante la limpieza.
     if (hasResumenToken && !cleanContent.includes('{{resumen}}')) {
-      console.log('🔧 Restaurando token {{resumen}} después de limpiar SAVE_FACT...');
+      log.info('🔧 Restaurando token {{resumen}} después de limpiar SAVE_FACT...');
       cleanContent += ' {{resumen}}';
     }
 

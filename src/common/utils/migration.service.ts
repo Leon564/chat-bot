@@ -7,6 +7,9 @@ import { Memory, MemoryDocument } from '../schemas/memory.schema';
 import { MessageLog, MessageLogDocument } from '../schemas/message-log.schema';
 import { EventLog, EventLogDocument } from '../schemas/event-log.schema';
 import { Context, ContextDocument } from '../schemas/context.schema';
+import { createLog } from './log';
+
+const log = createLog('MigrationService');
 
 /**
  * One-shot import of the legacy `data/*.json` files into MongoDB. Runs once
@@ -42,7 +45,7 @@ export class MigrationService implements OnModuleInit {
     try {
       return JSON.parse(fs.readFileSync(file, 'utf-8'));
     } catch (err) {
-      console.warn(`⚠️ Migration: no pude leer ${name}:`, err instanceof Error ? err.message : err);
+      log.warn(`⚠️ Migration: no pude leer ${name}:`, err instanceof Error ? err.message : err);
       return null;
     }
   }
@@ -52,9 +55,9 @@ export class MigrationService implements OnModuleInit {
     const dst = path.join(this.dataDir, `${name}.bak`);
     try {
       fs.renameSync(src, dst);
-      console.log(`📦 Migrado a Mongo y respaldado: ${name} → ${name}.bak`);
+      log.info(`📦 Migrado a Mongo y respaldado: ${name} → ${name}.bak`);
     } catch (err) {
-      console.warn(`⚠️ No pude renombrar ${name}:`, err instanceof Error ? err.message : err);
+      log.warn(`⚠️ No pude renombrar ${name}:`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -91,7 +94,7 @@ export class MigrationService implements OnModuleInit {
     }
 
     await this.memoryModel.insertMany(docs, { ordered: false }).catch(() => undefined);
-    console.log(`🧠 Importadas ${docs.length} memorias desde memory.json`);
+    log.info(`🧠 Importadas ${docs.length} memorias desde memory.json`);
     this.archive('memory.json');
   }
 
@@ -108,7 +111,7 @@ export class MigrationService implements OnModuleInit {
       return;
     }
     await this.messageLogModel.insertMany(docs, { ordered: false }).catch(() => undefined);
-    console.log(`📝 Importados ${docs.length} mensajes desde messages_log.json`);
+    log.info(`📝 Importados ${docs.length} mensajes desde messages_log.json`);
     this.archive('messages_log.json');
   }
 
@@ -129,7 +132,7 @@ export class MigrationService implements OnModuleInit {
       return;
     }
     await this.eventLogModel.insertMany(docs, { ordered: false }).catch(() => undefined);
-    console.log(`🗓️ Importados ${docs.length} eventos desde events_log.json`);
+    log.info(`🗓️ Importados ${docs.length} eventos desde events_log.json`);
     this.archive('events_log.json');
   }
 
@@ -146,7 +149,7 @@ export class MigrationService implements OnModuleInit {
       return;
     }
     await this.contextModel.insertMany(docs, { ordered: false }).catch(() => undefined);
-    console.log(`💬 Importadas ${docs.length} entradas de contexto desde context.json`);
+    log.info(`💬 Importadas ${docs.length} entradas de contexto desde context.json`);
     this.archive('context.json');
   }
 }

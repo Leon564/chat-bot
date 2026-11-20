@@ -58,6 +58,9 @@ import {
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { MusicProgress } from '../../common/interfaces';
+import { createLog } from '../../common/utils/log';
+
+const log = createLog('BotService');
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
@@ -129,7 +132,7 @@ export class BotService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    console.log('🤖 Inicializando Bot Service...');
+    log.info('🤖 Inicializando Bot Service...');
 
     // El socket no espera al handler, así que un rechazo acá era una promesa
     // flotante: `main.ts` corta el proceso ante cualquier `unhandledRejection`,
@@ -258,7 +261,7 @@ export class BotService implements OnModuleInit {
       !isVideoReq
     ) return;
 
-    console.log(`📨 Mensaje de ${authorUsername}: "${content}"`);
+    log.info(`📨 Mensaje de ${authorUsername}: "${content}"`);
 
     if (isVideoReq) {
       await this.handleVideoRequest(content, authorUsername, authorRole);
@@ -338,7 +341,7 @@ export class BotService implements OnModuleInit {
     // La reacción va primero: es instantánea y no compite con el texto.
     if (reaction) {
       this.chatSocketService.toggleReaction(msg._id, reaction);
-      console.log(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
+      log.info(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
     }
 
     if (response) await this.handleChatResponse(response, authorUsername, authorRole);
@@ -349,7 +352,7 @@ export class BotService implements OnModuleInit {
       if (response) await this.utilsService.sleep(this.configService.get<number>('bot.responseDelay') || 1000);
       this.chatSocketService.sendSticker(sticker.code);
       this.stickerGate.markSent();
-      console.log(`🧩 Sticker enviado: ${sticker.name}`);
+      log.info(`🧩 Sticker enviado: ${sticker.name}`);
     }
 
     // Fire-and-forget, con su propio catch, como el resto de la ingesta al
@@ -393,7 +396,7 @@ export class BotService implements OnModuleInit {
     if (!match) return { text: response ?? '', sticker: null };
     const text = response.replace(re, '').replace(/[ \t]{2,}/g, ' ').trim();
     const found = this.stickerCatalog.findByName(match[1]);
-    if (!found) console.log(`🧩 El modelo eligió un sticker que no existe: "${match[1]}"`);
+    if (!found) log.info(`🧩 El modelo eligió un sticker que no existe: "${match[1]}"`);
     return { text, sticker: found ? { code: found.code, name: found.name } : null };
   }
 
@@ -593,7 +596,7 @@ export class BotService implements OnModuleInit {
       hourly: `⏱️ Llegaste al tope de ${rejected.limit} pedidos por hora; probá más tarde.`,
     }[rejected.reason];
     this.sendBotMessage(`@${authorUsername} ${text}`);
-    console.log(`🎵 [QUOTA] ${authorUsername} (${authorRole ?? 'sin rol'}) rechazado: ${rejected.reason}`);
+    log.info(`🎵 [QUOTA] ${authorUsername} (${authorRole ?? 'sin rol'}) rechazado: ${rejected.reason}`);
     return null;
   }
 
@@ -1100,7 +1103,7 @@ export class BotService implements OnModuleInit {
     await this.utilsService.sleep(responseDelay);
 
     try {
-      console.log('📋 Generando resumen del chat...');
+      log.info('📋 Generando resumen del chat...');
       const resumen = await this.chatService.generateSummary(authorUsername);
 
       // Ingesta en lote de los hechos que el modelo extrajo del resumen
@@ -1117,7 +1120,7 @@ export class BotService implements OnModuleInit {
 
       // Margen para el encabezado "📋✨ RESUMEN DEL CHAT (n/m)" y el cierre.
       const resumenParts = this.splitForChat(resumen.text, BotService.SUMMARY_FRAME_CHARS);
-      console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
+      log.info(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
         const part = resumenParts[i].trim();
@@ -1143,14 +1146,14 @@ export class BotService implements OnModuleInit {
       // reintentar por un fallo que no fue suyo. Sólo se consume el estado
       // cuando de verdad se generó y envió un resumen.
       if (resumen.text === ChatService.SUMMARY_PARSE_ERROR) {
-        console.log('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
+        log.info('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
       } else {
         await this.loggingService.saveEventsLog('Resumen', authorUsername);
         const clearedCount = await this.loggingService.clearMessagesLog();
-        console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+        log.info(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
       }
     } catch (error) {
-      console.error('❌ Error generating summary:', error);
+      log.error('❌ Error generating summary:', error);
       this.sendBotMessage('❌ Error al generar el resumen. Inténtalo más tarde.');
     }
   }
@@ -1244,7 +1247,7 @@ export class BotService implements OnModuleInit {
     if (sub === 'default' || sub === 'unfiltered') {
       this.chatService.setPersonalityOverride(sub);
       this.sendBotMessage(`@${authorUsername} ✅ Personalidad cambiada a "${sub}".`);
-      console.log(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
+      log.info(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1254,7 +1257,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ↩️ Personalidad reseteada al valor del .env: "${info.current}".`,
       );
-      console.log(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
+      log.info(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
       return true;
     }
 
@@ -1300,7 +1303,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ✅ Contexto cruzado ${sub === 'on' ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
+      log.info(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1353,7 +1356,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ✅ Contexto compartido ${sub === 'on' ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → ${sub}`);
+      log.info(`👥 [SHARED-CONTEXT] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1363,7 +1366,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ↩️ Contexto compartido reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → reset (.env: ${info.enabled})`);
+      log.info(`👥 [SHARED-CONTEXT] ${authorUsername} → reset (.env: ${info.enabled})`);
       return true;
     }
 
@@ -1450,7 +1453,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} 🧹 ${count > 0 ? `Borré ${count} instrucción${count === 1 ? '' : 'es'} de sala.` : 'No había instrucciones de sala.'}`,
       );
-      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → reset (${count})`);
+      log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → reset (${count})`);
       return true;
     }
 
@@ -1462,7 +1465,7 @@ export class BotService implements OnModuleInit {
           ? `@${authorUsername} 🗑️ Quité la instrucción ${n}: "${removed.text}"`
           : `@${authorUsername} ❌ No hay instrucción número ${n}. Mirá la lista con !instrucciones`,
       );
-      if (removed) console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → quitar #${n}`);
+      if (removed) log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → quitar #${n}`);
       return true;
     }
 
@@ -1493,7 +1496,7 @@ export class BotService implements OnModuleInit {
     if (result.ok) {
       const lasts = ttlMs ? ` durante ${formatRemaining(ttlMs)}` : ' hasta que la quiten';
       this.sendBotMessage(`@${authorUsername} 📌 Instrucción ${result.position} guardada. Va a aplicar a todas mis respuestas${lasts}.`);
-      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
+      log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
     } else {
       const reason = {
         empty: 'La instrucción está vacía.',
@@ -1584,7 +1587,7 @@ export class BotService implements OnModuleInit {
     try {
       summary = await this.usageService.summarize(since);
     } catch (err) {
-      console.log(`📊 [USO] Falló el resumen de consumo: ${(err as Error)?.message}`);
+      log.info(`📊 [USO] Falló el resumen de consumo: ${(err as Error)?.message}`);
       this.sendBotMessage(`@${authorUsername} ❌ No pude leer el consumo, probá de nuevo.`);
       return true;
     }

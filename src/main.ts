@@ -1,6 +1,11 @@
+// Antes que nada: `LOG_LEVEL` se lee al crear la app, y `ConfigModule` recién
+// carga el `.env` cuando se inicializan los módulos. dotenv no pisa variables
+// que ya vengan del entorno.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
+import { logLevelsFromEnv } from './common/utils/log';
 
 /**
  * Diagnóstico de muertes silenciosas del proceso.
@@ -42,7 +47,10 @@ async function bootstrap() {
   // dependencias — y con ellas las vulnerabilidades de body-parser, multer y
   // qs. Los lifecycle hooks (onModuleInit/onModuleDestroy) corren igual; lo
   // que mantiene vivo el proceso es el socket del chat y la conexión a Mongo.
-  const app = await NestFactory.createApplicationContext(AppModule);
+  // LOG_LEVEL=debug muestra los `[DEBUG]` (música, prompts); default `log`.
+  const app = await NestFactory.createApplicationContext(AppModule, {
+    logger: logLevelsFromEnv(process.env.LOG_LEVEL),
+  });
 
   // SIGTERM/SIGINT → app.close() → onModuleDestroy (desconecta el socket).
   // Antes había además un `process.on('SIGTERM')` propio que volvía a llamar
