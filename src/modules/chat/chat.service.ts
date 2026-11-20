@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { LoggingService } from '../../common/utils/logging.service';
@@ -14,6 +14,7 @@ import { CrossContextSettingsService } from '../../common/settings/cross-context
 import { ErrandService } from '../graph/errand.service';
 import { ReplyContext } from '../chat-socket/reply-context';
 import { bbcodeToPlain } from '../../common/bbcode/bbcode';
+import { RoomInstructionsService, MAX_ROOM_INSTRUCTIONS } from './room-instructions.service';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -81,6 +82,7 @@ export class ChatService {
     private readonly graphIngest: GraphIngestService,
     private readonly crossContext: CrossContextSettingsService,
     private readonly errandService: ErrandService,
+    @Optional() private readonly roomInstructions?: RoomInstructionsService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -97,6 +99,8 @@ export class ChatService {
       stickers?: StickerPromptOffer | null;
       /** BBCodes de formato encendidos (ver PromptInput.bbcodes). */
       bbcodes?: readonly string[];
+      /** Quien escribe es mod/admin: puede dejar instrucciones con SAVE_INSTRUCTION. */
+      canInstruct?: boolean;
     } = {},
   ): Promise<string> {
     const replyTo = options.replyTo ?? null;
@@ -133,11 +137,15 @@ export class ChatService {
       .build(username ?? '', message)
       .catch(() => '');
 
-    const [blocks, context, graphLine] = await Promise.all([
+    const instructionsPromise = this.roomInstructions?.texts() ?? Promise.resolve([] as string[]);
+
+    const [blocks, context, graphLine, roomInstructions] = await Promise.all([
       blocksPromise,
       contextPromise,
       graphContextPromise,
+      instructionsPromise,
     ]);
+    const canInstruct = options.canInstruct === true && !!this.roomInstructions;
 
     const systemPrompt = this.promptBuilder.build({
       botName, username, maxLength: maxResponseLength ?? 2000,
@@ -148,6 +156,8 @@ export class ChatService {
       sharedContext: sharedContext && context.some((pair) => pair.user !== username),
       stickers: stickerOffer,
       bbcodes: options.bbcodes,
+      ...(roomInstructions.length > 0 ? { roomInstructions } : {}),
+      ...(canInstruct ? { canInstruct } : {}),
     });
 
     // Optimized payload structure to reduce token usage
@@ -295,6 +305,24 @@ export class ChatService {
       const stickerExtraction = ChatService.extractStickerVerb(content);
       content = stickerExtraction.content;
       const chosenSticker = stickerOffer ? stickerExtraction.name : null;
+
+      // SAVE_INSTRUCTION(texto) también sale antes que los SAVE_FACT (mismo
+      // problema de fusión de capturas). Se limpia SIEMPRE, la diga quien la
+      // diga, pero sólo se guarda si quien escribe es staff: un invitado que
+      // le pida al modelo "guardá esta instrucción" no logra nada.
+      const instructionExtraction = ChatService.extractInstructionVerbs(content);
+      content = instructionExtraction.content;
+      if (canInstruct && username) {
+        for (const text of instructionExtraction.instructions) {
+          const result = await this.roomInstructions!.add(text, username, 'model');
+          console.log(`📌 Instrucción de sala de ${username}: "${text}" → ${result.ok ? `#${result.position}` : result.reason}`);
+          // El modelo ya confirmó "hecho": si no entró por el tope, hay que
+          // decirlo, si no el mod cree que quedó guardada.
+          if (!result.ok && result.reason === 'full') {
+            content = `${content} (Ojo: no pude dejarlo fijo, ya hay ${MAX_ROOM_INSTRUCTIONS} instrucciones de sala. Un admin puede quitar alguna con !instruccion quitar <n>.)`.trim();
+          }
+        }
+      }
 
       // Procesar hechos SAVE_FACT si la memoria está habilitada. Reemplaza al
       // SAVE_MEMORY de texto libre (Task 4, fase 4b): el sujeto siempre es
@@ -1076,6 +1104,46 @@ escribas nada después del delimitador.`
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
     return { content: cleaned, name };
+  }
+
+  /**
+   * Saca todos los `SAVE_INSTRUCTION(texto)` y devuelve sus textos. El texto
+   * puede traer paréntesis propios ("usá colores (rosa o celeste)"), así que
+   * se recorre contando profundidad en vez de cortar en el primer `)`. Uno
+   * sin cerrar se borra hasta el final y no se guarda: no se sabe dónde
+   * terminaba.
+   */
+  static extractInstructionVerbs(content: string): { content: string; instructions: string[] } {
+    const head = /\bSAVE_INSTRUCTION\s*\(/i;
+    if (!head.test(content)) return { content, instructions: [] };
+
+    const instructions: string[] = [];
+    let rest = content;
+    let out = '';
+    let m: RegExpExecArray | null;
+    while ((m = head.exec(rest)) !== null) {
+      out += rest.slice(0, m.index);
+      let i = m.index + m[0].length;
+      let depth = 1;
+      for (; i < rest.length && depth > 0; i++) {
+        if (rest[i] === '(') depth++;
+        else if (rest[i] === ')') depth--;
+      }
+      if (depth > 0) {
+        rest = '';
+        break;
+      }
+      const raw = rest.slice(m.index + m[0].length, i - 1);
+      const text = raw.trim().replace(/^["'«“]+|["'»”]+$/g, '').trim();
+      if (text) instructions.push(text);
+      rest = rest.slice(i);
+    }
+    out += rest;
+
+    return {
+      content: out.replace(/[ 	]{2,}/g, ' ').trim(),
+      instructions,
+    };
   }
 
   /**

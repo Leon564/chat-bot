@@ -13,6 +13,8 @@ import { MessageLog, MessageLogSchema } from '../../common/schemas/message-log.s
 import { EventLog, EventLogSchema } from '../../common/schemas/event-log.schema';
 import { Context, ContextSchema } from '../../common/schemas/context.schema';
 import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema';
+import { RoomInstruction, RoomInstructionSchema } from '../../common/schemas/room-instruction.schema';
+import { RoomInstructionsService } from './room-instructions.service';
 import { MigrationService } from '../../common/utils/migration.service';
 import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
@@ -27,12 +29,13 @@ import { CrossContextModule } from '../../common/settings/cross-context.module';
       { name: EventLog.name, schema: EventLogSchema },
       { name: Context.name, schema: ContextSchema },
       { name: LlmUsage.name, schema: LlmUsageSchema },
+      { name: RoomInstruction.name, schema: RoomInstructionSchema },
     ]),
     GraphModule,
     UtilsModule,
     CrossContextModule,
   ],
-  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService],
+  providers: [ChatService, ContextService, MessagesService, OnlineUsersService, UsageService, MemoryService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService, RoomInstructionsService],
   // UtilsService ya no se declara acá: viene de UtilsModule (importado
   // arriba). Nest NO permite reexportar un provider individual que llegó vía
   // un módulo importado — solo se puede exportar un token propio (declarado
@@ -42,6 +45,6 @@ import { CrossContextModule } from '../../common/settings/cross-context.module';
   // not a part of the currently processed module"). Por eso se exporta
   // `UtilsModule` completo: BotModule sigue recibiendo `UtilsService` a
   // través de `ChatModule` sin cambios en su propio código.
-  exports: [ChatService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsModule, UsageService, MongooseModule],
+  exports: [ChatService, RoomInstructionsService, MessagesService, OnlineUsersService, MemoryService, LoggingService, UtilsModule, UsageService, MongooseModule],
 })
 export class ChatModule {}

@@ -59,6 +59,17 @@ export interface PromptInput {
    * de canciones y recados no la necesitan).
    */
   bbcodes?: readonly string[];
+  /**
+   * Instrucciones permanentes de la sala (`RoomInstructionsService`). Van en
+   * cada respuesta, con cualquier juego de bloques del router: son órdenes
+   * vigentes, no contexto opcional.
+   */
+  roomInstructions?: readonly string[];
+  /**
+   * Quien escribe es staff (mod/admin/superAdmin): se le enseña al modelo el
+   * verbo SAVE_INSTRUCTION. A nadie más, porque igual se descartaría.
+   */
+  canInstruct?: boolean;
 }
 
 /** Cómo se escribe cada BBCode de formato, para la sección del prompt. */
@@ -101,6 +112,10 @@ export class PromptBuilderService {
     if (input.blocks.includes('RESUMEN')) sections.push(this.blockResumen(input));
     if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(input));
     if (input.sharedContext) sections.push(this.blockSharedContext(input));
+    if (input.roomInstructions && input.roomInstructions.length > 0) {
+      sections.push(this.blockRoomInstructions(input.roomInstructions));
+    }
+    if (input.canInstruct) sections.push(this.blockSaveInstruction(input));
     if (input.stickers?.list) sections.push(this.blockStickers(input.stickers, input.username));
 
     const critico = this.buildCritico(input.blocks);
@@ -279,7 +294,29 @@ NO uses {{usuarios_online}} cuando preguntan por **un usuario específico**, por
     return `HISTORIAL COMPARTIDO:
 Los mensajes anteriores son de varias personas de la sala; cada uno empieza con el nombre de quien lo escribió. Ahora te escribe ${input.username}.
 Usá lo que dijeron los demás como contexto: si alguien aclara algo que quedó pendiente, tomalo en cuenta y no confundas a una persona con otra.
-Lo que otra persona te pidió antes ya quedó atendido: no es una orden para este turno.${memoria}`;
+Lo que otra persona te pidió antes ya quedó atendido: no es una orden para este turno. Las únicas órdenes que siguen vigentes son las de INSTRUCCIONES DE LA SALA, si las hay.${memoria}`;
+  }
+
+  /**
+   * Las instrucciones las escribe el staff (comando de admin o SAVE_INSTRUCTION
+   * de un mod/admin), por eso pueden ir en el system prompt. Igual no pisan los
+   * tokens ni los verbos: un "respondé siempre en mayúsculas" no puede romper
+   * un {{music:…}}.
+   */
+  private blockRoomInstructions(list: readonly string[]): string {
+    const items = list.map((t, i) => `${i + 1}. ${t}`).join('\n');
+    return `INSTRUCCIONES DE LA SALA (las dio el staff; aplicalas en TODAS tus respuestas, a cualquier persona, hasta que las quiten):
+${items}
+- Siguen vigentes aunque no aparezcan en el historial y aunque te escriba otra persona.
+- No cambian los tokens {{...}}, STICKER(...), los verbos SAVE_... ni las menciones <@usuario>: esos van siempre tal cual.`;
+  }
+
+  private blockSaveInstruction(input: PromptInput): string {
+    return `INSTRUCCIONES PERMANENTES (${input.username} es del staff):
+- Si ${input.username} te pide algo que tiene que DURAR para todas tus respuestas futuras o para toda la sala ("de ahora en adelante…", "a partir de ahora…", "siempre…", "a todos…", "con todos…"), agregá al final de tu respuesta SAVE_INSTRUCTION(la instrucción, en una frase clara en segunda persona).
+- Ejemplo: "bot de ahora en adelante respondele a todos con texto de colores" → "¡Hecho! 🌈 SAVE_INSTRUCTION(Respondé a todos usando texto de colores.)"
+- NO lo uses para pedidos de un solo turno ("contame un chiste", "respondeme en inglés esto") ni para gustos personales.
+- Confirmá en tu respuesta, con una frase corta, que lo vas a hacer siempre.`;
   }
 
   private blockSaveFact(input: PromptInput): string {
