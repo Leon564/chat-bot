@@ -26,12 +26,21 @@ export default () => ({
     apiKey: process.env.OPENAI_API_KEY,
     baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
     model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+    // Sin esto el SDK espera hasta 10 min por respuesta y reintenta 2 veces:
+    // con el proveedor lento, quien le habló al bot se quedaba sin nada.
+    timeoutMs: Math.max(1000, parseIntEnv(process.env.OPENAI_TIMEOUT_MS, 30_000)),
+    maxRetries: Math.max(0, parseIntEnv(process.env.OPENAI_MAX_RETRIES, 1)),
   },
 
   // Bot Configuration
   bot: {
     responseDelay: parseInt(process.env.RESPONSE_DELAY || '1000', 10),
     maxLengthResponse: parseInt(process.env.MAX_LENGTH_RESPONSE || '2000', 10),
+    // Tope de TOKENS de la respuesta del modelo (`max_tokens`). Antes se usaba
+    // MAX_LENGTH_RESPONSE, que son CARACTERES: 2000 "caracteres" pasados como
+    // tokens permitían ~8000 caracteres. ~800 tokens ≈ 2500-3000 caracteres en
+    // español, de sobra para el largo que se le pide en el prompt.
+    maxCompletionTokens: Math.max(50, parseIntEnv(process.env.MAX_COMPLETION_TOKENS, 800)),
     useMemory: process.env.USE_MEMORY === 'true',
     // Optional hex color (without #) used to prefix bot messages, e.g. TEXT_COLOR=ff00aa
     textColor: process.env.TEXT_COLOR || '',
@@ -85,6 +94,14 @@ export default () => ({
     litterboxExpiry: process.env.LITTERBOX_EXPIRY || '1h',
     youtubeCookiesPath: process.env.YOUTUBE_COOKIES_PATH,
     maxDurationMinutes: parseInt(process.env.MAX_SONG_DURATION || '8', 10),
+    // Cupo de canciones/videos por hora (ventana móvil, ver MusicQuotaService).
+    // MUSIC_PER_HOUR = invitados (o sin rol); MUSIC_PER_HOUR_REGISTERED = user.
+    // mod/admin/superAdmin sin cupo. 0 desactiva el cupo de ese grupo.
+    perHour: Math.max(0, parseIntEnv(process.env.MUSIC_PER_HOUR, 5)),
+    perHourRegistered: Math.max(0, parseIntEnv(process.env.MUSIC_PER_HOUR_REGISTERED, 20)),
+    // Pedidos en camino a la vez: por persona y en todo el chat. 0 = sin tope.
+    maxPendingPerUser: Math.max(0, parseIntEnv(process.env.MUSIC_MAX_PENDING_PER_USER, 2)),
+    maxPendingGlobal: Math.max(0, parseIntEnv(process.env.MUSIC_MAX_PENDING_GLOBAL, 8)),
     // FileGarden uploader (https://filegarden.com). Optional; when both vars
     // are set, FileGarden is used as a last-ditch fallback after the regular
     // catbox/litterbox/nullpointer chain — and can be selected as the primary

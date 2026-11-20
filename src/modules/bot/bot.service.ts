@@ -1,4 +1,4 @@
-﻿import { Injectable, OnModuleInit, Optional } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -20,6 +20,7 @@ import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
+import { MusicQuotaService, MusicAdmission } from './music-quota.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { BbcodeSettingsService } from '../chat-socket/bbcode-settings.service';
 import {
@@ -99,6 +100,8 @@ const RELATION_ORDER: EdgeType[] = [
 
 @Injectable()
 export class BotService implements OnModuleInit {
+  private readonly logger = new Logger(BotService.name);
+
   constructor(
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
@@ -123,6 +126,8 @@ export class BotService implements OnModuleInit {
     @Optional() private readonly bbcodeSettings?: BbcodeSettingsService,
     // Opcional por el mismo motivo: sin él no hay instrucciones de sala.
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
+    // Opcional para los tests armados a mano: sin él la música no tiene topes.
+    @Optional() private readonly musicQuota?: MusicQuotaService,
   ) {}
 
   async onModuleInit() {
@@ -134,7 +139,16 @@ export class BotService implements OnModuleInit {
       await this.memoryService.cleanExistingMemories();
     }
 
-    this.chatSocketService.onMessage((msg) => this.handleNewChatMessage(msg));
+    // El socket no espera al handler, así que un rechazo acá era una promesa
+    // flotante: `main.ts` corta el proceso ante cualquier `unhandledRejection`,
+    // y un parpadeo de Mongo en `saveLog` (que corre en CADA mensaje)
+    // reiniciaba el bot. Se loguea y se sigue con el próximo mensaje.
+    this.chatSocketService.onMessage((msg) => {
+      this.handleNewChatMessage(msg).catch((err: unknown) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        this.logger.error(`Error manejando el mensaje de ${msg?.authorUsername ?? '?'}: ${e.message}`, e.stack);
+      });
+    });
   }
 
   // ─── Message dispatcher ────────────────────────────────────────────────────
@@ -233,7 +247,12 @@ export class BotService implements OnModuleInit {
     const isReplyToBot =
       !!msg.replyTo && msg.replyTo.authorUsername?.toLowerCase() === botUsername.toLowerCase();
 
-    const isMusicRequest = MusicService.isMusicRequest(content);
+    // `!music` funciona sin nombrar al bot; una frase natural ("reproduce X")
+    // sólo si el mensaje le habla al bot. Antes cualquier mensaje con
+    // "reproduce" o "tema de" disparaba una descarga.
+    const addressesBot = isReplyToBot || containsBotWord(content) || containsExactBotName(content);
+    const isMusicRequest =
+      MusicService.isMusicRequest(content) && (/^\s*!music\s/i.test(content) || addressesBot);
     const isOnlineReq = this.isOnlineUsersRequest(content);
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
@@ -250,12 +269,12 @@ export class BotService implements OnModuleInit {
     console.log(`📨 Mensaje de ${authorUsername}: "${content}"`);
 
     if (isVideoReq) {
-      await this.handleVideoRequest(content, authorUsername);
+      await this.handleVideoRequest(content, authorUsername, authorRole);
       return;
     }
 
     if (isMusicRequest) {
-      await this.handleMusicRequest(content, authorUsername);
+      await this.handleMusicRequest(content, authorUsername, authorRole);
       return;
     }
 
@@ -330,7 +349,7 @@ export class BotService implements OnModuleInit {
       console.log(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
     }
 
-    if (response) await this.handleChatResponse(response, authorUsername);
+    if (response) await this.handleChatResponse(response, authorUsername, authorRole);
     // El sticker va DESPUÉS del texto y sólo en respuestas de charla: en una
     // de música, AniList, resumen o usuarios online el token del flujo
     // (`{{...}}`) manda y un sticker encima sería ruido.
@@ -511,12 +530,15 @@ export class BotService implements OnModuleInit {
 
   // ─── Music ─────────────────────────────────────────────────────────────────
 
-  private async handleMusicRequest(message: string, authorUsername: string): Promise<void> {
+  private async handleMusicRequest(message: string, authorUsername: string, authorRole?: string): Promise<void> {
     const query = MusicService.extractMusicQuery(message);
     if (!query || query.trim().length < 2) {
       this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué canción quieres. Probá con: "!music nombre de la canción"`);
       return;
     }
+
+    const admission = this.admitMusic(authorUsername, authorRole, 'canción');
+    if (!admission) return;
 
     const searchingId = await this.sendBotMessageAndAwaitId(
       `@${authorUsername} 🎵 Buscando "${query}"… un momento.`,
@@ -555,7 +577,32 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
-      });
+      })
+      .finally(admission.release);
+  }
+
+  /**
+   * Pide lugar en `MusicQuotaService`. Si no hay, avisa y devuelve `null`.
+   * Sin el servicio (tests armados a mano) siempre deja pasar.
+   */
+  private admitMusic(
+    authorUsername: string,
+    authorRole: string | undefined,
+    what: 'canción' | 'video',
+  ): Extract<MusicAdmission, { ok: true }> | null {
+    if (!this.musicQuota) return { ok: true, release: () => {} };
+    const admission = this.musicQuota.admit(authorUsername, authorRole);
+    if (admission.ok === true) return admission;
+
+    const rejected = admission as Extract<MusicAdmission, { ok: false }>;
+    const text = {
+      user_pending: `⏳ Ya tenés ${rejected.limit} pedidos en camino; esperá a que lleguen antes de pedir otra ${what}.`,
+      global_pending: `🎧 Hay muchos pedidos en cola ahora mismo; probá de nuevo en un ratito.`,
+      hourly: `⏱️ Llegaste al tope de ${rejected.limit} pedidos por hora; probá más tarde.`,
+    }[rejected.reason];
+    this.sendBotMessage(`@${authorUsername} ${text}`);
+    console.log(`🎵 [QUOTA] ${authorUsername} (${authorRole ?? 'sin rol'}) rechazado: ${rejected.reason}`);
+    return null;
   }
 
   /**
@@ -836,12 +883,15 @@ export class BotService implements OnModuleInit {
 
   // ─── Video ─────────────────────────────────────────────────────────────────
 
-  private async handleVideoRequest(message: string, authorUsername: string): Promise<void> {
+  private async handleVideoRequest(message: string, authorUsername: string, authorRole?: string): Promise<void> {
     const query = MusicService.extractVideoQuery(message);
     if (!query || query.trim().length < 2) {
       this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué video quieres. Probá con: "!video nombre del video"`);
       return;
     }
+
+    const admission = this.admitMusic(authorUsername, authorRole, 'video');
+    if (!admission) return;
 
     const searchingId = await this.sendBotMessageAndAwaitId(
       `@${authorUsername} 🎬 Buscando video "${query}"… un momento.`,
@@ -866,7 +916,8 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyVideoError(error, query)}`);
-      });
+      })
+      .finally(admission.release);
   }
 
   /** Same friendly mapping as music but with a video-flavoured default. */
@@ -963,7 +1014,7 @@ export class BotService implements OnModuleInit {
 
   // ─── Chat / GPT response ───────────────────────────────────────────────────
 
-  private async handleChatResponse(response: string, authorUsername: string): Promise<void> {
+  private async handleChatResponse(response: string, authorUsername: string, authorRole?: string): Promise<void> {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     if (response.includes('{{resumen}}')) {
@@ -988,7 +1039,7 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
       }
       for (const query of queries) {
-        await this.handleMusicRequest(`!music ${query}`, authorUsername);
+        await this.handleMusicRequest(`!music ${query}`, authorUsername, authorRole);
       }
       return;
     }

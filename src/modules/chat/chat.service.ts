@@ -87,6 +87,8 @@ export class ChatService {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
       baseURL: this.configService.get<string>('openai.baseURL') || 'https://api.openai.com/v1',
+      timeout: this.configService.get<number>('openai.timeoutMs') ?? 30_000,
+      maxRetries: this.configService.get<number>('openai.maxRetries') ?? 1,
     });
   }
 
@@ -240,7 +242,9 @@ export class ChatService {
     try {
       // Configurar límite de tokens basado en el tipo de mensaje
       const isResumenRequest = message.toLowerCase().match(/(resumen|resume|qué pasó en el chat|de qué hablaron|que se habló|resúmeme|recap)/);
-      const baseMaxTokens = maxResponseLength;
+      // Tokens, no caracteres: `maxResponseLength` (caracteres) sólo va al
+      // prompt y al corte de mensajes del chat.
+      const baseMaxTokens = this.configService.get<number>('bot.maxCompletionTokens') ?? 800;
       
       let maxTokens = baseMaxTokens;
       if (isSimpleGreeting) {

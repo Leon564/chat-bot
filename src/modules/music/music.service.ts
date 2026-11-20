@@ -277,25 +277,23 @@ export class MusicService {
     }
 
     // Detectar solicitudes naturales de música
+    // Sólo verbos que piden reproducir algo. Se sacaron "música de",
+    // "canción de", "tema de", "song by", "quiero escuchar" y "escuchar
+    // música": aparecían en charla normal ("el tema de hoy", "me encanta la
+    // música de ese anime", "quiero escuchar tu opinión") y disparaban una
+    // descarga. Esos pedidos, si le hablan al bot, los resuelve el modelo con
+    // {{music:…}}. Además el dispatcher (`BotService`) sólo acepta frases
+    // naturales si el mensaje le habla al bot; sin mención, sólo `!music`.
     const musicKeywords = [
       "reproduce",
+      "reproducí",
+      "reproduci",
       "pon música",
       "pon musica",
       "play music",
-      "reproduce canción",
-      "reproduce cancion",
-      "quiero escuchar",
+      "play song",
       "busca la canción",
       "busca la cancion",
-      "música de",
-      "musica de",
-      "canción de",
-      "cancion de",
-      "tema de",
-      "song by",
-      "play song",
-      "escuchar música",
-      "escuchar musica",
     ];
 
     return musicKeywords.some((keyword) => lowerMessage.includes(keyword));
