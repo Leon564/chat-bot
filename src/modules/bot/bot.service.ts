@@ -5,7 +5,6 @@ import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
@@ -109,7 +108,6 @@ export class BotService implements OnModuleInit {
     private readonly aniListService: AniListService,
     private readonly utilsService: UtilsService,
     private readonly loggingService: LoggingService,
-    private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
@@ -132,12 +130,6 @@ export class BotService implements OnModuleInit {
 
   async onModuleInit() {
     console.log('🤖 Inicializando Bot Service...');
-
-    const useMemory = this.configService.get<boolean>('bot.useMemory');
-    if (useMemory) {
-      await this.memoryService.migrateMemoriesToUserFormat();
-      await this.memoryService.cleanExistingMemories();
-    }
 
     // El socket no espera al handler, así que un rechazo acá era una promesa
     // flotante: `main.ts` corta el proceso ante cualquier `unhandledRejection`,

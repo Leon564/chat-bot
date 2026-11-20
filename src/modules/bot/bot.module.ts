@@ -11,7 +11,7 @@ import { GraphModule } from '../graph/graph.module';
 import { CrossContextModule } from '../../common/settings/cross-context.module';
 
 @Module({
-  // ChatModule re-exports UtilsService, MemoryService, LoggingService and the
+  // ChatModule re-exports UtilsService, LoggingService and the
   // Mongoose models, so we no longer need duplicate providers here.
   imports: [ChatModule, MusicModule, ChatSocketModule, AniListModule, GraphModule, CrossContextModule],
   providers: [BotService, RateLimitService, StickerGateService, MusicQuotaService],

@@ -4,7 +4,7 @@ import { Client, Quality, Ytdl } from "@distube/ytdl-core";
 import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import * as ytsr from "ytsr";
-import { Stream, Readable } from "stream";
+import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import * as fs from "fs";
 import * as path from "path";

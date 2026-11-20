@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import path from 'path';
-import fs from 'fs';
 import * as he from 'he';
 import { bbcodeToPlain } from '../bbcode/bbcode';
 

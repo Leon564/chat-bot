@@ -19,7 +19,7 @@ function parseFloatEnv(raw: string | undefined, fallback: number): number {
 }
 
 export default () => ({
-  port: parseInt(process.env.PORT || '3000', 10),
+  // Sin `port`: el bot arranca con `createApplicationContext` y no expone HTTP.
 
   // OpenAI Configuration
   openai: {

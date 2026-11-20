@@ -6,7 +6,6 @@ import { MusicService } from '../music/music.service';
 import { AniListService } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
@@ -62,7 +61,6 @@ const build = async (opts: { quota?: boolean; config?: Record<string, unknown> }
       { provide: AniListService, useValue: {} },
       { provide: UtilsService, useValue: { sleep: jest.fn().mockResolvedValue(undefined) } },
       { provide: LoggingService, useValue: logging },
-      { provide: MemoryService, useValue: {} },
       { provide: ChatSocketService, useValue: socket },
       {
         provide: GraphIngestService,

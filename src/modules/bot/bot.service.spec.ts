@@ -6,7 +6,6 @@ import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
@@ -157,7 +156,6 @@ describe('BotService — handleAniListRequest (caché)', () => {
           },
         },
         { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: cache },
@@ -440,7 +438,6 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -600,7 +597,6 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -807,7 +803,6 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -993,7 +988,6 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -1184,7 +1178,6 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
           },
         },
         { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
         { provide: GraphCacheService, useValue: {} },
@@ -1518,7 +1511,6 @@ const buildBotService = async (
       { provide: AniListService, useValue: {} },
       { provide: UtilsService, useValue: utils },
       { provide: LoggingService, useValue: logging },
-      { provide: MemoryService, useValue: {} },
       { provide: ChatSocketService, useValue: socket },
       { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
       { provide: GraphCacheService, useValue: {} },
@@ -2001,7 +1993,6 @@ describe('BotService — entrega de canciones', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: { sleep: jest.fn().mockResolvedValue(undefined) } },
         { provide: LoggingService, useValue: {} },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: { ingestTrack: jest.fn().mockResolvedValue(undefined) } },
         { provide: GraphCacheService, useValue: {} },
