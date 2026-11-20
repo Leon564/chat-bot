@@ -13,6 +13,7 @@ import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { ReplyContext } from '../chat-socket/reply-context';
+import { bbcodeToPlain } from '../../common/bbcode/bbcode';
 
 export type BotPersonality = 'default' | 'unfiltered';
 
@@ -91,7 +92,12 @@ export class ChatService {
     message: string,
     botName?: string,
     username?: string,
-    options: { replyTo?: ReplyContext | null; stickers?: StickerPromptOffer | null } = {},
+    options: {
+      replyTo?: ReplyContext | null;
+      stickers?: StickerPromptOffer | null;
+      /** BBCodes de formato encendidos (ver PromptInput.bbcodes). */
+      bbcodes?: readonly string[];
+    } = {},
   ): Promise<string> {
     const replyTo = options.replyTo ?? null;
     const stickerOffer = options.stickers ?? null;
@@ -134,13 +140,14 @@ export class ChatService {
     ]);
 
     const systemPrompt = this.promptBuilder.build({
-      botName, username, maxLength: maxResponseLength ?? 200,
+      botName, username, maxLength: maxResponseLength ?? 2000,
       personality, useMemory, now: new Date(), blocks,
       crossContext: this.crossContext.isEnabled(),
       // Sólo si de verdad hay otra persona en el historial: sin eso la nota no
       // aclara nada y se pagarían sus tokens en cada mensaje.
       sharedContext: sharedContext && context.some((pair) => pair.user !== username),
       stickers: stickerOffer,
+      bbcodes: options.bbcodes,
     });
 
     // Optimized payload structure to reduce token usage
@@ -514,7 +521,9 @@ export class ChatService {
       if (username) {
         await this.contextService.save({
           question: replyTo ? `${this.compactReplyPrefix(replyTo)} ${message}` : message,
-          answer: content || '',
+          // Sin formato: el modelo no tiene que copiar el [shake] de una
+          // respuesta vieja en cada turno. Los spoilers quedan marcados.
+          answer: bbcodeToPlain(content || '', 'mark'),
           user: username,
         });
       }
@@ -1510,7 +1519,7 @@ escribas nada después del delimitador.`
       const systemPrompt = this.promptBuilder.build({
         botName,
         username: forUser,
-        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 200,
+        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 2000,
         personality: this.getPersonality(),
         useMemory: false,
         now: new Date(),
@@ -1589,7 +1598,7 @@ escribas nada después del delimitador.`
       const systemPrompt = this.promptBuilder.build({
         botName,
         username: forUser,
-        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 200,
+        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 2000,
         personality: this.getPersonality(),
         useMemory: false,
         now: new Date(),

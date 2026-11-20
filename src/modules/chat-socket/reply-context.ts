@@ -1,3 +1,5 @@
+import { bbcodeToPlain } from '../../common/bbcode/bbcode';
+
 /**
  * Contexto de un reply (Discord-style) para el modelo: cuando alguien le
  * habla al bot respondiendo a otro mensaje, el texto escrito suele no tener
@@ -21,8 +23,9 @@ export const MAX_REPLY_CONTEXT_CHARS = 600;
 export function normalizeMessageText(content: string | undefined, type?: string): string {
   if (type === 'sticker') return '[sticker]';
   let text = content ?? '';
-  text = text.replace(/\^#[0-9a-fA-F]{6}\s?/g, '');
-  text = text.replace(/\[color=#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\]|\[\/color\]/gi, '');
+  // Color, formato (`[b]`, `[shake]`, …) y spoilers marcados como
+  // `(spoiler: …)`: el modelo los entiende y el prompt le pide no revelarlos.
+  text = bbcodeToPlain(text, 'mark');
   text = text.replace(/\[(img|image|audio|video|youtube|embed)(\s[^\]]*)?\][\s\S]*?\[\/\1\]/gi, '[media]');
   text = text.replace(/\[wordle(\s[^\]]*)?\][\s\S]*?\[\/wordle\]/gi, '[wordle]');
   text = text.replace(/<@([^>]+)>/g, '@$1');

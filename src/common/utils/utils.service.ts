@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import path from 'path';
 import fs from 'fs';
 import * as he from 'he';
+import { bbcodeToPlain } from '../bbcode/bbcode';
 
 @Injectable()
 export class UtilsService {
@@ -47,6 +48,8 @@ export class UtilsService {
    *     sanitisation)
    *   - BBCode media tags [img|image|audio|video]url[/...]
    *   - The leading ^#hex color prefix used by sendBotMessage
+   *   - Format BBCodes ([b], [shake], [url=…]…): tags out, content kept;
+   *     spoilers collapse to "[spoiler]" (see common/bbcode/bbcode.ts)
    *   - <@user> mentions (kept as @user so the recall reads naturally
    *     without firing notifications when echoed back to chat)
    *   - Control chars (\x00-\x1f, \x7f)
@@ -60,6 +63,10 @@ export class UtilsService {
     // Convert <@user> to @user *before* the HTML strip so cleanHtmlFromMessage
     // doesn't treat the angle brackets as a generic tag and erase the username.
     let s = raw.replace(/<@([^>\n\r]+)>/g, '@$1');
+    // BBCodes de formato: fuera las etiquetas, queda el contenido. Los
+    // spoilers se colapsan a `[spoiler]`: la memoria y los recados vuelven a
+    // salir al chat en público, y ahí el contenido no puede aparecer.
+    s = bbcodeToPlain(s, 'hide');
     s = this.cleanHtmlFromMessage(s);
     if (!s) return '';
 
