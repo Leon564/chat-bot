@@ -7,7 +7,7 @@ import { UtilsModule } from './utils.module';
 import { UtilsService } from './utils.service';
 import { ChatModule } from '../../modules/chat/chat.module';
 import { GraphModule } from '../../modules/graph/graph.module';
-import { MessagesService } from '../../modules/chat/messages.service';
+import { LoggingService } from './logging.service';
 import { GraphIngestService } from '../../modules/graph/graph-ingest.service';
 
 describe('UtilsModule', () => {
@@ -35,7 +35,7 @@ describe('UtilsModule', () => {
       // seguía en verde. Por eso acá se compilan `ChatModule` y
       // `GraphModule` reales y se compara la instancia de `UtilsService`
       // que cada uno efectivamente inyectó en uno de sus propios
-      // providers — `MessagesService.utilsService` (ChatModule) y
+      // providers — `LoggingService.utilsService` (ChatModule) y
       // `GraphIngestService.utilsService` (GraphModule) — en vez de pedir
       // el token directamente, que no distinguiría de qué módulo vino.
       //
@@ -63,10 +63,10 @@ describe('UtilsModule', () => {
 
       connection = moduleRef.get<Connection>(getConnectionToken());
 
-      const messagesService = moduleRef.get<MessagesService>(MessagesService);
+      const loggingService = moduleRef.get<LoggingService>(LoggingService);
       const graphIngestService = moduleRef.get<GraphIngestService>(GraphIngestService);
 
-      const utilsDesdeChat = (messagesService as unknown as { utilsService: UtilsService }).utilsService;
+      const utilsDesdeChat = (loggingService as unknown as { utilsService: UtilsService }).utilsService;
       const utilsDesdeGraph = (graphIngestService as unknown as { utilsService: UtilsService }).utilsService;
 
       expect(utilsDesdeChat).toBeInstanceOf(UtilsService);

@@ -37,21 +37,22 @@ async function bootstrap() {
   // dejar stack.
   installCrashLogging(logger);
 
-  const app = await NestFactory.create(AppModule);
+  // Contexto de aplicación, no `NestFactory.create`: el bot no expone HTTP
+  // (nunca llamó a `listen()`), así que el servidor Express sólo sumaba
+  // dependencias — y con ellas las vulnerabilidades de body-parser, multer y
+  // qs. Los lifecycle hooks (onModuleInit/onModuleDestroy) corren igual; lo
+  // que mantiene vivo el proceso es el socket del chat y la conexión a Mongo.
+  const app = await NestFactory.createApplicationContext(AppModule);
 
-  // Enable graceful shutdown
+  // SIGTERM/SIGINT → app.close() → onModuleDestroy (desconecta el socket).
+  // Antes había además un `process.on('SIGTERM')` propio que volvía a llamar
+  // a `app.close()`: el cierre corría dos veces.
   app.enableShutdownHooks();
-  
+
   await app.init();
-  
+
   logger.log('🤖 CBox Bot started successfully!');
   logger.log(`Memory system: ${process.env.USE_MEMORY === 'true' ? 'ENABLED' : 'DISABLED'}`);
-  
-  // Keep the application running
-  process.on('SIGTERM', async () => {
-    logger.log('Received SIGTERM, shutting down gracefully...');
-    await app.close();
-  });
 }
 
 bootstrap().catch((error) => {

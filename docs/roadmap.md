@@ -16,21 +16,22 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 
 ## 🟠 Seguridad y dependencias
 
-- [ ] **6. `npm audit --omit=dev`: 21 vulnerabilidades (2 críticas, 9 altas).** Varias vienen de dependencias sin uso (ver 8). `ws` vulnerable llega también vía `socket.io-client` → actualizarlo.
+- [x] **6. `npm audit --omit=dev`: 21 vulnerabilidades (2 críticas, 9 altas).** ✅ Quedan 5 (2 altas, 3 moderadas, ninguna crítica): se borró el código muerto (8), se corrió `npm audit fix` (incluye `ws` vía `socket.io-client`, `mongoose` 9.12, `form-data`, `proxy-addr`), Nest a la última 10.x, y el bot arranca con `NestFactory.createApplicationContext` en vez de `create`, lo que permitió desinstalar `@nestjs/platform-express` (body-parser, multer, qs). Las 5 que quedan no son alcanzables desde el bot (ver 6b).
+  - Ojo con los tests: `mongodb` ≥ 7.8 carga `os` con `import()` dinámico, que Jest (CJS) no soporta; `mongo-test.helper.ts` le pasa `runtimeAdapters: { os }`. En producción no hace falta.
+- [ ] **6b. Subir NestJS 10 → 12.** Resuelve las 5 restantes: `lodash` (alta) dentro de `@nestjs/config` — `_.template`/`_.unset`, sólo procesa nuestro `.env`; `file-type` dentro de `@nestjs/common` — sólo lo usa `ParseFilePipe`, que el bot no tiene; `@nestjs/core` — inyección en respuestas HTTP, y el bot ya no tiene HTTP. Es un salto de dos versiones mayores: hacerlo aparte, con el changelog a mano.
 - [ ] **7. Reconexión del socket.** Intervalo fijo de 5 s, sin backoff: si el backend cae, el bot lo golpea cada 5 s para siempre. Un `joinError` (p. ej. rol quitado) sólo se loguea y el bot queda conectado pero sordo. **Arreglo:** backoff exponencial con tope y reintento/alerta ante `joinError`.
 
 ## 🟡 Limpieza
 
-- [ ] **8. Código muerto heredado de CBox.**
-  - `AuthService` / `AuthModule`: no se importan en ningún lado.
-  - `MessagesService` y `OnlineUsersService`: registrados en `ChatModule`, nunca inyectados; hacen scraping de `cbox.ws`.
-  - Paquetes sin uso: `ytsr`, `@nestjs/schedule` (trae el `uuid` vulnerable), `@nestjs/platform-ws`, `@nestjs/websockets`, `cheerio`, `ws` como dependencia directa. Revisar también `he` y `form-data` después de borrar lo anterior.
-  - Interfaces de CBox en `common/interfaces` que queden huérfanas.
+- [x] **8. Código muerto heredado de CBox.** ✅
+  - Borrados `AuthService` / `AuthModule`, `MessagesService` y `OnlineUsersService` (scraping de `cbox.ws`), y las interfaces de CBox (`LoginParams`, `BoxDetails`, `SendMessageOptions`, `MessageData`, `OnlineUser*`, `BotSession`).
+  - Desinstalados `cheerio`, `ws` (+ `@types/ws`), `@nestjs/schedule`, `@nestjs/platform-ws`, `@nestjs/websockets` y `@nestjs/platform-express` (+ `@types/express`).
+  - Corrección de la auditoría: **`ytsr` sí se usa** (búsqueda de respaldo de YouTube en `music.service.ts`) y se queda; `he`, `form-data` y `node-fetch` también siguen en uso.
 - [ ] **9. Migraciones viejas en cada arranque.** `MemoryService.migrateMemoriesToUserFormat` está vacía y `cleanExistingMemories` es del sistema `SAVE_MEMORY` ya reemplazado. Revisar también `MigrationService`.
-- [ ] **10. Dos lockfiles** (`package-lock.json` + `pnpm-lock.yaml`). Quedarse con uno.
+- [x] **10. Dos lockfiles** (`package-lock.json` + `pnpm-lock.yaml`). ✅ Se borró `pnpm-lock.yaml`: los scripts y el deploy usan npm.
 - [ ] **11. Scripts rotos.** `npm run lint` no tiene config de ESLint; `test:e2e` apunta a `test/jest-e2e.json`, que no existe.
 - [ ] **12. `.env.example` desactualizado.** Faltan `OPENAI_BASE_URL`, `OPENAI_MODEL`, `TEXT_COLOR`, `CACHE_ENABLED`, `RATE_LIMIT_PER_HOUR`, `RATE_LIMIT_REGISTERED*`, `STICKER_*`, `X02_API_KEY`, `VIDEO_*`; sobran `GEMINI_API_KEY` y `CONTEXT_LENGTH`.
-- [ ] **13. Doble manejo de SIGTERM** en `main.ts` (`enableShutdownHooks` + handler propio que vuelve a llamar `app.close()`).
+- [x] **13. Doble manejo de SIGTERM** en `main.ts` (`enableShutdownHooks` + handler propio que vuelve a llamar `app.close()`). ✅ Queda sólo `enableShutdownHooks`.
 - [ ] **14. ~160 `console.log`** (111 en `music.service.ts`) mezclados con el `Logger` de Nest. Pasarlos a `Logger` con niveles para poder apagar el debug en producción.
 - [x] **Borrar los `.md` obsoletos de la raíz** (`COMPARISON.md`, `MESSAGE_VALIDATION_IMPLEMENTED.md`, `NESTJS_MIGRATION.md`, `MUSIC_README.md`): describían la migración desde CBox y librerías que ya no se usan.
 

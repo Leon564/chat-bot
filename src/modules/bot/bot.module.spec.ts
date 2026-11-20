@@ -19,7 +19,7 @@ import { MusicService } from '../music/music.service';
  *
  * `Test.createTestingModule({ imports: [BotModule] }).compile()` fuerza a
  * Nest a resolver el grafo de inyección completo (dependencias +
- * imports/exports de cada módulo) tal como lo hace `NestFactory.create()` en
+ * imports/exports de cada módulo) tal como lo hace `NestFactory.createApplicationContext()` en
  * el arranque real — es la parte que revienta con `UnknownExportException`.
  * A propósito NO se llama a `app.init()` / `moduleRef.init()`: eso
  * dispararía `onModuleInit` en `BotService`/`ChatSocketService` (conectar al
