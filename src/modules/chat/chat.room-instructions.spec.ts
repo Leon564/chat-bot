@@ -141,3 +141,95 @@ describe('ChatService — instrucciones de sala', () => {
     expect(out).toContain('no pude dejarlo fijo');
   });
 });
+
+describe('ChatService.extractReactVerb', () => {
+  it('saca el verbo y devuelve el emoji', () => {
+    expect(ChatService.extractReactVerb('jaja buenísimo REACT(😂)')).toEqual({ content: 'jaja buenísimo', emoji: '😂' });
+  });
+
+  it('acepta emojis con selector de variación y respuesta vacía', () => {
+    expect(ChatService.extractReactVerb('REACT(❤️)')).toEqual({ content: '', emoji: '❤️' });
+  });
+
+  it.each(['REACT(jaja)', 'REACT(:smile:)', 'REACT([b]x[/b])', 'REACT(1️⃣)', 'REACT()'])(
+    '%s no es un emoji válido: se limpia sin reacción',
+    (raw) => {
+      expect(ChatService.extractReactVerb(`ok ${raw}`)).toEqual({ content: 'ok', emoji: null });
+    },
+  );
+
+  it('se queda con el primero válido y borra uno sin cerrar', () => {
+    expect(ChatService.extractReactVerb('a REACT(hola) REACT(👀) REACT(🔥) REACT(🙂')).toEqual({
+      content: 'a',
+      emoji: '👀',
+    });
+  });
+});
+
+describe('ChatService — reacciones', () => {
+  let service: ChatService;
+  let builder: { build: jest.Mock };
+
+  beforeEach(async () => {
+    crearMock.mockReset();
+    builder = { build: jest.fn().mockReturnValue('system') };
+    const configValues: Record<string, unknown> = {
+      'bot.useMemory': false,
+      'bot.maxLengthResponse': 200,
+      'bot.personality': 'default',
+      'openai.apiKey': 'k',
+      'openai.baseURL': 'http://localhost',
+    };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ChatService,
+        { provide: ConfigService, useValue: { get: (k: string) => configValues[k] } },
+        {
+          provide: ContextService,
+          useValue: {
+            getForUser: jest.fn().mockResolvedValue([]),
+            getShared: jest.fn().mockResolvedValue([]),
+            save: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: LoggingService, useValue: {} },
+        { provide: PromptBuilderService, useValue: builder },
+        {
+          provide: IntentRouterService,
+          useValue: { route: jest.fn().mockResolvedValue(['PERSONA']), isSimpleGreeting: () => false },
+        },
+        { provide: GraphContextService, useValue: { build: jest.fn().mockResolvedValue('') } },
+        { provide: GraphIngestService, useValue: {} },
+        { provide: CrossContextSettingsService, useValue: { isEnabled: () => false } },
+        { provide: ErrandService, useValue: {} },
+      ],
+    }).compile();
+    service = moduleRef.get(ChatService);
+  });
+
+  it('con reacciones ofrecidas devuelve el token y avisa al prompt', async () => {
+    crearMock.mockResolvedValue(respuesta('jaja REACT(😂)'));
+    const out = await service.chat('chiste', 'Aria', 'nico', { reactions: true });
+
+    expect(builder.build.mock.calls[0][0].reactions).toBe(true);
+    expect(out).toBe('jaja {{react:😂}}');
+  });
+
+  it('sólo reacción: el historial la registra en vez de una respuesta vacía', async () => {
+    crearMock.mockResolvedValue(respuesta('REACT(❤️)'));
+    const out = await service.chat('te quiero bot', 'Aria', 'nico', { reactions: true });
+
+    expect(out).toBe('{{react:❤️}}');
+    const context = (service as unknown as { contextService: { save: jest.Mock } }).contextService;
+    expect(context.save.mock.calls[0][0].answer).toBe('[reaccionó con ❤️]');
+  });
+
+  it('sin ofrecerlas limpia el verbo y no devuelve token', async () => {
+    crearMock.mockResolvedValue(respuesta('jaja REACT(😂)'));
+    const out = await service.chat('chiste', 'Aria', 'nico');
+
+    expect(builder.build.mock.calls[0][0].reactions).toBeUndefined();
+    expect(out).toBe('jaja');
+  });
+});

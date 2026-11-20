@@ -17,6 +17,16 @@ export interface RecordUsageInput {
 /** Filas que se conservan. */
 export const USAGE_CAP = 5000;
 
+export interface UsageSummary {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** Los que más llamadas dispararon en la ventana (sin filas sin usuario). */
+  topUsers: Array<{ user: string; calls: number; tokens: number }>;
+  /** Fila más vieja que queda en la colección (por el tope, puede ser más nueva que `since`). */
+  oldest: Date | null;
+}
+
 /**
  * Margen antes de podar: escanear en cada escritura sería caro y la colección
  * crece de a una fila por llamada. Mismo patrón que LoggingService.
@@ -76,5 +86,53 @@ export class UsageService {
     } catch (err) {
       this.logger.warn(`No se pudo registrar el uso de tokens: ${(err as Error)?.message}`);
     }
+  }
+
+  /**
+   * Totales desde `since`, para `!uso`. La colección guarda sólo las últimas
+   * `USAGE_CAP` filas, así que `oldest` le dice al llamador si la ventana pedida
+   * quedó recortada.
+   */
+  async summarize(since: Date, topN = 5): Promise<UsageSummary> {
+    const match = { createdAt: { $gte: since } };
+    const [totals, top, oldestRow] = await Promise.all([
+      this.usageModel
+        .aggregate<{ calls: number; promptTokens: number; completionTokens: number }>([
+          { $match: match },
+          {
+            $group: {
+              _id: null,
+              calls: { $sum: 1 },
+              promptTokens: { $sum: '$promptTokens' },
+              completionTokens: { $sum: '$completionTokens' },
+            },
+          },
+        ])
+        .exec(),
+      this.usageModel
+        .aggregate<{ _id: string; calls: number; tokens: number }>([
+          { $match: { ...match, user: { $ne: '' } } },
+          {
+            $group: {
+              _id: '$user',
+              calls: { $sum: 1 },
+              tokens: { $sum: { $add: ['$promptTokens', '$completionTokens'] } },
+            },
+          },
+          { $sort: { calls: -1, tokens: -1 } },
+          { $limit: topN },
+        ])
+        .exec(),
+      this.usageModel.findOne().sort({ createdAt: 1 }).select({ createdAt: 1 }).lean().exec(),
+    ]);
+
+    const t = totals[0];
+    return {
+      calls: t?.calls ?? 0,
+      promptTokens: t?.promptTokens ?? 0,
+      completionTokens: t?.completionTokens ?? 0,
+      topUsers: top.map((r) => ({ user: r._id, calls: r.calls, tokens: r.tokens })),
+      oldest: (oldestRow as { createdAt?: Date } | null)?.createdAt ?? null,
+    };
   }
 }

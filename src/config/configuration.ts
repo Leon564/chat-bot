@@ -73,6 +73,10 @@ export default () => ({
     stickerChance: Math.min(1, Math.max(0, parseFloatEnv(process.env.STICKER_CHANCE, 0.15))),
     // Minutos mínimos entre dos stickers espontáneos, en todo el chat.
     stickerCooldownMinutes: Math.max(0, parseFloatEnv(process.env.STICKER_COOLDOWN_MINUTES, 5)),
+    // Precio del modelo en USD por millón de tokens, sólo para estimar el costo
+    // en `!uso`. En 0 (default) `!uso` muestra tokens sin costo.
+    llmPriceInputPerM: Math.max(0, parseFloatEnv(process.env.LLM_PRICE_INPUT_PER_M, 0)),
+    llmPriceOutputPerM: Math.max(0, parseFloatEnv(process.env.LLM_PRICE_OUTPUT_PER_M, 0)),
   },
 
   // Music Configuration

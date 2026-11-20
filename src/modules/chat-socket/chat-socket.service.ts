@@ -14,6 +14,15 @@ import { BbcodeSettingsService } from './bbcode-settings.service';
  */
 const RECENT_MESSAGES_LIMIT = 500;
 
+/**
+ * El gateway borra el "escribiendo…" a los 3 s del último `typing`. Se reenvía
+ * un poco antes para que no parpadee mientras el modelo piensa.
+ */
+const TYPING_REFRESH_MS = 2500;
+
+/** Tope de seguridad: un "escribiendo…" nunca dura más que esto aunque nadie lo corte. */
+const TYPING_MAX_MS = 60_000;
+
 export interface ChatMessage {
   _id: string;
   content: string;
@@ -45,6 +54,8 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   private pendingAcks = new Map<string, { resolve: (id: string | null) => void; timer: NodeJS.Timeout }>();
   /** Mensajes recientes por `_id` (orden de inserción = antigüedad), incluidos los del propio bot. */
   private recentMessages = new Map<string, { authorUsername: string; content: string; type?: string }>();
+  /** `settings.reactionsEnabled`: llega en el `init` y en vivo con `reactionsState`. */
+  private reactionsOn = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -127,14 +138,21 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     // `stickers` son los activos del set activo; `allStickers` no se usa (trae
     // también los privados y los borrados, que el bot no debe ofrecer).
     type StickerPayload = { stickers?: CatalogSticker[]; stickerCategories?: CatalogCategory[] };
-    this.socket.on('init', (data: StickerPayload & { theme?: { disabledBbcodes?: unknown } }) => {
+    this.socket.on('init', (data: StickerPayload & { theme?: { disabledBbcodes?: unknown; reactionsEnabled?: unknown } }) => {
       this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
+      this.reactionsOn = data?.theme?.reactionsEnabled === true;
       // BBCodes apagados por el admin: vienen en el theme del `init` y en vivo
       // con `bbcodesState` (ver docs/bbcode-contexto.md).
       this.bbcodeSettings?.update(data?.theme?.disabledBbcodes);
     });
     this.socket.on('bbcodesState', (data: { disabled?: unknown }) => {
       this.bbcodeSettings?.update(data?.disabled);
+    });
+    this.socket.on('reactionsState', (data: { enabled?: unknown }) => {
+      this.reactionsOn = data?.enabled === true;
+    });
+    this.socket.on('reactionError', (data: { message?: string }) => {
+      this.logger.warn(`reactionError: ${data?.message ?? '(sin mensaje)'}`);
     });
     this.socket.on('stickersUpdated', (data: StickerPayload) => {
       this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
@@ -257,6 +275,42 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     this.socket.emit('sendMessage', { content: `:${code}:`, type: 'sticker' });
+  }
+
+  /**
+   * Muestra "<bot> está escribiendo…" hasta que se llame a la función que
+   * devuelve (idempotente). Hay que llamarla siempre, también si falla lo que
+   * se estaba esperando: va en un `finally`.
+   */
+  startTyping(): () => void {
+    const emit = () => {
+      if (this.socket?.connected) this.socket.emit('typing');
+    };
+    emit();
+    const interval = setInterval(emit, TYPING_REFRESH_MS);
+    const cap = setTimeout(() => stop(), TYPING_MAX_MS);
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(interval);
+      clearTimeout(cap);
+    };
+    return stop;
+  }
+
+  /** Si el admin tiene las reacciones encendidas. */
+  get reactionsEnabled(): boolean {
+    return this.reactionsOn;
+  }
+
+  /**
+   * Reacciona a un mensaje. Ojo: el gateway hace *toggle*, así que repetir el
+   * mismo emoji sobre el mismo mensaje la saca.
+   */
+  toggleReaction(messageId: string, emoji: string): void {
+    if (!this.socket?.connected || !messageId || !emoji) return;
+    this.socket.emit('toggleReaction', { messageId, emoji });
   }
 
   /** Delete a message by id (the bot has 'bot' role and may delete its own messages) */

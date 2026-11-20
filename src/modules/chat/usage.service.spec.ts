@@ -35,6 +35,41 @@ describe('UsageService', () => {
     await model.deleteMany({});
   });
 
+  describe('summarize', () => {
+    const seed = (user: string, prompt: number, completion: number, hoursAgo: number) =>
+      model.collection.insertOne({
+        kind: 'chat',
+        user,
+        promptTokens: prompt,
+        completionTokens: completion,
+        createdAt: new Date(Date.now() - hoursAgo * 3_600_000),
+      });
+
+    it('suma la ventana pedida y ordena a los que más usan', async () => {
+      await seed('nico', 100, 10, 1);
+      await seed('nico', 200, 20, 2);
+      await seed('kei', 50, 5, 3);
+      await seed('', 1000, 100, 1); // sin usuario: cuenta en el total, no en el top
+      await seed('viejo', 9999, 999, 48); // fuera de la ventana de 24 h
+
+      const s = await service.summarize(new Date(Date.now() - 24 * 3_600_000));
+
+      expect(s.calls).toBe(4);
+      expect(s.promptTokens).toBe(1350);
+      expect(s.completionTokens).toBe(135);
+      expect(s.topUsers).toEqual([
+        { user: 'nico', calls: 2, tokens: 330 },
+        { user: 'kei', calls: 1, tokens: 55 },
+      ]);
+      expect(s.oldest?.getTime()).toBeLessThan(Date.now() - 47 * 3_600_000);
+    });
+
+    it('sin filas devuelve ceros', async () => {
+      const s = await service.summarize(new Date(0));
+      expect(s).toEqual({ calls: 0, promptTokens: 0, completionTokens: 0, topUsers: [], oldest: null });
+    });
+  });
+
   it('persiste una fila con los campos dados', async () => {
     await service.record({
       kind: 'chat',

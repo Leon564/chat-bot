@@ -27,6 +27,28 @@ import {
   INSTRUCTION_STAFF_ROLES,
   MAX_ROOM_INSTRUCTIONS,
 } from '../chat/room-instructions.service';
+
+/** Ventanas que acepta `!uso`. */
+const USAGE_WINDOWS: Record<string, { ms: number; label: string }> = {
+  '24h': { ms: 24 * 3_600_000, label: 'últimas 24 h' },
+  hoy: { ms: 24 * 3_600_000, label: 'últimas 24 h' },
+  '7d': { ms: 7 * 86_400_000, label: 'últimos 7 días' },
+  semana: { ms: 7 * 86_400_000, label: 'últimos 7 días' },
+  '30d': { ms: 30 * 86_400_000, label: 'últimos 30 días' },
+  mes: { ms: 30 * 86_400_000, label: 'últimos 30 días' },
+};
+
+/** "45m", "1h 20m", "2d 3h"; "menos de 1m" por debajo del minuto. */
+export function formatRemaining(ms: number): string {
+  const totalMin = Math.floor(ms / 60_000);
+  if (totalMin < 1) return 'menos de 1m';
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
 import {
   bbcodeToPlain,
   isOnlyCaretColor,
@@ -164,6 +186,10 @@ export class BotService implements OnModuleInit {
 
     if (await this.handleRoomInstructionsCommand(content, authorUsername, authorRole)) return;
 
+    if (await this.handleHelpCommand(content, authorUsername, authorRole)) return;
+
+    if (await this.handleUsageCommand(content, authorUsername, authorRole)) return;
+
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
     if (await this.handleMemoryCommand(content, authorUsername)) return;
@@ -280,12 +306,29 @@ export class BotService implements OnModuleInit {
       ...(stickers ? { stickers } : {}),
       ...(bbcodes && bbcodes.length > 0 ? { bbcodes } : {}),
       ...(authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole) ? { canInstruct: true } : {}),
+      // Reaccionar necesita el id del mensaje y el flag del admin.
+      ...(msg._id && this.chatSocketService.reactionsEnabled ? { reactions: true } : {}),
     };
-    const rawResponse = Object.keys(chatOptions).length > 0
-      ? await this.chatService.chat(modelText, botUsername, authorUsername, chatOptions)
-      : await this.chatService.chat(modelText, botUsername, authorUsername);
-    const { text: response, sticker } = this.takeStickerToken(rawResponse);
-    if (!response && !sticker) return;
+    // "<bot> está escribiendo…" mientras el modelo piensa. El `?.` es por los
+    // dobles de los tests, que no traen el método.
+    const stopTyping = this.chatSocketService.startTyping?.() ?? (() => {});
+    let rawResponse: string;
+    try {
+      rawResponse = Object.keys(chatOptions).length > 0
+        ? await this.chatService.chat(modelText, botUsername, authorUsername, chatOptions)
+        : await this.chatService.chat(modelText, botUsername, authorUsername);
+    } finally {
+      stopTyping();
+    }
+    const { text: afterSticker, sticker } = this.takeStickerToken(rawResponse);
+    const { text: response, reaction } = this.takeReactToken(afterSticker);
+    if (!response && !sticker && !reaction) return;
+
+    // La reacción va primero: es instantánea y no compite con el texto.
+    if (reaction) {
+      this.chatSocketService.toggleReaction(msg._id, reaction);
+      console.log(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
+    }
 
     if (response) await this.handleChatResponse(response, authorUsername);
     // El sticker va DESPUÉS del texto y sólo en respuestas de charla: en una
@@ -321,6 +364,15 @@ export class BotService implements OnModuleInit {
    * contra el catálogo. Un nombre que no existe se descarta en silencio: es
    * preferible no mandar nada a mandar un sticker equivocado.
    */
+  /** Saca `{{react:emoji}}` (lo arma `ChatService` sólo si se ofreció reaccionar). */
+  private takeReactToken(response: string): { text: string; reaction: string | null } {
+    const re = /\{\{react:\s*([^}]+?)\s*\}\}/gi;
+    const match = re.exec(response ?? '');
+    if (!match) return { text: response ?? '', reaction: null };
+    const text = response.replace(re, '').replace(/[ \t]{2,}/g, ' ').trim();
+    return { text, reaction: match[1] };
+  }
+
   private takeStickerToken(response: string): {
     text: string;
     sticker: { code: string; name: string } | null;
@@ -1308,7 +1360,7 @@ export class BotService implements OnModuleInit {
     const isAdmin = authorRole === 'admin' || authorRole === 'superAdmin';
     const isStaff = !!authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole);
     const usage =
-      'Uso: !instrucciones (ver lista) | !instruccion <texto> | !instruccion quitar <n> | !instrucciones reset';
+      'Uso: !instrucciones (ver lista) | !instruccion [30m|2h|1d] <texto> | !instruccion quitar <n> | !instrucciones reset';
 
     if (!this.roomInstructions) {
       this.sendBotMessage(`@${authorUsername} ❌ Las instrucciones de sala no están disponibles.`);
@@ -1330,7 +1382,11 @@ export class BotService implements OnModuleInit {
         this.sendBotMessage(`@${authorUsername} 📭 No hay instrucciones de sala activas.`);
         return true;
       }
-      const lines = list.map((i, n) => `${n + 1}. ${i.text} (de ${i.createdBy})`);
+      const now = Date.now();
+      const lines = list.map((i, n) => {
+        const expiry = i.expiresAt ? `, vence en ${formatRemaining(i.expiresAt.getTime() - now)}` : '';
+        return `${n + 1}. ${i.text} (de ${i.createdBy}${expiry})`;
+      });
       const message = `📌 Instrucciones de sala (${list.length}/${MAX_ROOM_INSTRUCTIONS}):\n${lines.join('\n')}`;
       const parts = this.splitForChat(message, `@${authorUsername} `.length);
       const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
@@ -1380,9 +1436,20 @@ export class BotService implements OnModuleInit {
       return true;
     }
 
-    const result = await this.roomInstructions.add(arg, authorUsername, 'command');
+    // Duración opcional al principio: "!instruccion 2h Respondé con colores".
+    const [first, ...rest] = arg.split(/\s+/);
+    if (rest.length === 0 && RoomInstructionsService.parseDuration(first)) {
+      // "!instruccion 2h" a secas: falta el texto, no guardar "2h".
+      this.sendBotMessage(`@${authorUsername} ${usage}`);
+      return true;
+    }
+    const ttlMs = rest.length > 0 ? RoomInstructionsService.parseDuration(first) : null;
+    const text = ttlMs ? rest.join(' ') : arg;
+
+    const result = await this.roomInstructions.add(text, authorUsername, 'command', ttlMs);
     if (result.ok) {
-      this.sendBotMessage(`@${authorUsername} 📌 Instrucción ${result.position} guardada. Va a aplicar a todas mis respuestas.`);
+      const lasts = ttlMs ? ` durante ${formatRemaining(ttlMs)}` : ' hasta que la quiten';
+      this.sendBotMessage(`@${authorUsername} 📌 Instrucción ${result.position} guardada. Va a aplicar a todas mis respuestas${lasts}.`);
       console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
     } else {
       const reason = {
@@ -1392,6 +1459,120 @@ export class BotService implements OnModuleInit {
         error: 'No pude guardarla, probá de nuevo.',
       }[result.reason];
       this.sendBotMessage(`@${authorUsername} ❌ ${reason}`);
+    }
+    return true;
+  }
+
+  // ─── Help (!ayuda) ───────────────────────────────────────────────────────
+
+  /** `!ayuda` / `!help` / `!comandos`: los comandos que puede usar quien pregunta. */
+  private async handleHelpCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    if (!/^!(?:ayuda|help|comandos)\s*$/i.test(content.trim())) return false;
+
+    const bot = this.chatSocketService.username ?? 'bot';
+    const isStaff = !!authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole);
+    const isAdmin = authorRole === 'admin' || authorRole === 'superAdmin';
+    const video = !!this.configService.get<boolean>('video.enabled');
+
+    const lines = [
+      '📖 Comandos del bot:',
+      `• Nombrame (${bot}) o respondé a un mensaje mío para charlar`,
+      '• !music <canción> — pido y paso una canción',
+      ...(video ? ['• !video <búsqueda> — paso un video'] : []),
+      `• "${bot} resumen" — resumen de lo que se habló`,
+      '• !quesabes — lo que recuerdo de vos',
+      '• !olvida <algo> | !olvida todo — que me olvide de cosas tuyas',
+      '• !ayuda — esta lista',
+    ];
+    if (isStaff) {
+      lines.push('', '🛡️ Staff:', '• !instrucciones — instrucciones de sala activas');
+    }
+    if (isAdmin) {
+      lines.push(
+        '',
+        '👑 Admin:',
+        '• !instruccion [30m|2h|1d] <texto> — instrucción para toda la sala',
+        '• !instruccion quitar <n> | !instrucciones reset',
+        '• !uso [24h|7d|30d] — consumo del modelo',
+        '• !personality default|unfiltered|reset|status',
+        '• !sharedcontext on|off|reset|status',
+        '• !contextocruzado on|off|reset|status',
+      );
+    }
+
+    const parts = this.splitForChat(lines.join('\n'), `@${authorUsername} `.length);
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+    for (let i = 0; i < parts.length; i++) {
+      this.sendBotMessage(i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i]);
+      if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
+    }
+    return true;
+  }
+
+  // ─── Usage (!uso) ────────────────────────────────────────────────────────
+
+  /** `!uso [24h|7d|30d]` (admin): llamadas, tokens, costo estimado y quién más usa. */
+  private async handleUsageCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!uso(?:\s+(\S+))?\s*$/i);
+    if (!match) return false;
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden ver el consumo.`);
+      return true;
+    }
+
+    const key = (match[1] ?? '24h').toLowerCase();
+    const window = Object.prototype.hasOwnProperty.call(USAGE_WINDOWS, key) ? USAGE_WINDOWS[key] : null;
+    if (!window) {
+      this.sendBotMessage(`@${authorUsername} Uso: !uso [24h|7d|30d]`);
+      return true;
+    }
+
+    const since = new Date(Date.now() - window.ms);
+    let summary: Awaited<ReturnType<UsageService['summarize']>>;
+    try {
+      summary = await this.usageService.summarize(since);
+    } catch (err) {
+      console.log(`📊 [USO] Falló el resumen de consumo: ${(err as Error)?.message}`);
+      this.sendBotMessage(`@${authorUsername} ❌ No pude leer el consumo, probá de nuevo.`);
+      return true;
+    }
+
+    const fmt = (n: number) => n.toLocaleString('es-ES');
+    const priceIn = this.configService.get<number>('bot.llmPriceInputPerM') ?? 0;
+    const priceOut = this.configService.get<number>('bot.llmPriceOutputPerM') ?? 0;
+    const cost = (summary.promptTokens * priceIn + summary.completionTokens * priceOut) / 1_000_000;
+
+    const lines = [
+      `📊 Consumo del modelo (${window.label}):`,
+      `• ${fmt(summary.calls)} llamadas`,
+      `• ${fmt(summary.promptTokens)} tokens de entrada + ${fmt(summary.completionTokens)} de salida`,
+      ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
+    ];
+    if (summary.topUsers.length > 0) {
+      lines.push(
+        '',
+        'Quién más lo usa:',
+        ...summary.topUsers.map((u, i) => `${i + 1}. ${u.user} — ${fmt(u.calls)} llamadas, ${fmt(u.tokens)} tokens`),
+      );
+    }
+    if (summary.oldest && summary.oldest > since) {
+      lines.push('', `⚠️ Solo hay registros desde ${summary.oldest.toLocaleString('es-ES')} (se guardan los últimos 5000).`);
+    }
+
+    const parts = this.splitForChat(lines.join('\n'), `@${authorUsername} `.length);
+    const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+    for (let i = 0; i < parts.length; i++) {
+      this.sendBotMessage(i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i]);
+      if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
     return true;
   }
