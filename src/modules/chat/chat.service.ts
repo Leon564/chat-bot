@@ -101,6 +101,8 @@ export class ChatService {
       bbcodes?: readonly string[];
       /** Quien escribe es mod/admin: puede dejar instrucciones con SAVE_INSTRUCTION. */
       canInstruct?: boolean;
+      /** Se puede reaccionar al mensaje (REACT(emoji)). */
+      reactions?: boolean;
     } = {},
   ): Promise<string> {
     const replyTo = options.replyTo ?? null;
@@ -158,6 +160,7 @@ export class ChatService {
       bbcodes: options.bbcodes,
       ...(roomInstructions.length > 0 ? { roomInstructions } : {}),
       ...(canInstruct ? { canInstruct } : {}),
+      ...(options.reactions ? { reactions: true } : {}),
     });
 
     // Optimized payload structure to reduce token usage
@@ -305,6 +308,12 @@ export class ChatService {
       const stickerExtraction = ChatService.extractStickerVerb(content);
       content = stickerExtraction.content;
       const chosenSticker = stickerOffer ? stickerExtraction.name : null;
+
+      // REACT(emoji): mismo tratamiento que STICKER — sale antes que los
+      // SAVE_*, se limpia siempre y sólo se devuelve si se ofreció.
+      const reactExtraction = ChatService.extractReactVerb(content);
+      content = reactExtraction.content;
+      const chosenReaction = options.reactions ? reactExtraction.emoji : null;
 
       // SAVE_INSTRUCTION(texto) también sale antes que los SAVE_FACT (mismo
       // problema de fusión de capturas). Se limpia SIEMPRE, la diga quien la
@@ -551,7 +560,13 @@ export class ChatService {
           question: replyTo ? `${this.compactReplyPrefix(replyTo)} ${message}` : message,
           // Sin formato: el modelo no tiene que copiar el [shake] de una
           // respuesta vieja en cada turno. Los spoilers quedan marcados.
-          answer: bbcodeToPlain(content || '', 'mark'),
+          // Sólo reacción: `answer` es obligatorio en el schema (un '' lo
+          // rechaza) y así el modelo sabe que ya reaccionó en ese turno.
+          answer: content
+            ? bbcodeToPlain(content, 'mark')
+            : chosenReaction
+              ? `[reaccionó con ${chosenReaction}]`
+              : '',
           user: username,
         });
       }
@@ -561,10 +576,11 @@ export class ChatService {
       // El historial (arriba) se guarda SIN el sticker: si quedara, el modelo
       // lo vería en turnos siguientes e imitaría el verbo sin que se lo
       // ofrezcan. BotService resuelve y envía el token.
-      if (chosenSticker) {
-        return `${content} {{sticker:${chosenSticker}}}`.trim();
-      }
-      return content;
+      const tokens = [
+        chosenSticker ? `{{sticker:${chosenSticker}}}` : '',
+        chosenReaction ? `{{react:${chosenReaction}}}` : '',
+      ].filter(Boolean);
+      return tokens.length > 0 ? `${content} ${tokens.join(' ')}`.trim() : content;
     } catch (error) {
       console.error('Error en chat GPT:', error);
       return 'Lo siento, ocurrió un error al procesar tu mensaje. 😅';
@@ -1107,6 +1123,33 @@ escribas nada después del delimitador.`
   }
 
   /**
+   * Saca `REACT(emoji)` y devuelve el primer emoji válido. Válido = tiene al
+   * menos un pictograma y nada de letras, números ni signos de BBCode/token:
+   * el gateway acepta cualquier string de hasta 32 caracteres como "emoji",
+   * así que sin esto el modelo podría reaccionar con una palabra.
+   */
+  static extractReactVerb(content: string): { content: string; emoji: string | null } {
+    if (!/\bREACT\s*\(/i.test(content)) return { content, emoji: null };
+    let emoji: string | null = null;
+    const cleaned = content
+      .replace(/\bREACT\s*\(\s*([^)]*?)\s*\)/gi, (_m, raw: string) => {
+        const e = raw.replace(/^["'«“]+|["'»”]+$/g, '').trim();
+        if (!emoji && ChatService.isReactionEmoji(e)) emoji = e;
+        return '';
+      })
+      .replace(/\bREACT\s*\([^)]*$/i, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+    return { content: cleaned, emoji };
+  }
+
+  static isReactionEmoji(value: string): boolean {
+    if (!value || value.length > 16) return false;
+    if (/[\p{L}\p{N}\s<>\[\](){}@:]/u.test(value)) return false;
+    return /\p{Extended_Pictographic}/u.test(value);
+  }
+
+  /**
    * Saca todos los `SAVE_INSTRUCTION(texto)` y devuelve sus textos. El texto
    * puede traer paréntesis propios ("usá colores (rosa o celeste)"), así que
    * se recorre contando profundidad en vez de cortar en el primer `)`. Uno
@@ -1141,7 +1184,7 @@ escribas nada después del delimitador.`
     out += rest;
 
     return {
-      content: out.replace(/[ 	]{2,}/g, ' ').trim(),
+      content: out.replace(/[ \t]{2,}/g, ' ').trim(),
       instructions,
     };
   }

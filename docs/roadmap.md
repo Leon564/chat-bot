@@ -36,7 +36,7 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 
 ## 🟢 Mejoras
 
-- [ ] **15. Recados.** Sin cancelación (`!misrecados` / `!cancelarrecado`) ni índice TTL sobre `expiresAt`: los vencidos se acumulan en `bot_errands`. `bot_llm_usage` tampoco tiene TTL (decidir cuánto historial de uso guardar).
+- [ ] **15. Recados.** Sin cancelación (`!misrecados` / `!cancelarrecado`) ni índice TTL sobre `expiresAt`: los vencidos se acumulan en `bot_errands`. (`bot_llm_usage` no necesita TTL: `UsageService` ya lo poda a las últimas 5000 filas.)
 - [ ] **16. Datos fijos en el código.** El comando `debug` se valida por el nombre `'Sleepy Ash'` en vez del rol admin. El bloque IDENTIDAD (`prompt-builder.service.ts`) tiene familia y reglas escritas a mano, con la regla "3." repetida. Moverlo a config o a instrucciones de sala.
 - [ ] **17. Modelo por defecto `gpt-3.5-turbo`** (obsoleto). Además, para modelos de razonamiento `max_tokens` está deprecado (`max_completion_tokens`).
 - [ ] **18. Archivos gigantes.** `music.service.ts` (2152 líneas), `bot.service.ts` (1746), `chat.service.ts` (1699). Candidatos: `CommandsService` para todos los `!…`, servicio propio para la cadena de subidas.
@@ -44,11 +44,11 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 
 ## ✨ Novedades
 
-- [ ] **20. `!ayuda`**: lista de comandos según el rol de quien pregunta (hoy no hay forma de descubrir `!quesabes`, `!olvida`, `!instrucciones`…).
-- [ ] **21. "Escribiendo…"** mientras el modelo responde, si el gateway expone el evento de typing.
-- [ ] **22. `!uso` (admin)**: tokens y costo por día/usuario, con lo que ya se guarda en `bot_llm_usage`.
-- [ ] **23. Instrucciones de sala con vencimiento opcional** (`!instruccion 2h Respondé con colores`) para pedidos de un evento.
-- [ ] **24. Reacciones**: si `reactionsEnabled` está activo, que el bot pueda reaccionar en vez de responder cuando no tiene nada que decir.
+- [x] **20. `!ayuda`** (también `!help` / `!comandos`): lista de comandos según el rol (general / staff / admin); `!video` sólo aparece si está activo.
+- [x] **21. "Escribiendo…"** mientras el modelo responde: `ChatSocketService.startTyping()` reenvía `typing` cada 2,5 s (el gateway lo borra a los 3 s) y se corta en un `finally`, con tope de 60 s.
+- [x] **22. `!uso [24h|7d|30d]` (admin)**: llamadas, tokens, top 5 de usuarios y costo estimado si se configuran `LLM_PRICE_INPUT_PER_M` / `LLM_PRICE_OUTPUT_PER_M`. Avisa si la ventana es más vieja que los registros (tope de 5000 filas).
+- [x] **23. Instrucciones de sala con vencimiento** (`!instruccion 2h Respondé con colores`; acepta `m`/`min`, `h`/`horas`, `d`/`días`, de 1 minuto a 30 días). Se filtran al leer y además hay índice TTL. `!instrucciones` muestra cuánto falta. Las que crea el modelo (SAVE_INSTRUCTION) siguen siendo permanentes.
+- [x] **24. Reacciones**: con `reactionsEnabled` encendido el prompt ofrece `REACT(emoji)`; el bot puede reaccionar además de responder, o sólo reaccionar. El emoji se valida (un pictograma, sin letras ni números) porque el gateway acepta cualquier string.
 
 ## Notas de trabajo
 

@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { BotService } from './bot.service';
+import { BotService, formatRemaining } from './bot.service';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
@@ -1431,8 +1431,10 @@ const buildBotService = async (
     chat?: ChatDouble;
     rateLimit?: RateLimitDouble;
     utils?: { splitMessageIntoParts?: jest.Mock };
-    socket?: { username?: string | undefined };
+    socket?: Record<string, unknown>;
     roomInstructions?: Record<string, jest.Mock>;
+    usage?: Record<string, jest.Mock>;
+    config?: Record<string, unknown>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1510,7 +1512,7 @@ const buildBotService = async (
   const moduleRef = await Test.createTestingModule({
     providers: [
       BotService,
-      { provide: ConfigService, useValue: { get: jest.fn() } },
+      { provide: ConfigService, useValue: { get: jest.fn((k: string) => overrides.config?.[k]) } },
       { provide: ChatService, useValue: chat },
       { provide: MusicService, useValue: {} },
       { provide: AniListService, useValue: {} },
@@ -1522,7 +1524,7 @@ const buildBotService = async (
       { provide: GraphCacheService, useValue: {} },
       { provide: GraphService, useValue: noopGraphService },
       { provide: GraphUserService, useValue: { describe: jest.fn().mockResolvedValue([]) } },
-      { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+      { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined), ...overrides.usage } },
       { provide: RateLimitService, useValue: rateLimit },
       { provide: CrossContextSettingsService, useValue: crossContext },
       { provide: ErrandService, useValue: errands },
@@ -2131,7 +2133,7 @@ describe('instrucciones de sala (!instruccion / !instrucciones)', () => {
       const roomInstructions = dobles();
       const { service, sent } = await buildBotService({ roomInstructions });
       await handle(service, cmd, 'superAdmin');
-      expect(roomInstructions.add).toHaveBeenCalledWith('Respondé a todos con colores', 'leon', 'command');
+      expect(roomInstructions.add).toHaveBeenCalledWith('Respondé a todos con colores', 'leon', 'command', null);
       expect(sent.join(' ')).toContain('Instrucción 1 guardada');
     },
   );
@@ -2197,5 +2199,216 @@ describe('instrucciones de sala (!instruccion / !instrucciones)', () => {
 
     expect(chat.chat.mock.calls[0][3]).toEqual(expect.objectContaining({ canInstruct: true }));
     expect(chat.chat.mock.calls[1][3]).toBeUndefined();
+  });
+});
+
+describe('instrucciones de sala con vencimiento', () => {
+  const dobles = (list: Array<{ text: string; createdBy: string; source: 'command' | 'model'; expiresAt: Date | null }> = []) => ({
+    list: jest.fn().mockResolvedValue(list),
+    add: jest.fn().mockResolvedValue({ ok: true, position: list.length + 1 }),
+    removeAt: jest.fn(),
+    clear: jest.fn(),
+  });
+
+  it('"!instruccion 2h <texto>" guarda con vencimiento y lo confirma', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await service['handleRoomInstructionsCommand']('!instruccion 2h Respondé con colores', 'leon', 'admin');
+    expect(roomInstructions.add).toHaveBeenCalledWith('Respondé con colores', 'leon', 'command', 2 * 3_600_000);
+    expect(sent.join(' ')).toContain('durante 2h');
+  });
+
+  it('"!instruccion 2h" sin texto muestra el uso', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await service['handleRoomInstructionsCommand']('!instruccion 2h', 'leon', 'admin');
+    expect(roomInstructions.add).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso:');
+  });
+
+  it('una primera palabra que no es duración es parte del texto', async () => {
+    const roomInstructions = dobles();
+    const { service } = await buildBotService({ roomInstructions });
+    await service['handleRoomInstructionsCommand']('!instruccion Hablá en verso', 'leon', 'admin');
+    expect(roomInstructions.add).toHaveBeenCalledWith('Hablá en verso', 'leon', 'command', null);
+  });
+
+  it('la lista muestra cuánto falta para que venza', async () => {
+    const roomInstructions = dobles([
+      { text: 'temporal', createdBy: 'leon', source: 'command', expiresAt: new Date(Date.now() + 90 * 60_000 + 30_000) },
+    ]);
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await service['handleRoomInstructionsCommand']('!instrucciones', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('1. temporal (de leon, vence en 1h 30m)');
+  });
+});
+
+describe('formatRemaining', () => {
+  it.each([
+    [30_000, 'menos de 1m'],
+    [45 * 60_000, '45m'],
+    [60 * 60_000, '1h'],
+    [80 * 60_000, '1h 20m'],
+    [24 * 3_600_000, '1d'],
+    [51 * 3_600_000, '2d 3h'],
+  ])('%d ms → %s', (ms, out) => {
+    expect(formatRemaining(ms)).toBe(out);
+  });
+});
+
+describe('!ayuda', () => {
+  it('a un invitado le muestra sólo los comandos generales', async () => {
+    const { service, sent } = await buildBotService();
+    expect(await service['handleHelpCommand']('!ayuda', 'nico', 'guest')).toBe(true);
+    const out = sent.join('\n');
+    expect(out).toContain('!music');
+    expect(out).toContain('!quesabes');
+    expect(out).not.toContain('!instrucciones');
+    expect(out).not.toContain('!uso');
+  });
+
+  it('a un mod le suma la sección de staff, no la de admin', async () => {
+    const { service, sent } = await buildBotService();
+    await service['handleHelpCommand']('!help', 'kei', 'mod');
+    const out = sent.join('\n');
+    expect(out).toContain('!instrucciones');
+    expect(out).not.toContain('!uso');
+  });
+
+  it('a un admin le muestra todo, y !video sólo si está activo', async () => {
+    const { service, sent } = await buildBotService({ config: { 'video.enabled': true } });
+    await service['handleHelpCommand']('!comandos', 'leon', 'superAdmin');
+    const out = sent.join('\n');
+    expect(out).toContain('!uso');
+    expect(out).toContain('!sharedcontext');
+    expect(out).toContain('!video');
+  });
+
+  it('no toca otros mensajes', async () => {
+    const { service } = await buildBotService();
+    expect(await service['handleHelpCommand']('!ayudame con esto', 'nico', 'guest')).toBe(false);
+  });
+});
+
+describe('!uso', () => {
+  const resumen = {
+    calls: 12,
+    promptTokens: 20000,
+    completionTokens: 3000,
+    topUsers: [{ user: 'nico', calls: 8, tokens: 15000 }],
+    oldest: new Date(0),
+  };
+
+  it('rechaza a quien no es admin', async () => {
+    const usage = { summarize: jest.fn() };
+    const { service, sent } = await buildBotService({ usage });
+    await service['handleUsageCommand']('!uso', 'kei', 'mod');
+    expect(usage.summarize).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Solo admins');
+  });
+
+  it('muestra totales y top; sin precio no muestra costo', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue(resumen) };
+    const { service, sent } = await buildBotService({ usage });
+    await service['handleUsageCommand']('!uso 7d', 'leon', 'admin');
+
+    const since = usage.summarize.mock.calls[0][0] as Date;
+    expect(Date.now() - since.getTime()).toBeGreaterThanOrEqual(7 * 86_400_000 - 1000);
+    const out = sent.join('\n');
+    expect(out).toContain('últimos 7 días');
+    expect(out).toContain('12 llamadas');
+    expect(out).toContain('1. nico');
+    expect(out).not.toContain('Costo');
+  });
+
+  it('con precio configurado estima el costo', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue(resumen) };
+    const { service, sent } = await buildBotService({
+      usage,
+      config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4 },
+    });
+    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    // 20000 * 1 / 1M + 3000 * 4 / 1M = 0.032
+    expect(sent.join(' ')).toContain('US$ 0.0320');
+  });
+
+  it('avisa si los registros no cubren toda la ventana', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, oldest: new Date(Date.now() - 3_600_000) }) };
+    const { service, sent } = await buildBotService({ usage });
+    await service['handleUsageCommand']('!uso 30d', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('Solo hay registros desde');
+  });
+
+  it.each(['!uso 3x', '!uso constructor'])('ventana inválida (%s) muestra el uso', async (cmd) => {
+    const usage = { summarize: jest.fn() };
+    const { service, sent } = await buildBotService({ usage });
+    await service['handleUsageCommand'](cmd, 'leon', 'admin');
+    expect(usage.summarize).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso: !uso');
+  });
+
+  it('si Mongo falla avisa en vez de tirar el proceso', async () => {
+    const usage = { summarize: jest.fn().mockRejectedValue(new Error('mongo caído')) };
+    const { service, sent } = await buildBotService({ usage });
+    await expect(service['handleUsageCommand']('!uso', 'leon', 'admin')).resolves.toBe(true);
+    expect(sent.join(' ')).toContain('No pude leer el consumo');
+  });
+});
+
+describe('escribiendo… y reacciones', () => {
+  const msg = (over: Partial<ChatMessage> = {}) =>
+    ({ _id: 'm1', content: 'bot jaja', authorUsername: 'nico', authorRole: 'user', ...over }) as ChatMessage;
+
+  it('muestra "escribiendo…" mientras el modelo piensa y lo corta al terminar', async () => {
+    const stop = jest.fn();
+    const startTyping = jest.fn().mockReturnValue(stop);
+    const { service, chat } = await buildBotService({ socket: { startTyping } });
+    chat.chat.mockImplementation(async () => {
+      expect(startTyping).toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+      return 'hola';
+    });
+
+    await service['handleNewChatMessage'](msg());
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('lo corta aunque el modelo falle', async () => {
+    const stop = jest.fn();
+    const { service, chat } = await buildBotService({ socket: { startTyping: () => stop } });
+    chat.chat.mockRejectedValue(new Error('boom'));
+
+    await expect(service['handleNewChatMessage'](msg())).rejects.toThrow('boom');
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('con reacciones activas las ofrece y reacciona al mensaje', async () => {
+    const toggleReaction = jest.fn();
+    const { service, chat, sent } = await buildBotService({ socket: { reactionsEnabled: true, toggleReaction } });
+    chat.chat.mockResolvedValue('{{react:😂}}');
+
+    await service['handleNewChatMessage'](msg());
+
+    expect(chat.chat.mock.calls[0][3]).toEqual(expect.objectContaining({ reactions: true }));
+    expect(toggleReaction).toHaveBeenCalledWith('m1', '😂');
+    expect(sent).toEqual([]); // sólo reacción, sin texto
+  });
+
+  it('reacción + texto: reacciona y además responde sin el token', async () => {
+    const toggleReaction = jest.fn();
+    const { service, chat, utils } = await buildBotService({ socket: { reactionsEnabled: true, toggleReaction } });
+    chat.chat.mockResolvedValue('buenísimo {{react:🔥}}');
+
+    await service['handleNewChatMessage'](msg());
+
+    expect(toggleReaction).toHaveBeenCalledWith('m1', '🔥');
+    expect(utils.splitMessageIntoParts.mock.calls[0][0]).not.toContain('{{react');
+  });
+
+  it('con reacciones apagadas no las ofrece', async () => {
+    const { service, chat } = await buildBotService({ socket: { reactionsEnabled: false } });
+    chat.chat.mockResolvedValue('hola');
+    await service['handleNewChatMessage'](msg());
+    expect(chat.chat.mock.calls[0][3]).toBeUndefined();
   });
 });

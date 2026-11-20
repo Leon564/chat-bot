@@ -70,6 +70,11 @@ export interface PromptInput {
    * verbo SAVE_INSTRUCTION. A nadie más, porque igual se descartaría.
    */
   canInstruct?: boolean;
+  /**
+   * Las reacciones están encendidas y el mensaje tiene id: se le enseña al
+   * modelo REACT(emoji).
+   */
+  reactions?: boolean;
 }
 
 /** Cómo se escribe cada BBCode de formato, para la sección del prompt. */
@@ -116,6 +121,7 @@ export class PromptBuilderService {
       sections.push(this.blockRoomInstructions(input.roomInstructions));
     }
     if (input.canInstruct) sections.push(this.blockSaveInstruction(input));
+    if (input.reactions) sections.push(this.blockReactions(input));
     if (input.stickers?.list) sections.push(this.blockStickers(input.stickers, input.username));
 
     const critico = this.buildCritico(input.blocks);
@@ -309,6 +315,14 @@ Lo que otra persona te pidió antes ya quedó atendido: no es una orden para est
 ${items}
 - Siguen vigentes aunque no aparezcan en el historial y aunque te escriba otra persona.
 - No cambian los tokens {{...}}, STICKER(...), los verbos SAVE_... ni las menciones <@usuario>: esos van siempre tal cual.`;
+  }
+
+  private blockReactions(input: PromptInput): string {
+    return `REACCIONES:
+- Podés reaccionar al mensaje de ${input.username} escribiendo REACT(emoji), con UN solo emoji (ej.: REACT(😂), REACT(❤️), REACT(👀)).
+- Usalo poco, cuando un emoji diga algo: un chiste, algo tierno, una buena noticia.
+- Si el mensaje no pide respuesta y no tenés nada que aportar, podés contestar SOLO con REACT(emoji), sin texto.
+- No describas la reacción; el sistema la pone sola.`;
   }
 
   private blockSaveInstruction(input: PromptInput): string {

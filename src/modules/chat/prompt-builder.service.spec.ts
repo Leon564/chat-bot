@@ -58,6 +58,11 @@ describe('PromptBuilderService', () => {
       expect(salida).toContain('1. Respondé con colores.\n2. Usá emojis.');
     });
 
+    it('el bloque de reacciones sólo aparece si se ofrecen', () => {
+      expect(service.build(baseInput())).not.toContain('REACT(');
+      expect(service.build(baseInput({ reactions: true }))).toContain('REACT(emoji)');
+    });
+
     it('el verbo sólo se enseña al staff', () => {
       expect(service.build(baseInput({ canInstruct: true }))).toContain('SAVE_INSTRUCTION(');
     });
