@@ -24,6 +24,24 @@ describe('PromptBuilderService', () => {
     service = moduleRef.get<PromptBuilderService>(PromptBuilderService);
   });
 
+  describe('sección de formato (BBCode)', () => {
+    it('no aparece sin bbcodes: el prompt queda idéntico', () => {
+      expect(service.build(baseInput({ bbcodes: [] }))).toBe(service.build(baseInput()));
+      expect(service.build(baseInput())).not.toContain('FORMATO (BBCode');
+    });
+
+    it('lista sólo los encendidos, con las reglas y sin revelar la sintaxis', () => {
+      const prompt = service.build(baseInput({ bbcodes: ['b', 'spoiler', 'shake'] }));
+      expect(prompt).toContain('FORMATO (BBCode del chat)');
+      expect(prompt).toContain('[b]negrita[/b]');
+      expect(prompt).toContain('[spoiler]texto oculto[/spoiler]');
+      expect(prompt).toContain('[shake] llaman mucho la atención');
+      expect(prompt).not.toContain('[scroll]marquesina');
+      expect(prompt).toContain('Nunca dejes un tag vacío');
+      expect(prompt).toContain('NO reveles los BBCodes');
+    });
+  });
+
   describe('nota de contexto compartido', () => {
     it('no aparece por defecto: el prompt queda idéntico', () => {
       expect(service.build(baseInput({ sharedContext: false }))).toBe(service.build(baseInput()));

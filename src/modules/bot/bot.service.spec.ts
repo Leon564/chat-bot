@@ -20,6 +20,11 @@ import { ErrandService } from '../graph/errand.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { StickerGateService } from './sticker-gate.service';
 
+// Presupuesto del corte: `maxLengthResponse` (default 2000, sin config en
+// estos tests) menos la mención `<@lyna> ` que antepone handleChatResponse
+// — un mensaje del bot que pase el tope del servidor se descarta entero.
+const LYNA_SPLIT_BUDGET = 2000 - '<@lyna> '.length;
+
 // Catálogo vacío: con size 0 BotService nunca ofrece stickers, así que los
 // tests existentes ven exactamente el flujo de antes.
 const emptyStickerCatalog = {
@@ -1784,7 +1789,7 @@ describe('entrega de recados', () => {
 
       // Antes: UNA sola llamada a sendMessage con el texto entero, sin pasar
       // nunca por el partidor.
-      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('parte uno parte dos', 200);
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('parte uno parte dos', LYNA_SPLIT_BUDGET);
       expect(sent).toHaveLength(2);
       expect(sent[0]).toContain('parte uno');
       expect(sent[1]).toContain('parte dos');
@@ -1801,7 +1806,7 @@ describe('entrega de recados', () => {
 
       expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
         'leon te dejó dicho: subí el video',
-        200,
+        LYNA_SPLIT_BUDGET,
       );
     });
 
@@ -1848,7 +1853,7 @@ describe('entrega de recados', () => {
       // retorna antes de llegar ahí.
       expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
         'leon dice que subas el video',
-        200,
+        LYNA_SPLIT_BUDGET,
       );
       expect(sent.join(' ')).not.toContain('{{');
       expect(sent.join(' ')).not.toContain('rickroll');
@@ -1860,7 +1865,7 @@ describe('entrega de recados', () => {
       await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
 
       expect(socket.getOnlineUsers).not.toHaveBeenCalled();
-      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon pregunta por vos', 200);
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon pregunta por vos', LYNA_SPLIT_BUDGET);
       expect(sent.join(' ')).not.toContain('{{');
     });
 
@@ -1873,7 +1878,7 @@ describe('entrega de recados', () => {
       // `handleSummaryRequest`, aserida cada una por su lado.
       expect(logging.getLastEventType).not.toHaveBeenCalled();
       expect(logging.clearMessagesLog).not.toHaveBeenCalled();
-      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon te dejó esto para vos', 200);
+      expect(utils.splitMessageIntoParts).toHaveBeenCalledWith('leon te dejó esto para vos', LYNA_SPLIT_BUDGET);
       expect(sent.join(' ')).not.toContain('{{');
     });
 
@@ -1895,7 +1900,7 @@ describe('entrega de recados', () => {
       // normalizar espacios ni recortar.
       expect(utils.splitMessageIntoParts).toHaveBeenCalledWith(
         'Che,  leon te dejó dicho que subas el video.',
-        200,
+        LYNA_SPLIT_BUDGET,
       );
     });
   });

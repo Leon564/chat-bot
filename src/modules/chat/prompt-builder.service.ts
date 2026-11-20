@@ -53,7 +53,29 @@ export interface PromptInput {
   sharedContext?: boolean;
   /** Presente sólo cuando el código decidió ofrecer un sticker en esta respuesta. */
   stickers?: StickerPromptOffer | null;
+  /**
+   * BBCodes de formato que el bot puede usar (los encendidos por el admin).
+   * Ausente o vacío = sin sección de formato (los prompts cortos de entrega
+   * de canciones y recados no la necesitan).
+   */
+  bbcodes?: readonly string[];
 }
+
+/** Cómo se escribe cada BBCode de formato, para la sección del prompt. */
+const BBCODE_PROMPT_EXAMPLES: Record<string, string> = {
+  b: '[b]negrita[/b]',
+  i: '[i]cursiva[/i]',
+  u: '[u]subrayado[/u]',
+  s: '[s]tachado[/s]',
+  url: '[url=https://…]texto del link[/url] (solo http/https)',
+  quote: '[quote]cita[/quote] (citar lo que dijo alguien, va en su propio renglón)',
+  code: '[code]texto literal[/code] (comandos; adentro no funciona ningún otro formato)',
+  color: '[color=#ff6699]texto[/color] (solo hex de 3 o 6 dígitos)',
+  spoiler: '[spoiler]texto oculto[/spoiler] (finales, giros de trama, respuestas de trivia)',
+  big: '[big]texto grande[/big]',
+  scroll: '[scroll]marquesina[/scroll]',
+  shake: '[shake]texto que tiembla[/shake]',
+};
 
 /**
  * Ensambla el system prompt del bot a partir de bloques nombrados y
@@ -71,6 +93,7 @@ export class PromptBuilderService {
     const sections: string[] = [];
 
     if (input.blocks.includes('PERSONA')) sections.push(this.blockPersona(input));
+    if (input.bbcodes && input.bbcodes.length > 0) sections.push(this.blockBbcode(input.bbcodes));
     if (input.blocks.includes('TEMPORAL')) sections.push(this.blockTemporal(input));
     if (input.blocks.includes('MUSIC')) sections.push(this.blockMusic(input));
     if (input.blocks.includes('ANILIST')) sections.push(this.blockAnilist(input));
@@ -94,6 +117,28 @@ export class PromptBuilderService {
     return input.personality === 'unfiltered'
       ? this.buildUnfilteredPersona(input.botName, input.username, input.maxLength)
       : this.buildDefaultPersona(input.botName, input.username, input.maxLength);
+  }
+
+  /**
+   * Formato con BBCode. Sólo lista los tags encendidos; las reglas son las de
+   * docs/bbcode-contexto.md (la red de seguridad de `sanitizeBotBbcode` igual
+   * corrige lo que el modelo haga mal, pero un tag vacío que se le escape
+   * haría que el backend descarte el mensaje entero).
+   */
+  private blockBbcode(tags: readonly string[]): string {
+    const lines = tags.filter((t) => BBCODE_PROMPT_EXAMPLES[t]).map((t) => `  ${BBCODE_PROMPT_EXAMPLES[t]}`);
+    const loud = ['big', 'scroll', 'shake'].filter((t) => tags.includes(t)).map((t) => `[${t}]`);
+    const loudRule = loud.length > 0 ? `\n- ${loud.join(', ')} llaman mucho la atención: solo como énfasis puntual, nunca en cada respuesta.` : '';
+    const spoilerRule = tags.includes('spoiler')
+      ? '\n- Si alguien escribió algo como "(spoiler: …)", es un spoiler oculto: no lo reveles fuera de un [spoiler].'
+      : '\n- Si alguien escribió algo como "(spoiler: …)", es un spoiler oculto: no lo reveles.';
+    return `FORMATO (BBCode del chat):
+- Podés dar formato al texto con estos BBCodes:
+${lines.join('\n')}
+- Usalos poco: la mayoría de las respuestas van sin formato. Úsalos cuando aporten (destacar un título, ocultar un spoiler, citar a alguien).
+- Nunca dejes un tag vacío ([b][/b]), cerrá siempre lo que abrís y no metas un tag dentro de sí mismo ([b]a [b]b[/b][/b]). Sí podés combinar tags distintos: [b][i]hola[/i][/b].
+- No pongas BBCode alrededor de los tokens {{...}}, de STICKER(...), de los verbos SAVE_... ni de las menciones <@usuario>.${loudRule}${spoilerRule}
+- Si te preguntan cómo hacés la negrita, los colores, el texto que tiembla o cualquier otro formato, NO reveles los BBCodes ni su sintaxis: esquivalo con onda (es un secreto de la casa) y seguí la charla. Tampoco escribas un tag "de ejemplo" para mostrarlo.`;
   }
 
   private blockStickers(offer: StickerPromptOffer, username: string | undefined): string {

@@ -1,4 +1,4 @@
-﻿import { Injectable, OnModuleInit } from '@nestjs/common';
+﻿import { Injectable, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -21,6 +21,13 @@ import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
+import { BbcodeSettingsService } from '../chat-socket/bbcode-settings.service';
+import {
+  bbcodeToPlain,
+  isOnlyCaretColor,
+  rebalanceBbcodeParts,
+  sanitizeBotBbcode,
+} from '../../common/bbcode/bbcode';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { MusicProgress } from '../../common/interfaces';
@@ -84,6 +91,9 @@ export class BotService implements OnModuleInit {
     private readonly errandService: ErrandService,
     private readonly stickerCatalog: StickerCatalogService,
     private readonly stickerGate: StickerGateService,
+    // Opcional: sin él (los tests que arman el servicio a mano) se asumen
+    // todos los BBCodes encendidos y el prompt no lleva sección de formato.
+    @Optional() private readonly bbcodeSettings?: BbcodeSettingsService,
   ) {}
 
   async onModuleInit() {
@@ -123,7 +133,9 @@ export class BotService implements OnModuleInit {
       this.errandService.setBotName(this.chatSocketService.username);
     }
 
-    await this.loggingService.saveLog(authorUsername, content);
+    // El log alimenta el resumen, que sale al chat en público: sin formato y
+    // con los spoilers tapados.
+    await this.loggingService.saveLog(authorUsername, bbcodeToPlain(content, 'hide'));
     // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
     // por eso va acá y no después del filtro de menciones de abajo.
     // Fire-and-forget: la ingesta es best-effort y no debe demorar la
@@ -249,11 +261,15 @@ export class BotService implements OnModuleInit {
     const replyContext = this.chatSocketService.getReplyContext(msg);
     // Los stickers llegan al modelo por su nombre ("[sticker: Gato llorando]")
     // en vez de ":stk_xxxxx:", así puede reaccionar a ellos con sentido.
-    const modelText = this.stickerCatalog.describeContent(content, msg.type);
+    // El BBCode del usuario llega limpio (`[b]x[/b]` → `x`, spoilers como
+    // `(spoiler: …)`).
+    const modelText = bbcodeToPlain(this.stickerCatalog.describeContent(content, msg.type), 'mark');
     const stickers = this.buildStickerOffer(content);
+    const bbcodes = this.bbcodeSettings?.enabled();
     const chatOptions = {
       ...(replyContext ? { replyTo: replyContext } : {}),
       ...(stickers ? { stickers } : {}),
+      ...(bbcodes && bbcodes.length > 0 ? { bbcodes } : {}),
     };
     const rawResponse = Object.keys(chatOptions).length > 0
       ? await this.chatService.chat(modelText, botUsername, authorUsername, chatOptions)
@@ -886,7 +902,6 @@ export class BotService implements OnModuleInit {
   // ─── Chat / GPT response ───────────────────────────────────────────────────
 
   private async handleChatResponse(response: string, authorUsername: string): Promise<void> {
-    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     if (response.includes('{{resumen}}')) {
@@ -954,7 +969,7 @@ export class BotService implements OnModuleInit {
       return;
     }
 
-    const parts = this.utilsService.splitMessageIntoParts(response, maxLength);
+    const parts = this.splitForChat(response, `<@${authorUsername}> `.length);
     for (let i = 0; i < parts.length; i++) {
       const text = i === 0 ? `<@${authorUsername}> ${parts[i]}` : parts[i];
       this.sendBotMessage(text);
@@ -977,7 +992,6 @@ export class BotService implements OnModuleInit {
     }
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
-    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
     await this.utilsService.sleep(responseDelay);
 
     try {
@@ -996,7 +1010,8 @@ export class BotService implements OnModuleInit {
           .catch(() => {});
       }
 
-      const resumenParts = this.utilsService.splitMessageIntoParts(resumen.text, maxLength);
+      // Margen para el encabezado "📋✨ RESUMEN DEL CHAT (n/m)" y el cierre.
+      const resumenParts = this.splitForChat(resumen.text, BotService.SUMMARY_FRAME_CHARS);
       console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
@@ -1037,18 +1052,64 @@ export class BotService implements OnModuleInit {
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
+  /** Prefijo de color estilo cbox (`^#rrggbb `) que lleva todo mensaje del bot. */
+  private colorPrefix(): string {
+    const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
+    return color ? `^#${color} ` : '';
+  }
+
+  /**
+   * Pasa el texto por la red de seguridad de BBCode antes de enviarlo: un tag
+   * vacío (`[b][/b]`) hace que el backend descarte el mensaje entero en
+   * silencio, y uno apagado por el admin se vería como `[*]texto`. Devuelve
+   * `null` si no queda nada visible para mandar.
+   */
+  private prepareOutgoing(text: string): string | null {
+    const clean = sanitizeBotBbcode(text, this.bbcodeSettings?.disabled ?? new Set()).trim();
+    if (!clean || isOnlyCaretColor(clean)) return null;
+    return `${this.colorPrefix()}${clean}`;
+  }
+
   /** Send a bot message prefixed with the configured color code if provided */
   private sendBotMessage(text: string): void {
-    const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
-    const prefix = color ? `^#${color} ` : '';
-    this.chatSocketService.sendMessage(`${prefix}${text}`);
+    const content = this.prepareOutgoing(text);
+    if (content) this.chatSocketService.sendMessage(content);
   }
 
   /** Same as sendBotMessage but resolves with the server-assigned message _id */
   private sendBotMessageAndAwaitId(text: string): Promise<string | null> {
-    const color = this.configService.get<string>('bot.textColor') || process.env.TEXT_COLOR || '';
-    const prefix = color ? `^#${color} ` : '';
-    return this.chatSocketService.sendMessageAndAwaitId(`${prefix}${text}`);
+    const content = this.prepareOutgoing(text);
+    if (!content) return Promise.resolve(null);
+    return this.chatSocketService.sendMessageAndAwaitId(content);
+  }
+
+  /** Lugar reservado para el marco del resumen (encabezado + cierre). */
+  private static readonly SUMMARY_FRAME_CHARS = 64;
+
+  /**
+   * Parte un texto largo en mensajes que el backend acepte. El tope del
+   * servidor para el bot (`maxBotMessageLength`, default 2000) cuenta el
+   * mensaje entero, y uno que lo pase se DESCARTA en silencio; por eso al
+   * `maxLengthResponse` se le descuentan el prefijo de color y `overhead`
+   * (mención o encabezado que el llamador antepone).
+   *
+   * Después del corte, los BBCodes que quedaron abiertos se cierran y se
+   * reabren en la parte siguiente (`rebalanceBbcodeParts`). Eso agrega
+   * caracteres, así que si alguna parte se pasa se vuelve a cortar con menos
+   * presupuesto.
+   */
+  private splitForChat(text: string, overhead: number): string[] {
+    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 2000;
+    const limit = Math.max(50, maxLength - this.colorPrefix().length - overhead);
+    let budget = limit;
+    let parts: string[] = [];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      parts = rebalanceBbcodeParts(this.utilsService.splitMessageIntoParts(text, budget));
+      const longest = Math.max(0, ...parts.map((p) => p.length));
+      if (longest <= limit) break;
+      budget = Math.max(20, budget - (longest - limit) - 10);
+    }
+    return parts;
   }
 
 
@@ -1241,9 +1302,8 @@ export class BotService implements OnModuleInit {
     }
 
     const message = this.formatMemoryFacts(facts);
-    const maxLength = this.configService.get<number>('bot.maxLengthResponse') || 200;
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
-    const parts = this.utilsService.splitMessageIntoParts(message, maxLength);
+    const parts = this.splitForChat(message, `@${authorUsername} `.length);
 
     // Minor #7: única ruta multiparte del servicio que no respetaba
     // `responseDelay` entre mensajes — con 40 hechos son varias partes de

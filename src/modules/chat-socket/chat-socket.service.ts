@@ -1,9 +1,10 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { io, Socket } from 'socket.io-client';
 import { randomUUID } from 'crypto';
 import { normalizeMessageText, ReplyContext } from './reply-context';
 import { CatalogCategory, CatalogSticker, StickerCatalogService } from './sticker-catalog.service';
+import { BbcodeSettingsService } from './bbcode-settings.service';
 
 /**
  * Cuántos mensajes recientes se recuerdan para resolver el texto COMPLETO del
@@ -48,6 +49,8 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly stickerCatalog: StickerCatalogService,
+    // Opcional para no obligar a cada test que arma el servicio a proveerlo.
+    @Optional() private readonly bbcodeSettings?: BbcodeSettingsService,
   ) {}
 
   async onModuleInit() {
@@ -124,8 +127,14 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     // `stickers` son los activos del set activo; `allStickers` no se usa (trae
     // también los privados y los borrados, que el bot no debe ofrecer).
     type StickerPayload = { stickers?: CatalogSticker[]; stickerCategories?: CatalogCategory[] };
-    this.socket.on('init', (data: StickerPayload) => {
+    this.socket.on('init', (data: StickerPayload & { theme?: { disabledBbcodes?: unknown } }) => {
       this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
+      // BBCodes apagados por el admin: vienen en el theme del `init` y en vivo
+      // con `bbcodesState` (ver docs/bbcode-contexto.md).
+      this.bbcodeSettings?.update(data?.theme?.disabledBbcodes);
+    });
+    this.socket.on('bbcodesState', (data: { disabled?: unknown }) => {
+      this.bbcodeSettings?.update(data?.disabled);
     });
     this.socket.on('stickersUpdated', (data: StickerPayload) => {
       this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
