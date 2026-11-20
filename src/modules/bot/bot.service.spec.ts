@@ -19,6 +19,7 @@ import { ErrandService } from '../graph/errand.service';
 
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { StickerGateService } from './sticker-gate.service';
+import { RoomInstructionsService } from '../chat/room-instructions.service';
 
 // Presupuesto del corte: `maxLengthResponse` (default 2000, sin config en
 // estos tests) menos la mención `<@lyna> ` que antepone handleChatResponse
@@ -1431,6 +1432,7 @@ const buildBotService = async (
     rateLimit?: RateLimitDouble;
     utils?: { splitMessageIntoParts?: jest.Mock };
     socket?: { username?: string | undefined };
+    roomInstructions?: Record<string, jest.Mock>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1526,6 +1528,9 @@ const buildBotService = async (
       { provide: ErrandService, useValue: errands },
       { provide: StickerCatalogService, useValue: emptyStickerCatalog },
       { provide: StickerGateService, useValue: noStickerGate },
+      ...(overrides.roomInstructions
+        ? [{ provide: RoomInstructionsService, useValue: overrides.roomInstructions }]
+        : []),
     ],
   }).compile();
 
@@ -2061,5 +2066,136 @@ describe('BotService — entrega de canciones', () => {
     expect(chat.songDeliveryLine).not.toHaveBeenCalled();
     expect(chat.rememberSongSent).not.toHaveBeenCalled();
     expect(socket.sendMessage).toHaveBeenLastCalledWith(expect.stringContaining('SE PROCESÓ PERO…'));
+  });
+});
+
+describe('instrucciones de sala (!instruccion / !instrucciones)', () => {
+  const dobles = (list: Array<{ text: string; createdBy: string; source: 'command' | 'model' }> = []) => ({
+    list: jest.fn().mockResolvedValue(list),
+    add: jest.fn().mockResolvedValue({ ok: true, position: list.length + 1 }),
+    removeAt: jest.fn().mockImplementation(async (n: number) => list[n - 1] ?? null),
+    clear: jest.fn().mockResolvedValue(list.length),
+  });
+  const handle = (service: BotService, content: string, role?: string) =>
+    service['handleRoomInstructionsCommand'](content, 'leon', role);
+
+  it('no toca mensajes que no son el comando', async () => {
+    const { service } = await buildBotService({ roomInstructions: dobles() });
+    expect(await handle(service, 'bot hola', 'admin')).toBe(false);
+    expect(await handle(service, '!instruccionesxyz', 'admin')).toBe(false);
+  });
+
+  it('lista numerada para mods y admins', async () => {
+    const roomInstructions = dobles([
+      { text: 'Respondé con colores.', createdBy: 'leon', source: 'command' },
+      { text: 'Usá emojis.', createdBy: 'kei', source: 'model' },
+    ]);
+    const { service, sent } = await buildBotService({ roomInstructions });
+
+    await handle(service, '!instrucciones', 'mod');
+
+    const out = sent.join('\n');
+    expect(out).toContain('1. Respondé con colores. (de leon)');
+    expect(out).toContain('2. Usá emojis. (de kei)');
+  });
+
+  it('la lista vacía lo dice', async () => {
+    const { service, sent } = await buildBotService({ roomInstructions: dobles() });
+    await handle(service, '!instrucciones', 'admin');
+    expect(sent.join(' ')).toContain('No hay instrucciones');
+  });
+
+  it('un usuario común no ve ni cambia nada', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+
+    await handle(service, '!instrucciones', 'user');
+    await handle(service, '!instruccion respondé en verso', 'user');
+
+    expect(roomInstructions.list).not.toHaveBeenCalled();
+    expect(roomInstructions.add).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Solo mods y admins');
+  });
+
+  it('un mod no puede agregar por comando', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await handle(service, '!instruccion respondé en verso', 'mod');
+    expect(roomInstructions.add).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Solo admins');
+  });
+
+  it.each(['!instruccion Respondé a todos con colores', '!instrucción Respondé a todos con colores'])(
+    'un admin agrega con "%s"',
+    async (cmd) => {
+      const roomInstructions = dobles();
+      const { service, sent } = await buildBotService({ roomInstructions });
+      await handle(service, cmd, 'superAdmin');
+      expect(roomInstructions.add).toHaveBeenCalledWith('Respondé a todos con colores', 'leon', 'command');
+      expect(sent.join(' ')).toContain('Instrucción 1 guardada');
+    },
+  );
+
+  it.each(['quitar 2', 'borrar 2', 'eliminar #2'])('un admin quita por número con "%s"', async (sub) => {
+    const roomInstructions = dobles([
+      { text: 'a', createdBy: 'leon', source: 'command' },
+      { text: 'b', createdBy: 'leon', source: 'command' },
+    ]);
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await handle(service, `!instruccion ${sub}`, 'admin');
+    expect(roomInstructions.removeAt).toHaveBeenCalledWith(2);
+    expect(sent.join(' ')).toContain('Quité la instrucción 2: "b"');
+  });
+
+  it('quitar un número que no existe avisa', async () => {
+    const { service, sent } = await buildBotService({ roomInstructions: dobles() });
+    await handle(service, '!instruccion quitar 5', 'admin');
+    expect(sent.join(' ')).toContain('No hay instrucción número 5');
+  });
+
+  it('"quitar" sin número muestra el uso y no lo guarda como instrucción', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await handle(service, '!instruccion quitar', 'admin');
+    expect(roomInstructions.add).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso:');
+  });
+
+  it('reset borra todas', async () => {
+    const roomInstructions = dobles([{ text: 'a', createdBy: 'leon', source: 'command' }]);
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await handle(service, '!instrucciones reset', 'admin');
+    expect(roomInstructions.clear).toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Borré 1 instrucción');
+  });
+
+  it('el plural con algo raro muestra el uso en vez de guardarlo', async () => {
+    const roomInstructions = dobles();
+    const { service, sent } = await buildBotService({ roomInstructions });
+    await handle(service, '!instrucciones usá colores', 'admin');
+    expect(roomInstructions.add).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso:');
+  });
+
+  it('el comando funciona sin mencionar al bot y no llama al modelo', async () => {
+    const roomInstructions = dobles();
+    const { service, chat } = await buildBotService({ roomInstructions });
+    await service['handleNewChatMessage']({
+      content: '!instruccion usá colores',
+      authorUsername: 'leon',
+      authorRole: 'admin',
+    } as ChatMessage);
+    expect(roomInstructions.add).toHaveBeenCalled();
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('al staff le pasa canInstruct al modelo; a un invitado no', async () => {
+    const { service, chat } = await buildBotService({ roomInstructions: dobles() });
+
+    await service['handleNewChatMessage']({ content: 'bot hola', authorUsername: 'leon', authorRole: 'mod' } as ChatMessage);
+    await service['handleNewChatMessage']({ content: 'bot hola', authorUsername: 'nico', authorRole: 'guest' } as ChatMessage);
+
+    expect(chat.chat.mock.calls[0][3]).toEqual(expect.objectContaining({ canInstruct: true }));
+    expect(chat.chat.mock.calls[1][3]).toBeUndefined();
   });
 });

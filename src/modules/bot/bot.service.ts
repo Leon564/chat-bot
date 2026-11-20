@@ -23,6 +23,11 @@ import { StickerGateService } from './sticker-gate.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { BbcodeSettingsService } from '../chat-socket/bbcode-settings.service';
 import {
+  RoomInstructionsService,
+  INSTRUCTION_STAFF_ROLES,
+  MAX_ROOM_INSTRUCTIONS,
+} from '../chat/room-instructions.service';
+import {
   bbcodeToPlain,
   isOnlyCaretColor,
   rebalanceBbcodeParts,
@@ -94,6 +99,8 @@ export class BotService implements OnModuleInit {
     // Opcional: sin él (los tests que arman el servicio a mano) se asumen
     // todos los BBCodes encendidos y el prompt no lleva sección de formato.
     @Optional() private readonly bbcodeSettings?: BbcodeSettingsService,
+    // Opcional por el mismo motivo: sin él no hay instrucciones de sala.
+    @Optional() private readonly roomInstructions?: RoomInstructionsService,
   ) {}
 
   async onModuleInit() {
@@ -154,6 +161,8 @@ export class BotService implements OnModuleInit {
     if (await this.handleCrossContextCommand(content, authorUsername, authorRole)) return;
 
     if (await this.handleSharedContextCommand(content, authorUsername, authorRole)) return;
+
+    if (await this.handleRoomInstructionsCommand(content, authorUsername, authorRole)) return;
 
     // "¿qué sabés de mí?": lee el grafo y responde sin mencionar al bot.
     // También va antes del filtro de menciones, mismo motivo que arriba.
@@ -270,6 +279,7 @@ export class BotService implements OnModuleInit {
       ...(replyContext ? { replyTo: replyContext } : {}),
       ...(stickers ? { stickers } : {}),
       ...(bbcodes && bbcodes.length > 0 ? { bbcodes } : {}),
+      ...(authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole) ? { canInstruct: true } : {}),
     };
     const rawResponse = Object.keys(chatOptions).length > 0
       ? await this.chatService.chat(modelText, botUsername, authorUsername, chatOptions)
@@ -1272,6 +1282,117 @@ export class BotService implements OnModuleInit {
     }
 
     this.sendBotMessage(`@${authorUsername} Uso: !sharedcontext on | off | reset | status`);
+    return true;
+  }
+
+  // ─── Room instructions (!instruccion / !instrucciones) ─────────────────────
+
+  /**
+   * Instrucciones permanentes de la sala (ver `RoomInstructionsService`):
+   *   !instrucciones                 → lista numerada (mod/admin)
+   *   !instruccion <texto>           → agrega una (admin)
+   *   !instruccion quitar <n>        → quita la número n (admin)
+   *   !instrucciones reset           → borra todas (admin)
+   * Los mods también pueden agregarlas hablándole al bot ("de ahora en
+   * adelante…", SAVE_INSTRUCTION), por eso pueden ver la lista.
+   */
+  private async handleRoomInstructionsCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!instrucci(?:o|ó)n(es)?(?:\s+([\s\S]*))?$/i);
+    if (!match) return false;
+
+    const arg = (match[2] ?? '').trim();
+    const isAdmin = authorRole === 'admin' || authorRole === 'superAdmin';
+    const isStaff = !!authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole);
+    const usage =
+      'Uso: !instrucciones (ver lista) | !instruccion <texto> | !instruccion quitar <n> | !instrucciones reset';
+
+    if (!this.roomInstructions) {
+      this.sendBotMessage(`@${authorUsername} ❌ Las instrucciones de sala no están disponibles.`);
+      return true;
+    }
+
+    const lower = arg.toLowerCase();
+    const isList = arg === '' || lower === 'lista' || lower === 'list' || lower === 'ver';
+    const isReset = /^(reset|resetear|limpiar|borrar\s+todas?|todas?\s+fuera)$/.test(lower);
+    const removeMatch = arg.match(/^(?:quitar|borrar|eliminar|del|rm|-)\s*#?(\d+)$/i);
+
+    if (isList) {
+      if (!isStaff) {
+        this.sendBotMessage(`@${authorUsername} ❌ Solo mods y admins pueden ver las instrucciones.`);
+        return true;
+      }
+      const list = await this.roomInstructions.list();
+      if (list.length === 0) {
+        this.sendBotMessage(`@${authorUsername} 📭 No hay instrucciones de sala activas.`);
+        return true;
+      }
+      const lines = list.map((i, n) => `${n + 1}. ${i.text} (de ${i.createdBy})`);
+      const message = `📌 Instrucciones de sala (${list.length}/${MAX_ROOM_INSTRUCTIONS}):\n${lines.join('\n')}`;
+      const parts = this.splitForChat(message, `@${authorUsername} `.length);
+      const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+      for (let i = 0; i < parts.length; i++) {
+        this.sendBotMessage(i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i]);
+        if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
+      }
+      return true;
+    }
+
+    if (!isAdmin) {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar las instrucciones de sala.`);
+      return true;
+    }
+
+    if (isReset) {
+      const count = await this.roomInstructions.clear();
+      this.sendBotMessage(
+        `@${authorUsername} 🧹 ${count > 0 ? `Borré ${count} instrucción${count === 1 ? '' : 'es'} de sala.` : 'No había instrucciones de sala.'}`,
+      );
+      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → reset (${count})`);
+      return true;
+    }
+
+    if (removeMatch) {
+      const n = Number(removeMatch[1]);
+      const removed = await this.roomInstructions.removeAt(n);
+      this.sendBotMessage(
+        removed
+          ? `@${authorUsername} 🗑️ Quité la instrucción ${n}: "${removed.text}"`
+          : `@${authorUsername} ❌ No hay instrucción número ${n}. Mirá la lista con !instrucciones`,
+      );
+      if (removed) console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → quitar #${n}`);
+      return true;
+    }
+
+    // "quitar" sin número válido: no guardarlo como instrucción literal.
+    if (/^(?:quitar|borrar|eliminar|del|rm)\b/i.test(arg)) {
+      this.sendBotMessage(`@${authorUsername} ${usage}`);
+      return true;
+    }
+
+    // `!instrucciones algo` (plural) que no es lista/reset ni quitar: mejor
+    // mostrar el uso que guardar "algo" como instrucción por un typo.
+    if (match[1]) {
+      this.sendBotMessage(`@${authorUsername} ${usage}`);
+      return true;
+    }
+
+    const result = await this.roomInstructions.add(arg, authorUsername, 'command');
+    if (result.ok) {
+      this.sendBotMessage(`@${authorUsername} 📌 Instrucción ${result.position} guardada. Va a aplicar a todas mis respuestas.`);
+      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
+    } else {
+      const reason = {
+        empty: 'La instrucción está vacía.',
+        duplicate: 'Esa instrucción ya está en la lista.',
+        full: `Ya hay ${MAX_ROOM_INSTRUCTIONS} instrucciones; quitá alguna con !instruccion quitar <n>.`,
+        error: 'No pude guardarla, probá de nuevo.',
+      }[result.reason];
+      this.sendBotMessage(`@${authorUsername} ❌ ${reason}`);
+    }
     return true;
   }
 
