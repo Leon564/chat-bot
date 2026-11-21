@@ -1046,7 +1046,7 @@ export class BotService implements OnModuleInit {
 
     try {
       log.info('📋 Generando resumen del chat...');
-      const resumen = await this.chatService.generateSummary(authorUsername);
+      const resumen = await this.chatService.generateSummary(authorUsername, this.chatSocketService.username ?? undefined);
 
       // Ingesta en lote de los hechos que el modelo extrajo del resumen
       // (Task 5, fase 4b) — captura lo que se habla en el chat sin mencionar
@@ -1060,22 +1060,16 @@ export class BotService implements OnModuleInit {
           .catch(() => {});
       }
 
-      // Margen para el encabezado "📋✨ RESUMEN DEL CHAT (n/m)" y el cierre.
+      // El resumen lo cuenta el modelo con su voz: sin encabezado ni cierre
+      // fijos ("📋✨ RESUMEN DEL CHAT", "¡Eso es todo por ahora!"), sólo un
+      // 📋 al principio para que se distinga en el chat.
       const resumenParts = this.splitForChat(resumen.text, BotService.SUMMARY_FRAME_CHARS);
       log.info(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
         const part = resumenParts[i].trim();
         if (!part) continue;
-        const partIndicator = resumenParts.length > 1 ? ` (${i + 1}/${resumenParts.length})` : '';
-        const prefix = i === 0
-          ? `📋✨ RESUMEN DEL CHAT${partIndicator}\n\n`
-          : `📋 RESUMEN${partIndicator}\n\n`;
-        const suffix =
-          i === resumenParts.length - 1 && resumenParts.length > 1
-            ? '\n\n¡Eso es todo por ahora! 🎬'
-            : '';
-        this.sendBotMessage(`${prefix}${part}${suffix}`);
+        this.sendBotMessage(i === 0 ? `📋 ${part}` : part);
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
@@ -1112,8 +1106,8 @@ export class BotService implements OnModuleInit {
     return this.output.sendBotMessageAndAwaitId(text);
   }
 
-  /** Lugar reservado para el marco del resumen (encabezado + cierre). */
-  private static readonly SUMMARY_FRAME_CHARS = 64;
+  /** Lugar reservado para el "📋 " del principio del resumen. */
+  private static readonly SUMMARY_FRAME_CHARS = 8;
 
   /** Ver `BotOutputService.splitForChat`. */
   private splitForChat(text: string, overhead: number): string[] {

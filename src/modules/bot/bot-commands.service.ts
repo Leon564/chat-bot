@@ -73,7 +73,8 @@ const RELATION_ORDER: EdgeType[] = [
 
 /**
  * Los comandos `!…` del bot (`!ayuda`, `!uso`, `!instruccion`, `!quesabes`,
- * `!olvida`, recados, y los interruptores de admin). Ninguno llama al modelo.
+ * `!olvida`, recados, y los interruptores de admin). Sólo `!quesabes` llama al
+ * modelo (para contarlo con frases naturales, con la lista fija de respaldo).
  * Salió de `BotService` para achicarlo: el dispatcher sólo llama a `handle()`.
  */
 @Injectable()
@@ -625,7 +626,7 @@ export class BotCommandsService {
       return true;
     }
 
-    const message = this.formatMemoryFacts(facts);
+    const message = await this.narrateMemory(authorUsername, facts);
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
     const parts = this.splitForChat(message, `@${authorUsername} `.length);
 
@@ -657,7 +658,59 @@ export class BotCommandsService {
    * haya quedado afuera se emite igual (con el `EdgeType` crudo si no hay
    * label) — el default es mostrar de más, nunca ocultar.
    */
+  /**
+   * Segundos entre dos `!quesabes` contados por el modelo para la misma
+   * persona. Dentro de la ventana se manda la lista fija (sin llamada al
+   * modelo): los comandos no pasan por el rate limit, y sin esto repetir el
+   * comando sería una llamada gratis por mensaje.
+   */
+  static readonly MEMORY_NARRATE_COOLDOWN_MS = 60_000;
+  private readonly lastNarrated = new Map<string, number>();
+
+  /**
+   * `!quesabes` en frases naturales, con la voz del bot. Si el modelo falla,
+   * devuelve vacío, o la persona lo pidió hace menos de un minuto, cae a la
+   * lista fija de siempre: el contrato del comando es mostrar TODO lo que
+   * hay, y la lista nunca se saltea nada.
+   */
+  private async narrateMemory(authorUsername: string, facts: UserFact[]): Promise<string> {
+    const key = authorUsername.trim().toLowerCase();
+    const now = Date.now();
+    const last = this.lastNarrated.get(key);
+    if (last !== undefined && now - last < BotCommandsService.MEMORY_NARRATE_COOLDOWN_MS) {
+      return this.formatMemoryFacts(facts);
+    }
+    this.lastNarrated.set(key, now);
+
+    const stopTyping = this.chatSocketService.startTyping?.() ?? (() => {});
+    let narrated = '';
+    try {
+      narrated = await this.chatService
+        .describeMemory(this.chatSocketService.username ?? undefined, authorUsername, this.memoryFactLines(facts))
+        .catch(() => '');
+    } finally {
+      stopTyping();
+    }
+    if (!narrated) return this.formatMemoryFacts(facts);
+    const capped = facts.length >= MAX_FACTS_SHOWN ? `\n\n(te conté las ${MAX_FACTS_SHOWN} más fuertes)` : '';
+    return `🧠 ${narrated}${capped}`;
+  }
+
   private formatMemoryFacts(facts: UserFact[]): string {
+    const lines = this.memoryFactLines(facts);
+
+    // Minor #6: sin este aviso, alguien con más de `MAX_FACTS_SHOWN` aristas
+    // ve una lista que parece completa acá y después, en "!olvida todo", un
+    // conteo mayor sin relación aparente con lo que acaba de leer.
+    if (facts.length >= MAX_FACTS_SHOWN) {
+      lines.push(`\n(te muestro las ${MAX_FACTS_SHOWN} más fuertes)`);
+    }
+
+    return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
+  }
+
+  /** Una línea por relación (`Te gusta: a, b`), en el orden de `RELATION_ORDER`. */
+  private memoryFactLines(facts: UserFact[]): string[] {
     const grouped = new Map<EdgeType, string[]>();
     for (const fact of facts) {
       const labels = grouped.get(fact.relation) ?? [];
@@ -677,15 +730,7 @@ export class BotCommandsService {
       if (seen.has(relation) || labels.length === 0) continue;
       lines.push(`${RELATION_LABELS[relation] ?? relation}: ${labels.join(', ')}`);
     }
-
-    // Minor #6: sin este aviso, alguien con más de `MAX_FACTS_SHOWN` aristas
-    // ve una lista que parece completa acá y después, en "!olvida todo", un
-    // conteo mayor sin relación aparente con lo que acaba de leer.
-    if (facts.length >= MAX_FACTS_SHOWN) {
-      lines.push(`\n(te muestro las ${MAX_FACTS_SHOWN} más fuertes)`);
-    }
-
-    return `🧠 Esto es lo que tengo guardado sobre vos:\n\n${lines.join('\n')}`;
+    return lines;
   }
 
   // ─── Forget command (!olvida) ──────────────────────────────────────────────

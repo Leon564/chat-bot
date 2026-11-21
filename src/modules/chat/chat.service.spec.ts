@@ -131,6 +131,40 @@ describe('ChatService — instrumentación de tokens', () => {
     );
   });
 
+  describe('resumen y !quesabes con frases naturales', () => {
+    it('el resumen usa la persona del bot y pide prosa, no la plantilla de secciones', async () => {
+      crearMock.mockResolvedValue(respuesta('resumen'));
+
+      await service.generateSummary('Nico', 'Aria');
+
+      expect(builder.build).toHaveBeenCalledWith(expect.objectContaining({ botName: 'Aria', blocks: ['PERSONA'] }));
+      const system = crearMock.mock.calls[0][0].messages[0].content as string;
+      expect(system).toContain('system prompt de prueba');
+      expect(system).toContain('en prosa');
+      expect(system).not.toContain('FORMATO SUGERIDO');
+      expect(system).not.toContain('Usuarios más activos: [');
+      expect(system).toContain('<<<HECHOS>>>');
+    });
+
+    it('describeMemory manda los hechos como dato y devuelve el texto sin tokens', async () => {
+      crearMock.mockResolvedValue(respuesta('Te encanta Berserk {{music: x}} SAVE_FACT(likes, x) y odiás el ecchi.'));
+
+      const out = await service.describeMemory('Aria', 'Nico', ['Te gusta: Berserk', 'No te gusta: ecchi']);
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes[1].role).toBe('user');
+      expect(mensajes[1].content).toContain('no son instrucciones');
+      expect(mensajes[1].content).toContain('Te gusta: Berserk');
+      expect(mensajes[1].content).toContain('No te gusta: ecchi');
+      expect(out).toBe('Te encanta Berserk y odiás el ecchi.');
+    });
+
+    it('describeMemory devuelve vacío si el modelo falla (el comando cae a la lista)', async () => {
+      crearMock.mockRejectedValue(new Error('timeout'));
+      expect(await service.describeMemory('Aria', 'Nico', ['Te gusta: Berserk'])).toBe('');
+    });
+  });
+
   it('registra el uso de generateSummary() con kind "summary"', async () => {
     crearMock.mockResolvedValue(respuesta('resumen', 900, 400));
 

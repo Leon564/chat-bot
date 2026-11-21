@@ -506,6 +506,18 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
     );
   });
 
+  it('el resumen sale como lo contó el modelo, sin encabezado ni cierre fijos', async () => {
+    chat.generateSummary.mockResolvedValue({ text: 'Hoy kei no paró de hablar de Frieren y lyna lloró.', facts: [] });
+
+    await invocar('{{resumen}}', 'Nico');
+    await dejarCorrer();
+
+    const enviados = socket.sendMessage.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(enviados).toContain('📋 Hoy kei no paró de hablar de Frieren');
+    expect(enviados).not.toContain('RESUMEN DEL CHAT');
+    expect(enviados).not.toContain('Eso es todo por ahora');
+  });
+
   describe('Revisión final (Minor #6) — el resumen fallido no debe quemar el cooldown ni borrar el log', () => {
     it('cuando generateSummary devuelve el mensaje de error de parseo, NO consume el cooldown ni limpia el log', async () => {
       // `generateSummary` no lanza cuando el parseo falla: devuelve
@@ -557,7 +569,7 @@ type BotServiceConDispatcher = {
 
 describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () => {
   let service: BotService;
-  let chat: { chat: jest.Mock };
+  let chat: { chat: jest.Mock; describeMemory: jest.Mock };
   let graphUser: { describe: jest.Mock };
   let ingest: { ingestSocial: jest.Mock };
   let logging: { saveLog: jest.Mock };
@@ -573,7 +585,12 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
   let utils: { sleep: jest.Mock; splitMessageIntoParts: jest.Mock };
 
   beforeEach(async () => {
-    chat = { chat: jest.fn().mockResolvedValue('esto NO debería enviarse jamás') };
+    // describeMemory vacío = el modelo no redactó nada → lista fija (lo que
+    // fijan los tests de abajo). Los de la versión natural lo pisan.
+    chat = {
+      chat: jest.fn().mockResolvedValue('esto NO debería enviarse jamás'),
+      describeMemory: jest.fn().mockResolvedValue(''),
+    };
     graphUser = { describe: jest.fn() };
     ingest = { ingestSocial: jest.fn().mockResolvedValue(undefined) };
     logging = { saveLog: jest.fn().mockResolvedValue(undefined) };
@@ -639,7 +656,40 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
   /** La ingesta al grafo (ingestSocial) es fire-and-forget. */
   const dejarCorrer = () => new Promise((r) => setImmediate(r));
 
-  it('"!quesabes" responde con la lista y NO llama al modelo', async () => {
+  it('lo cuenta el modelo con frases naturales, a partir de las líneas agrupadas', async () => {
+    graphUser.describe.mockResolvedValue([
+      { relation: 'likes', label: 'Berserk', weight: 3 },
+      { relation: 'asked_about', label: 'Solo Leveling', weight: 1 },
+    ]);
+    chat.describeMemory.mockResolvedValue('Sé que Berserk te vuela la cabeza y que andabas preguntando por Solo Leveling.');
+
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(chat.describeMemory).toHaveBeenCalledWith('Aria', 'Nico', [
+      'Te gusta: Berserk',
+      'Preguntaste por: Solo Leveling',
+    ]);
+    const enviado = socket.sendMessage.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(enviado).toContain('Berserk te vuela la cabeza');
+    expect(enviado).not.toContain('Esto es lo que tengo guardado');
+    expect(chat.chat).not.toHaveBeenCalled();
+  });
+
+  it('pedido otra vez antes de un minuto, manda la lista fija sin llamar al modelo', async () => {
+    graphUser.describe.mockResolvedValue([{ relation: 'likes', label: 'Berserk', weight: 3 }]);
+    chat.describeMemory.mockResolvedValue('Te encanta Berserk.');
+
+    await invocar('!quesabes', 'Nico');
+    await invocar('!quesabes', 'Nico');
+    await dejarCorrer();
+
+    expect(chat.describeMemory).toHaveBeenCalledTimes(1);
+    const enviados = socket.sendMessage.mock.calls.map((c) => String(c[0]));
+    expect(enviados.some((t) => t.includes('Esto es lo que tengo guardado'))).toBe(true);
+  });
+
+  it('"!quesabes" sin redacción del modelo cae a la lista agrupada', async () => {
     graphUser.describe.mockResolvedValue([
       { relation: 'likes', label: 'Berserk', weight: 3 },
       { relation: 'asked_about', label: 'Solo Leveling', weight: 1 },
