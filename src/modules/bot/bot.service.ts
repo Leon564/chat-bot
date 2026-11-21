@@ -173,6 +173,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // que `!rechazarrecados` no dispare justo el recado que se quiere borrar.
     if (await this.commands.handle(content, authorUsername, authorRole)) return;
 
+    // `!resumen [2h|hoy]` funciona sin nombrar al bot, como los demás comandos.
+    if (/^\s*!resumen\b/i.test(content)) {
+      await this.tryPeriodSummary(content, authorUsername, false);
+      return;
+    }
+
     // Entrega de recados. Va antes del filtro de menciones a propósito: el
     // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
     // dirigirse al bot. Con el filtro delante, el recado no se entregaría
@@ -267,6 +273,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await this.handleOnlineUsersRequest(authorUsername);
       return;
     }
+
+    // Resumen de un período ("!resumen 2h", "bot resumen de hoy"): sin pasar
+    // por el modelo para decidir, va directo al resumen.
+    if (await this.tryPeriodSummary(content, authorUsername, addressesBot)) return;
 
     // "bot recordame en 2h que…": se entiende en código, sin modelo. Si la
     // hora no se entiende, sigue al modelo como cualquier mensaje.
@@ -1095,8 +1105,62 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   // ─── Summary ───────────────────────────────────────────────────────────────
 
-  private async handleSummaryRequest(response: string, authorUsername: string): Promise<void> {
-    const lastResumenEvent = await this.loggingService.getLastEventType('Resumen');
+  /**
+   * "las últimas 2 horas", "última hora", "media hora", "30 min", "hoy" →
+   * desde cuándo resumir. Hoy = desde la medianoche de El Salvador. Tope 24 h.
+   */
+  static parseSummaryPeriod(text: string, now = new Date()): { since: Date; label: string } | null {
+    const t = (text ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (/\b(de\s+)?hoy\b/.test(t)) {
+      const sv = new Date(now.getTime() - 6 * 3_600_000);
+      const midnight = Date.UTC(sv.getUTCFullYear(), sv.getUTCMonth(), sv.getUTCDate()) + 6 * 3_600_000;
+      return { since: new Date(midnight), label: 'lo que va de hoy' };
+    }
+    if (/\bultima\s+hora\b/.test(t)) return { since: new Date(now.getTime() - 3_600_000), label: 'la última hora' };
+    if (/\bmedia\s+hora\b/.test(t)) return { since: new Date(now.getTime() - 30 * 60_000), label: 'la última media hora' };
+    const m = /\b(\d{1,4})\s*(h|hs|horas?|m|min|mins|minutos?)\b/.exec(t);
+    if (!m) return null;
+    const n = Number(m[1]);
+    const hours = m[2].startsWith('h');
+    const ms = n * (hours ? 3_600_000 : 60_000);
+    if (ms < 60_000 || ms > 24 * 3_600_000) return null;
+    const label = hours ? (n === 1 ? 'la última hora' : `las últimas ${n} horas`) : `los últimos ${n} minutos`;
+    return { since: new Date(now.getTime() - ms), label };
+  }
+
+  /**
+   * `!resumen` (desde el anterior) / `!resumen 2h` / `!resumen hoy`, y "bot
+   * resumen de las últimas 2 horas" en lenguaje natural (con período).
+   * Devuelve true si atendió el mensaje.
+   */
+  private async tryPeriodSummary(content: string, authorUsername: string, addressesBot: boolean): Promise<boolean> {
+    const cmd = /^\s*!resumen\b\s*(.*)$/i.exec(content);
+    if (cmd) {
+      const arg = cmd[1].trim();
+      const period = arg ? BotService.parseSummaryPeriod(arg) : null;
+      if (arg && !period) {
+        this.sendBotMessage(`@${authorUsername} Uso: !resumen · !resumen 2h · !resumen 30m · !resumen hoy (hasta 24 h)`);
+        return true;
+      }
+      await this.handleSummaryRequest('', authorUsername, period ?? undefined);
+      return true;
+    }
+    if (!addressesBot || !/\b(resumen|resume|resumeme|recap)\b/i.test(content)) return false;
+    const period = BotService.parseSummaryPeriod(content);
+    if (!period) return false;
+    await this.handleSummaryRequest('', authorUsername, period);
+    return true;
+  }
+
+  private async handleSummaryRequest(
+    response: string,
+    authorUsername: string,
+    period?: { since: Date; label: string },
+  ): Promise<void> {
+    // Los de período tienen su propio cooldown y NO mueven la marca del
+    // resumen normal ("desde el anterior").
+    const eventName = period ? 'ResumenPeriodo' : 'Resumen';
+    const lastResumenEvent = await this.loggingService.getLastEventType(eventName);
     if (lastResumenEvent.minutesLeft < 10) {
       this.sendBotMessage(`@${authorUsername} Puedes leer el resumen anterior y esperar 10 minutos para generar uno nuevo. 🙂`);
       return;
@@ -1112,7 +1176,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     try {
       log.info('📋 Generando resumen del chat...');
-      const resumen = await this.chatService.generateSummary(authorUsername, this.chatSocketService.username ?? undefined);
+      const resumen = await this.chatService.generateSummary(
+        authorUsername,
+        this.chatSocketService.username ?? undefined,
+        period,
+      );
 
       // Ingesta en lote de los hechos que el modelo extrajo del resumen
       // (Task 5, fase 4b) — captura lo que se habla en el chat sin mencionar
@@ -1135,7 +1203,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       for (let i = 0; i < resumenParts.length; i++) {
         const part = resumenParts[i].trim();
         if (!part) continue;
-        this.sendBotMessage(i === 0 ? `📋 ${part}` : part);
+        this.sendBotMessage(i === 0 ? `📋 ${period ? `(${period.label}) ` : ''}${part}` : part);
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
@@ -1152,7 +1220,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       } else {
         // El evento marca hasta dónde se resumió: el próximo resumen arranca
         // desde acá. El log NO se vacía (el bot lo usa como contexto de sala).
-        await this.loggingService.saveEventsLog('Resumen', authorUsername);
+        await this.loggingService.saveEventsLog(eventName, authorUsername);
         log.info('✅ Resumen completado');
       }
     } catch (error) {

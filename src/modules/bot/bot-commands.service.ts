@@ -15,6 +15,8 @@ import {
 } from '../chat/room-instructions.service';
 import { ProactiveService } from './proactive.service';
 import { PollService, POLL_EMOJIS } from './poll.service';
+import { MusicService } from '../music/music.service';
+import { probe, formatProbe, formatUptime, ProbeResult } from './status-probe';
 import { ReminderService, MAX_PENDING_REMINDERS } from '../chat/reminder.service';
 import { BotOutputService } from './bot-output.service';
 import { createLog } from '../../common/utils/log';
@@ -96,7 +98,11 @@ export class BotCommandsService {
     @Optional() private readonly proactive?: ProactiveService,
     @Optional() private readonly reminders?: ReminderService,
     @Optional() private readonly polls?: PollService,
+    @Optional() private readonly musicService?: MusicService,
   ) {}
+
+  /** Inyectable para tests: cómo se prueba cada servicio externo. */
+  probeService: (name: string, url: string) => Promise<ProbeResult> = (name, url) => probe(name, url);
 
   /**
    * Prueba cada comando en orden y devuelve `true` si el mensaje era uno de
@@ -115,7 +121,8 @@ export class BotCommandsService {
       (await this.handleForgetCommand(content, authorUsername)) ||
       (await this.handleErrandCommands(content, authorUsername)) ||
       (await this.handleReminderCommands(content, authorUsername)) ||
-      (await this.handlePollCommand(content, authorUsername, authorRole))
+      (await this.handlePollCommand(content, authorUsername, authorRole)) ||
+      (await this.handleStatusCommand(content, authorUsername, authorRole))
     );
   }
 
@@ -201,6 +208,60 @@ export class BotCommandsService {
     return true;
   }
 
+  // ─── Estado (!estado) ──────────────────────────────────────────────────────
+
+  /**
+   * `!estado` (admin): proceso, socket, cola de música, extras activos y si
+   * responden los servicios externos (modelo, backend del chat, AniList,
+   * FileGarden, catbox). Las pruebas van en paralelo con un tope de 5 s.
+   */
+  private async handleStatusCommand(content: string, authorUsername: string, authorRole?: string): Promise<boolean> {
+    if (!/^!estado\s*$/i.test(content.trim())) return false;
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden ver el estado del bot.`);
+      return true;
+    }
+
+    const mem = process.memoryUsage();
+    const mb = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
+    const lines = [
+      '🩺 Estado del bot:',
+      `• Activo hace ${formatUptime(process.uptime())} · memoria ${mb(mem.rss)} (heap ${mb(mem.heapUsed)})`,
+      `• Socket: ${this.chatSocketService.isConnected ? 'conectado' : '⚠️ desconectado'}`,
+    ];
+
+    const q = this.musicService?.getQueueStatus?.();
+    if (q) {
+      lines.push(
+        q.queueLength > 0
+          ? `• Música: ${q.queueLength} en curso (${q.searching} buscando, ${q.downloading} descargando, ${q.uploading} subiendo)`
+          : '• Música: sin pedidos en curso',
+      );
+    }
+
+    const extras: string[] = [];
+    if (this.proactive) {
+      const info = this.proactive.getInfo();
+      extras.push(info.enabled ? `comentarios espontáneos ${Math.round(info.chance * 100)} % (cada ${info.cooldownMinutes} min)` : 'comentarios espontáneos apagados');
+    }
+    if (this.polls) extras.push(this.polls.current ? 'encuesta abierta' : 'sin encuesta');
+    extras.push(`contexto compartido ${this.chatService.getSharedContextInfo().enabled ? 'sí' : 'no'}`);
+    lines.push(`• ${extras.join(' · ')}`);
+
+    const targets: Array<[string, string]> = [
+      ['modelo', this.configService.get<string>('openai.baseURL') || 'https://api.deepseek.com'],
+      ['chat', this.configService.get<string>('chat.apiUrl') ?? ''],
+      ['AniList', 'https://graphql.anilist.co'],
+      ['FileGarden', 'https://filegarden.com'],
+      ['catbox', 'https://catbox.moe'],
+    ];
+    const results = await Promise.all(targets.map(([name, url]) => this.probeService(name, url)));
+    lines.push(`• Servicios: ${results.map(formatProbe).join(' · ')}`);
+
+    this.sendBotMessage(`@${authorUsername} ${lines.join('\n')}`);
+    return true;
+  }
+
   // ─── Encuestas ─────────────────────────────────────────────────────────────
 
   /**
@@ -265,8 +326,10 @@ export class BotCommandsService {
       this.sendBotMessage(`@${authorUsername} No pude publicar la encuesta. Probá de nuevo en un rato.`);
       return true;
     }
-    // Las reacciones del bot dejan los "botones" a mano; no cuentan como voto.
-    parsed.options.forEach((_, i) => this.chatSocketService.toggleReaction(messageId, POLL_EMOJIS[i]));
+    // Las reacciones del bot dejan los "botones" a mano (el selector de emojis
+    // del chat no trae los números); no cuentan como voto. Van DE A UNA,
+    // esperando la confirmación: mandadas de golpe, el backend se quedaba
+    // sólo con la primera y las demás opciones no se podían votar.
     this.polls.start(
       {
         messageId,
@@ -277,6 +340,13 @@ export class BotCommandsService {
       },
       (result) => this.sendBotMessage(PollService.renderResult(result)),
     );
+    for (let i = 0; i < parsed.options.length; i++) {
+      if (this.chatSocketService.reactAndWait) {
+        await this.chatSocketService.reactAndWait(messageId, POLL_EMOJIS[i]);
+      } else {
+        this.chatSocketService.toggleReaction(messageId, POLL_EMOJIS[i]);
+      }
+    }
     return true;
   }
 
@@ -685,6 +755,7 @@ export class BotCommandsService {
         '• !uso [24h|7d|30d] — consumo del modelo',
         '• !personality default|unfiltered|reset|status',
         '• !sharedcontext on|off|reset|status',
+        '• !estado — salud del bot y de los servicios externos',
         '• !proactivo on|off|15%|pausa 10|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
       );
@@ -787,6 +858,12 @@ export class BotCommandsService {
     return `• Caché: ${pct} % de la entrada${savedText}`;
   }
 
+  /** "• Tiempo de respuesta: mediana 1,2 s · p95 3,4 s · máx 8,0 s (120 respuestas)". */
+  static latencyLine(l: { p50: number; p95: number; max: number; samples: number }): string {
+    const s = (ms: number) => `${(ms / 1000).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`;
+    return `• Tiempo de respuesta: mediana ${s(l.p50)} · p95 ${s(l.p95)} · máx ${s(l.max)} (${l.samples} ${l.samples === 1 ? 'respuesta' : 'respuestas'})`;
+  }
+
   private async handleUsageCommand(
     content: string,
     authorUsername: string,
@@ -832,6 +909,7 @@ export class BotCommandsService {
       `• ${fmt(summary.promptTokens)} tokens de entrada${summary.cachedPromptTokens ? ` (${fmt(summary.cachedPromptTokens)} desde caché)` : ''} + ${fmt(summary.completionTokens)} de salida`,
       ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
       ...(summary.promptTokens > 0 ? [BotCommandsService.cacheLine(cached, summary.promptTokens, priceIn, priceCached)] : []),
+      ...(summary.latency ? [BotCommandsService.latencyLine(summary.latency)] : []),
     ];
     if (summary.topUsers.length > 0) {
       lines.push(

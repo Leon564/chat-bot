@@ -130,6 +130,7 @@ export class ChatService {
         now: new Date(),
         blocks: ['PERSONA', 'TEMPORAL'],
       });
+      const startedAt = Date.now();
       const response = await this.openai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -148,7 +149,7 @@ export class ChatService {
         temperature: 0.9,
         max_tokens: 120,
       });
-      this.recordUsage('chat', response, botName, ['proactive']);
+      this.recordUsage('chat', response, botName, ['proactive'], { latencyMs: Date.now() - startedAt });
       const text = ChatService.stripTokens(response.choices[0]?.message?.content ?? '').replace(/^["“]|["”]$/g, '').trim();
       if (!text || /^\W*paso\W*$/i.test(text)) return '';
       return text;
@@ -375,6 +376,8 @@ export class ChatService {
         log.info(`📋 Solicitud de resumen detectada, usando ${maxTokens} tokens`);
       }
       
+      const startedAt = Date.now();
+      
       const response = await this.openai.chat.completions.create({
         messages: messages as any,
         model: this.configService.get('openai.model') || 'deepseek-flash',
@@ -395,7 +398,7 @@ export class ChatService {
       if (roomContext) intents.push('room-context');
       intents.push(...blocks);
 
-      this.recordUsage('chat', response, username, intents);
+      this.recordUsage('chat', response, username, intents, { latencyMs: Date.now() - startedAt });
 
       let content = response.choices[0].message.content || '';
       log.info(`Respuesta de OpenAI: ${content}`);
@@ -732,6 +735,7 @@ export class ChatService {
     if (!input) return '';
 
     try {
+      const startedAt = Date.now();
       const response = await this.openai.chat.completions.create({
         messages: [
           {
@@ -746,7 +750,7 @@ export class ChatService {
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
 
-      this.recordUsage('translate', response, username);
+      this.recordUsage('translate', response, username, undefined, { latencyMs: Date.now() - startedAt });
 
       const out = response.choices[0]?.message?.content?.trim();
       return out && out.length > 0 ? out : input;
@@ -778,6 +782,7 @@ export class ChatService {
         blocks: ['PERSONA'],
       });
 
+      const startedAt = Date.now();
       const response = await this.openai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -796,7 +801,7 @@ export class ChatService {
         max_tokens: 400,
       });
 
-      this.recordUsage('chat', response, username, ['quesabes']);
+      this.recordUsage('chat', response, username, ['quesabes'], { latencyMs: Date.now() - startedAt });
       return ChatService.stripTokens(response.choices[0]?.message?.content ?? '');
     } catch (err) {
       this.logger.warn(`No se pudo redactar !quesabes: ${(err as Error)?.message}`);
@@ -816,15 +821,26 @@ export class ChatService {
       .trim();
   }
 
-  async generateSummary(username?: string, botName?: string): Promise<{
+  /** Mensajes que entran en un resumen de período (`!resumen 2h`, `hoy`). */
+  static readonly PERIOD_SUMMARY_MAX_MESSAGES = 150;
+
+  async generateSummary(
+    username?: string,
+    botName?: string,
+    period?: { since: Date; label: string },
+  ): Promise<{
     text: string;
     facts: Array<{ user: string; relation: string; object: string }>;
   }> {
-    // Desde el resumen anterior (el evento 'Resumen' marca hasta dónde se
-    // resumió); el log ya no se vacía. `?.`: los dobles de los tests.
-    const lastSummary = await Promise.resolve(this.loggingService.getLastEventType?.('Resumen')).catch(() => null);
-    const sinceIso = lastSummary?.lastResumenEvent?.date;
-    const messages = await this.loggingService.getLastMessages(sinceIso ? new Date(sinceIso) : null);
+    // Sin período: desde el resumen anterior (el evento 'Resumen' marca hasta
+    // dónde se resumió); el log ya no se vacía. `?.`: los dobles de los tests.
+    let since: Date | null = period?.since ?? null;
+    if (!period) {
+      const lastSummary = await Promise.resolve(this.loggingService.getLastEventType?.('Resumen')).catch(() => null);
+      const sinceIso = lastSummary?.lastResumenEvent?.date;
+      since = sinceIso ? new Date(sinceIso) : null;
+    }
+    const messages = await this.loggingService.getLastMessages(since);
 
     if (!messages || messages.length === 0) {
       return { text: 'No hay mensajes para resumir en este momento. 🤷‍♂️', facts: [] };
@@ -833,7 +849,7 @@ export class ChatService {
     // Filtrar y limpiar mensajes para el resumen
     const recentMessages = messages
       .filter((msg: any) => msg.message && msg.message.trim().length > 0)
-      .slice(-50); // Últimos 50 mensajes
+      .slice(period ? -ChatService.PERIOD_SUMMARY_MAX_MESSAGES : -50);
 
     const cleanMessages = recentMessages
       .map((msg: any) => `${msg.user}: ${msg.message}`)
@@ -864,13 +880,14 @@ export class ChatService {
     if (botName) knownAuthors.delete(ChatService.normalizeAuthorName(botName));
 
     try {
+      const startedAt = Date.now();
       const summaryResponse = await this.openai.chat.completions.create({
         messages: [
           {
             role: 'system',
             content: `${this.summaryPersona(username, botName)}
 
-Te pidieron que cuentes qué se habló en el chat (una comunidad de manga donde se habla de todo).
+Te pidieron que cuentes qué se habló en el chat${period ? ` en ${period.label}` : ''} (una comunidad de manga donde se habla de todo).
 
 CÓMO CONTARLO:
 - Contalo como lo contaría alguien del chat a un amigo que recién llega: en prosa, con tus palabras, con onda y algo de humor.
@@ -896,7 +913,7 @@ escribas nada después del delimitador.`
         max_tokens: 500,
       });
 
-      this.recordUsage('summary', summaryResponse, username);
+      this.recordUsage('summary', summaryResponse, username, undefined, { latencyMs: Date.now() - startedAt });
 
       const raw = summaryResponse.choices[0].message.content || '';
       const { text, facts } = this.parseSummaryAndFacts(raw, knownAuthors);
@@ -1118,6 +1135,7 @@ escribas nada después del delimitador.`
     },
     user?: string,
     intents?: string[],
+    timing: { latencyMs?: number } = {},
   ): void {
     if (!response.usage && !this.usageMissingWarned) {
       this.usageMissingWarned = true;
@@ -1139,6 +1157,7 @@ escribas nada después del delimitador.`
           response.usage?.prompt_cache_hit_tokens ?? response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
         model: this.configService.get<string>('openai.model') ?? '',
         intents: intents ?? [],
+        latencyMs: timing.latencyMs,
       })
       .catch(() => {});
   }
@@ -1252,6 +1271,7 @@ escribas nada después del delimitador.`
       });
 
       const artist = song.artist ? ` de ${song.artist}` : '';
+      const startedAt = Date.now();
       const response = await this.openai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -1269,7 +1289,7 @@ escribas nada después del delimitador.`
         max_tokens: 60,
       });
 
-      this.recordUsage('chat', response, forUser, ['song-delivery']);
+      this.recordUsage('chat', response, forUser, ['song-delivery'], { latencyMs: Date.now() - startedAt });
       return ChatService.cleanSongLine(response.choices[0]?.message?.content ?? '');
     } catch (err) {
       this.logger.warn(`No se pudo redactar la entrega de la canción: ${(err as Error)?.message}`);
@@ -1354,6 +1374,7 @@ escribas nada después del delimitador.`
         blocks: ['PERSONA'],
       });
 
+      const startedAt = Date.now();
       const response = await this.openai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -1375,7 +1396,7 @@ escribas nada después del delimitador.`
         max_tokens: 120,
       });
 
-      this.recordUsage('chat', response, forUser, ['errand']);
+      this.recordUsage('chat', response, forUser, ['errand'], { latencyMs: Date.now() - startedAt });
       return response.choices[0]?.message?.content?.trim() || '';
     } catch (err) {
       this.logger.warn(`No se pudo redactar el recado: ${(err as Error)?.message}`);

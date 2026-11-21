@@ -57,6 +57,10 @@ export class LlmUsage {
   @Prop({ default: false })
   cacheHit: boolean;
 
+  /** Cuánto tardó la llamada al modelo, en ms (0 = no medido: filas viejas). */
+  @Prop({ default: 0 })
+  latencyMs: number;
+
   /**
    * Lo aporta `timestamps: true`. Se declara sólo para el tipado de las
    * consultas de poda.

@@ -2516,6 +2516,13 @@ describe('!uso', () => {
     expect(sent.join(' ')).not.toContain('ahorro');
   });
 
+  it('muestra los tiempos de respuesta si hay mediciones', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, latency: { p50: 1200, p95: 3400, max: 8000, samples: 120 } }) };
+    const { service, sent } = await buildBotService({ usage });
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('Tiempo de respuesta: mediana 1,2 s · p95 3,4 s · máx 8,0 s (120 respuestas)');
+  });
+
   it('sin precio de caché, la entrada cacheada se cobra como entrada normal', async () => {
     const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, cachedPromptTokens: 15000 }) };
     const { service, sent } = await buildBotService({
@@ -2919,5 +2926,110 @@ describe('recordatorios y encuestas desde el chat', () => {
       await handle('!encuesta cerrar', 'mod', 'kei');
       expect(polls.current).toBeNull();
     });
+  });
+});
+
+describe('!estado', () => {
+  it('sólo admins, y junta proceso, socket, extras y servicios', async () => {
+    const { service, sent } = await buildBotService({
+      socket: { isConnected: true },
+      chat: { getSharedContextInfo: jest.fn().mockReturnValue({ enabled: true, source: 'env' }) },
+    });
+    const commands = service['commands'];
+    commands.probeService = jest.fn(async (name: string) => ({ name, ok: name !== 'FileGarden', ms: name !== 'FileGarden' ? 120 : null, detail: name === 'FileGarden' ? 'timeout' : '200' }));
+
+    await commands.handle('!estado', 'kei', 'user');
+    expect(sent.join(' ')).toContain('Solo admins');
+
+    await commands.handle('!estado', 'leon', 'admin');
+    const out = sent[sent.length - 1];
+    expect(out).toContain('🩺 Estado del bot');
+    expect(out).toContain('Socket: conectado');
+    expect(out).toContain('contexto compartido sí');
+    expect(out).toContain('modelo ✅ 120 ms');
+    expect(out).toContain('FileGarden ❌ timeout');
+    expect(commands.probeService).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('resumen de un período', () => {
+  const NOW = new Date('2026-11-21T03:00:00Z'); // 21:00 del 20/11 en El Salvador
+
+  it.each([
+    ['las últimas 2 horas', '2026-11-21T01:00:00.000Z', 'las últimas 2 horas'],
+    ['2h', '2026-11-21T01:00:00.000Z', 'las últimas 2 horas'],
+    ['30m', '2026-11-21T02:30:00.000Z', 'los últimos 30 minutos'],
+    ['la última hora', '2026-11-21T02:00:00.000Z', 'la última hora'],
+    ['media hora', '2026-11-21T02:30:00.000Z', 'la última media hora'],
+    ['hoy', '2026-11-20T06:00:00.000Z', 'lo que va de hoy'],
+  ])('parseSummaryPeriod("%s")', (text, iso, label) => {
+    const p = BotService.parseSummaryPeriod(text, NOW);
+    expect(p?.since.toISOString()).toBe(iso);
+    expect(p?.label).toBe(label);
+  });
+
+  it.each(['48h', 'algo', '0m'])('parseSummaryPeriod("%s") = null', (text) => {
+    expect(BotService.parseSummaryPeriod(text, NOW)).toBeNull();
+  });
+
+  it('!resumen 2h resume ese período, con su propio cooldown, sin mover la marca del normal', async () => {
+    const generateSummary = jest.fn().mockResolvedValue({ text: 'kei habló de Frieren', facts: [] });
+    const { service, sent, logging } = await buildBotService({ chat: { generateSummary } as any });
+    (logging as any).saveEventsLog = jest.fn().mockResolvedValue(undefined);
+
+    await service['handleNewChatMessage']({ content: '!resumen 2h', authorUsername: 'kei' } as any);
+
+    expect(logging.getLastEventType).toHaveBeenCalledWith('ResumenPeriodo');
+    expect(generateSummary).toHaveBeenCalledWith('kei', 'Aria', expect.objectContaining({ label: 'las últimas 2 horas' }));
+    expect(sent.join(' ')).toContain('📋 (las últimas 2 horas) kei habló de Frieren');
+    expect((logging as any).saveEventsLog).toHaveBeenCalledWith('ResumenPeriodo', 'kei');
+  });
+
+  it('!resumen sin período es el resumen normal; con un período inválido muestra el uso', async () => {
+    const generateSummary = jest.fn().mockResolvedValue({ text: 'todo tranqui', facts: [] });
+    const { service, sent } = await buildBotService({ chat: { generateSummary } as any });
+
+    await service['handleNewChatMessage']({ content: '!resumen', authorUsername: 'kei' } as any);
+    expect(generateSummary).toHaveBeenCalledWith('kei', 'Aria', undefined);
+
+    await service['handleNewChatMessage']({ content: '!resumen ayer', authorUsername: 'kei' } as any);
+    expect(sent.join(' ')).toContain('Uso: !resumen');
+  });
+
+  it('"bot resumen de hoy" va directo al resumen de hoy, sin el modelo', async () => {
+    const generateSummary = jest.fn().mockResolvedValue({ text: 'un día movido', facts: [] });
+    const chatFn = jest.fn();
+    const { service } = await buildBotService({ chat: { generateSummary, chat: chatFn } as any });
+
+    await service['handleNewChatMessage']({ content: 'bot resumen de hoy', authorUsername: 'kei' } as any);
+
+    expect(chatFn).not.toHaveBeenCalled();
+    expect(generateSummary).toHaveBeenCalledWith('kei', 'Aria', expect.objectContaining({ label: 'lo que va de hoy' }));
+  });
+});
+
+describe('!encuesta pone los botones de a uno', () => {
+  it('espera la confirmación de cada reacción antes de mandar la siguiente', async () => {
+    const order: string[] = [];
+    const pending: Array<() => void> = [];
+    const reactAndWait = jest.fn((_id: string, emoji: string) => {
+      order.push(`send ${emoji}`);
+      return new Promise<boolean>((resolve) => pending.push(() => { order.push(`ok ${emoji}`); resolve(true); }));
+    });
+    const polls = new PollService();
+    const { service } = await buildBotService({
+      polls: polls as any,
+      socket: { reactionsEnabled: true, reactAndWait, sendMessageAndAwaitId: jest.fn().mockResolvedValue('msg-1') },
+    });
+
+    const done = service['commands'].handle('!encuesta ¿Qué? | A | B | C', 'leon', 'user');
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setImmediate(r));
+      pending.shift()?.();
+    }
+    await done;
+
+    expect(order).toEqual(['send 1️⃣', 'ok 1️⃣', 'send 2️⃣', 'ok 2️⃣', 'send 3️⃣', 'ok 3️⃣']);
+    polls.close();
   });
 });
