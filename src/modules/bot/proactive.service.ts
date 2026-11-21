@@ -22,6 +22,9 @@ export const PROACTIVE_MIN_CHARS = 12;
 export class ProactiveService {
   private lastAttemptAt = 0;
   private override: boolean | null = null;
+  /** Overrides en memoria de `!proactivo <n>%` y `!proactivo pausa <min>`. */
+  private chanceOverride: number | null = null;
+  private cooldownOverrideMin: number | null = null;
   /** Inyectables para tests. */
   random: () => number = Math.random;
   now: () => number = Date.now;
@@ -29,11 +32,22 @@ export class ProactiveService {
   constructor(private readonly configService: ConfigService) {}
 
   private chance(): number {
-    return this.configService.get<number>('bot.proactiveChance') ?? 0;
+    return this.chanceOverride ?? this.configService.get<number>('bot.proactiveChance') ?? 0;
   }
 
   private cooldownMs(): number {
-    return (this.configService.get<number>('bot.proactiveCooldownMinutes') ?? 15) * 60_000;
+    return (this.cooldownOverrideMin ?? this.configService.get<number>('bot.proactiveCooldownMinutes') ?? 15) * 60_000;
+  }
+
+  /** Probabilidad por mensaje, 0..1 (se recorta). 0 apaga. */
+  setChance(value: number): void {
+    this.chanceOverride = Math.min(1, Math.max(0, value));
+    this.override = null;
+  }
+
+  /** Pausa mínima entre intentos, en minutos (mínimo 1). */
+  setCooldownMinutes(value: number): void {
+    this.cooldownOverrideMin = Math.max(1, value);
   }
 
   isEnabled(): boolean {
@@ -41,14 +55,19 @@ export class ProactiveService {
     return this.chance() > 0;
   }
 
+  /** `null` = volver a todo lo del .env (encendido, probabilidad y pausa). */
   setOverride(value: boolean | null): void {
     this.override = value;
+    if (value === null) {
+      this.chanceOverride = null;
+      this.cooldownOverrideMin = null;
+    }
   }
 
   getInfo(): { enabled: boolean; source: 'env' | 'override'; chance: number; cooldownMinutes: number } {
     return {
       enabled: this.isEnabled(),
-      source: this.override === null ? 'env' : 'override',
+      source: this.override === null && this.chanceOverride === null && this.cooldownOverrideMin === null ? 'env' : 'override',
       chance: this.chance(),
       cooldownMinutes: this.cooldownMs() / 60_000,
     };

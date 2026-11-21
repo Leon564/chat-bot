@@ -246,7 +246,7 @@ export class BotCommandsService {
     authorUsername: string,
     authorRole?: string,
   ): Promise<boolean> {
-    const match = content.trim().match(/^!proactivo(?:\s+(\w+))?\s*$/i);
+    const match = content.trim().match(/^!proactivo(?:\s+(\S+))?(?:\s+(\S+))?\s*$/i);
     if (!match) return false;
     if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
       this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar los comentarios espontáneos.`);
@@ -257,6 +257,36 @@ export class BotCommandsService {
       return true;
     }
     const sub = (match[1] ?? 'status').toLowerCase();
+
+    // `!proactivo 15` / `!proactivo 15%` → probabilidad por mensaje.
+    const pct = /^(\d+(?:[.,]\d+)?)%?$/.exec(sub);
+    if (pct && !match[2]) {
+      const value = Number(pct[1].replace(',', '.'));
+      if (value > 100) {
+        this.sendBotMessage(`@${authorUsername} El porcentaje va de 0 a 100.`);
+        return true;
+      }
+      this.proactive.setChance(value / 100);
+      this.sendBotMessage(
+        value === 0
+          ? `@${authorUsername} ✅ Comentarios espontáneos apagados (0 %).`
+          : `@${authorUsername} ✅ Comentarios espontáneos: ${value} % por mensaje.`,
+      );
+      return true;
+    }
+
+    // `!proactivo pausa 5` → minutos mínimos entre intentos.
+    if (sub === 'pausa' || sub === 'cooldown') {
+      const minutes = Number((match[2] ?? '').replace(',', '.'));
+      if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+        this.sendBotMessage(`@${authorUsername} Uso: !proactivo pausa <minutos> (de 1 a 1440).`);
+        return true;
+      }
+      this.proactive.setCooldownMinutes(minutes);
+      this.sendBotMessage(`@${authorUsername} ✅ Como mucho un comentario espontáneo cada ${minutes} min.`);
+      return true;
+    }
+
     if (sub === 'on' || sub === 'off') {
       this.proactive.setOverride(sub === 'on');
       this.sendBotMessage(`@${authorUsername} ✅ Comentarios espontáneos ${sub === 'on' ? 'activados' : 'desactivados'}.`);
@@ -272,7 +302,7 @@ export class BotCommandsService {
       );
       return true;
     }
-    this.sendBotMessage(`@${authorUsername} Uso: !proactivo on | off | reset | status`);
+    this.sendBotMessage(`@${authorUsername} Uso: !proactivo on | off | <porcentaje>% | pausa <minutos> | reset | status`);
     return true;
   }
 
@@ -489,7 +519,7 @@ export class BotCommandsService {
         '• !uso [24h|7d|30d] — consumo del modelo',
         '• !personality default|unfiltered|reset|status',
         '• !sharedcontext on|off|reset|status',
-        '• !proactivo on|off|reset|status — comentarios sin que me nombren',
+        '• !proactivo on|off|15%|pausa 10|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
       );
     }
