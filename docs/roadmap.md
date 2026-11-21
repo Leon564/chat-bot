@@ -63,12 +63,12 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 - [x] **28. Recordatorios.** ✅ "bot recordame en 2h que…", "avisame a las 9 que…", "recordame mañana a las 8:30 …": la hora se entiende en código (`ReminderService.parse`, hora de El Salvador; sin am/pm toma la próxima). Si no se entiende, sigue al modelo. Comandos `!recordar 30m <texto>` (o `a las 21:30 …`), `!recordatorios`, `!cancelarrecordatorio <n>`. Mongo (`bot_reminders`, TTL), tope de 5 pendientes por persona, de 1 min a 30 días; un tick cada 30 s los reclama de a uno (atómico) y los manda con mención; si el bot estuvo caído salen tarde con disculpa.
 - [x] **29. Encuestas con reacciones.** ✅ `!encuesta [10m] ¿Qué leemos? | Berserk | Vagabond` (2 a 6 opciones, de 1 min a 24 h, default 5 min): el bot publica con 1️⃣ 2️⃣ …, pone él mismo las reacciones como botones (no cuentan) y cuenta lo que llega por `messageReactionUpdated`. `!encuesta` muestra la abierta, `!encuesta cerrar` (autor o staff). Una a la vez, en memoria (se pierde al reiniciar). Sólo registrados y con las reacciones encendidas. Se puede votar más de una opción.
 - [ ] **30. Trivia de anime/manga.** El bot lanza una pregunta, el primero que acierta suma un punto; ranking semanal.
-- [ ] **31. `!resumen 2h` / `!resumen hoy`.** Resumen de un período en vez de "desde el último resumen" (el log ya no se vacía, pero se poda a 200 filas: para "hoy" haría falta un tope mayor o leer los mensajes del backend).
+- [x] **31. `!resumen 2h` / `!resumen hoy`.** ✅ `!resumen` (desde el anterior), `!resumen 2h` / `30m` / `hoy` (hasta 24 h), y "bot resumen de las últimas 2 horas / de hoy" en lenguaje natural. Toma hasta 150 mensajes del período; el log sube a 500 filas. Cooldown propio (`ResumenPeriodo`, 10 min) que no mueve la marca del resumen normal. "Hoy" = desde la medianoche de El Salvador.
 
 ### Mantenimiento
 - [x] **32. % de caché en `!uso`.** ✅ Línea "Caché: N % de la entrada" y, con precios, el ahorro estimado (`(precio entrada − precio caché) × tokens cacheados`).
-- [ ] **33. Latencia del modelo.** Registrar cuánto tarda cada llamada en `bot_llm_usage` y mostrar p50/p95 en `!uso`.
-- [ ] **34. `!estado` (admin).** Conexión del socket, memoria del proceso, cola de música y si FileGarden / AniList responden.
+- [x] **33. Latencia del modelo.** ✅ `latencyMs` en `bot_llm_usage` (todas las llamadas); `!uso` muestra mediana, p95 y máximo de las respuestas de charla.
+- [x] **34. `!estado` (admin).** ✅ Uptime y memoria, socket, cola de música, extras activos (comentarios espontáneos, encuesta, contexto compartido) y si responden modelo, backend del chat, AniList, FileGarden y catbox (en paralelo, 5 s de tope; cualquier HTTP < 500 cuenta como vivo).
 - [ ] **35. Tests de `UploadChainService`** y tipar los `any` de la parte de música.
 - [ ] **36. Migración a ESM + Nest 12 + TypeScript 6.** Grande y no urgente (ver 6b): saca las 3 moderadas de dev de `@nestjs/cli` 11.
 

@@ -9,7 +9,9 @@ import { createLog } from './log';
 
 const log = createLog('LoggingService');
 
-const MESSAGES_CAP = 200;
+// Alcanza para un `!resumen hoy` en un día movido; el resumen igual toma
+// como mucho los últimos 150 mensajes del período.
+const MESSAGES_CAP = 500;
 const EVENTS_CAP = 200;
 
 @Injectable()

@@ -74,7 +74,17 @@ describe('UsageService', () => {
 
     it('sin filas devuelve ceros', async () => {
       const s = await service.summarize(new Date(0));
-      expect(s).toEqual({ calls: 0, promptTokens: 0, cachedPromptTokens: 0, completionTokens: 0, topUsers: [], oldest: null });
+      expect(s).toEqual({ calls: 0, promptTokens: 0, cachedPromptTokens: 0, completionTokens: 0, topUsers: [], oldest: null, latency: null });
+    });
+
+    it('calcula mediana, p95 y máximo del tiempo de las respuestas de charla', async () => {
+      for (const ms of [800, 1000, 1200, 1500, 9000]) {
+        await service.record({ kind: 'chat', promptTokens: 1, completionTokens: 1, latencyMs: ms });
+      }
+      await service.record({ kind: 'summary', promptTokens: 1, completionTokens: 1, latencyMs: 20000 });
+      await service.record({ kind: 'chat', promptTokens: 1, completionTokens: 1 });
+      const s = await service.summarize(new Date(0));
+      expect(s.latency).toEqual({ p50: 1200, p95: 9000, max: 9000, samples: 5 });
     });
   });
 

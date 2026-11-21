@@ -244,6 +244,21 @@ describe('ChatService — instrumentación de tokens', () => {
     });
   });
 
+  describe('resumen de un período', () => {
+    it('usa el `since` del período (no el último evento) y lo nombra en el prompt', async () => {
+      const since = new Date('2026-11-21T01:00:00Z');
+      (logging as any).getLastEventType = jest.fn();
+      logging.getLastMessages.mockResolvedValue([{ user: 'kei', message: 'vieron Frieren?' }]);
+      crearMock.mockResolvedValue(respuesta('kei habló de Frieren'));
+
+      await service.generateSummary('kei', 'Aria', { since, label: 'las últimas 2 horas' });
+
+      expect((logging as any).getLastEventType).not.toHaveBeenCalled();
+      expect(logging.getLastMessages).toHaveBeenCalledWith(since);
+      expect(crearMock.mock.calls[0][0].messages[0].content).toContain('en las últimas 2 horas');
+    });
+  });
+
   describe('resumen desde el anterior', () => {
     it('pide los mensajes posteriores al último evento Resumen y saca al bot de los autores de hechos', async () => {
       const fecha = '2026-11-20T10:00:00.000Z';

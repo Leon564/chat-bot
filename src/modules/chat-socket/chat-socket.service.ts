@@ -108,6 +108,33 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     this.socket = null;
   }
 
+  /** Esperas de `reactAndWait`: se resuelven cuando el backend confirma la reacción. */
+  private reactionWaiters: Array<{ messageId: string; emoji: string; resolve: (ok: boolean) => void }> = [];
+
+  /**
+   * Reacciona y espera a que el backend lo confirme (`messageReactionUpdated`
+   * con ese emoji), o hasta `timeoutMs`. Las encuestas ponen sus botones de a
+   * uno con esto: mandados de golpe, el backend (que lee, modifica y guarda
+   * el array entero) se quedaba sólo con el primero.
+   */
+  reactAndWait(messageId: string, emoji: string, timeoutMs = 3000): Promise<boolean> {
+    if (!this.socket?.connected || !messageId || !emoji) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const waiter = {
+        messageId,
+        emoji,
+        resolve: (ok: boolean) => {
+          clearTimeout(timer);
+          this.reactionWaiters = this.reactionWaiters.filter((w) => w !== waiter);
+          resolve(ok);
+        },
+      };
+      const timer = setTimeout(() => waiter.resolve(false), timeoutMs);
+      this.reactionWaiters.push(waiter);
+      this.socket!.emit('toggleReaction', { messageId, emoji });
+    });
+  }
+
   /** Cambios de reacciones de cualquier mensaje (`messageReactionUpdated`); lo usan las encuestas. */
   onReactionUpdate(handler: (messageId: string, reactions: { emoji: string; usernames: string[] }[]) => void) {
     this.reactionHandler = handler;
@@ -198,7 +225,11 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       this.reactionsOn = data?.enabled === true;
     });
     this.socket.on('messageReactionUpdated', (data: { messageId?: string; reactions?: { emoji: string; usernames: string[] }[] }) => {
-      if (data?.messageId && Array.isArray(data.reactions)) this.reactionHandler?.(data.messageId, data.reactions);
+      if (!data?.messageId || !Array.isArray(data.reactions)) return;
+      for (const w of [...this.reactionWaiters]) {
+        if (w.messageId === data.messageId && data.reactions.some((r) => r.emoji === w.emoji)) w.resolve(true);
+      }
+      this.reactionHandler?.(data.messageId, data.reactions);
     });
     this.socket.on('reactionError', (data: { message?: string }) => {
       this.logger.warn(`reactionError: ${data?.message ?? '(sin mensaje)'}`);

@@ -12,6 +12,7 @@ export interface RecordUsageInput {
   model?: string;
   intents?: string[];
   cacheHit?: boolean;
+  latencyMs?: number;
 }
 
 /** Filas que se conservan. */
@@ -27,6 +28,15 @@ export interface UsageSummary {
   topUsers: Array<{ user: string; calls: number; tokens: number }>;
   /** Fila más vieja que queda en la colección (por el tope, puede ser más nueva que `since`). */
   oldest: Date | null;
+  /** Tiempos de respuesta de las respuestas de charla (kind 'chat'), o null sin datos. */
+  latency: { p50: number; p95: number; max: number; samples: number } | null;
+}
+
+/** Percentil `p` (0..1) de una lista YA ordenada, por el método del rango más cercano. */
+export function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1));
+  return sorted[idx];
 }
 
 /**
@@ -69,6 +79,7 @@ export class UsageService {
         model: input.model ?? '',
         intents: input.intents ?? [],
         cacheHit: input.cacheHit ?? false,
+        latencyMs: input.latencyMs && input.latencyMs > 0 ? Math.round(input.latencyMs) : 0,
       });
 
       const total = await this.usageModel.estimatedDocumentCount();
@@ -97,7 +108,7 @@ export class UsageService {
    */
   async summarize(since: Date, topN = 5): Promise<UsageSummary> {
     const match = { createdAt: { $gte: since } };
-    const [totals, top, oldestRow] = await Promise.all([
+    const [totals, top, oldestRow, latencyRows] = await Promise.all([
       this.usageModel
         .aggregate<{ calls: number; promptTokens: number; cachedPromptTokens: number; completionTokens: number }>([
           { $match: match },
@@ -127,7 +138,18 @@ export class UsageService {
         ])
         .exec(),
       this.usageModel.findOne().sort({ createdAt: 1 }).select({ createdAt: 1 }).lean().exec(),
+      // Percentiles en JS (la colección se poda a USAGE_CAP filas): `$percentile`
+      // pide MongoDB 7 y el de los tests puede ser más viejo.
+      this.usageModel
+        .find({ ...match, kind: 'chat', latencyMs: { $gt: 0 } })
+        .select({ latencyMs: 1 })
+        .lean()
+        .exec(),
     ]);
+    const latencies = (latencyRows as Array<{ latencyMs?: number }>)
+      .map((r) => r.latencyMs ?? 0)
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b);
 
     const t = totals[0];
     return {
@@ -137,6 +159,15 @@ export class UsageService {
       completionTokens: t?.completionTokens ?? 0,
       topUsers: top.map((r) => ({ user: r._id, calls: r.calls, tokens: r.tokens })),
       oldest: (oldestRow as { createdAt?: Date } | null)?.createdAt ?? null,
+      latency:
+        latencies.length > 0
+          ? {
+              p50: percentile(latencies, 0.5),
+              p95: percentile(latencies, 0.95),
+              max: latencies[latencies.length - 1],
+              samples: latencies.length,
+            }
+          : null,
     };
   }
 }
