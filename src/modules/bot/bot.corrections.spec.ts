@@ -18,6 +18,7 @@ import { ErrandService } from '../graph/errand.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { StickerGateService } from './sticker-gate.service';
 import { MusicQuotaService } from './music-quota.service';
+import { MusicIntentService } from './music-intent.service';
 
 /**
  * Correcciones 1–3 del roadmap: el handler del socket no tumba el proceso, la
@@ -67,7 +68,16 @@ const build = async (opts: { quota?: boolean; config?: Record<string, unknown> }
         useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined), ingestTrack: jest.fn().mockResolvedValue(undefined) },
       },
       { provide: GraphCacheService, useValue: {} },
-      { provide: GraphService, useValue: { findNode: jest.fn().mockResolvedValue(null) } },
+      {
+        provide: GraphService,
+        useValue: {
+          findNode: jest.fn().mockResolvedValue(null),
+          // El grafo conoce a Yorushika (para el clasificador de "reproduce X").
+          resolveByAlias: jest.fn(async (alias: string) =>
+            alias.trim().toLowerCase() === 'yorushika' ? { type: 'artist', label: 'Yorushika' } : null,
+          ),
+        },
+      },
       { provide: GraphUserService, useValue: {} },
       { provide: UsageService, useValue: {} },
       { provide: RateLimitService, useValue: { check: () => true, shouldNotifyRejection: () => true } },
@@ -79,6 +89,7 @@ const build = async (opts: { quota?: boolean; config?: Record<string, unknown> }
       },
       { provide: StickerGateService, useValue: { decide: () => 'none', markSent: () => {} } },
       ...(opts.quota === false ? [] : [MusicQuotaService]),
+      MusicIntentService,
     ],
   }).compile();
 
@@ -185,5 +196,37 @@ describe('3. la música tiene topes', () => {
     const { send, music } = await build({ quota: false });
     for (const q of ['aaa', 'bbb', 'ccc', 'ddd']) await send(`!music ${q}`);
     expect(music.processMusic).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('2b. "reproduce X" sin nombrar al bot, con el clasificador local', () => {
+  it('un pedido claro al principio del mensaje se atiende', async () => {
+    const { send, music } = await build();
+    await send('reproduce lemon de kenshi yonezu');
+    expect(music.processMusic).toHaveBeenCalledWith('lemon de kenshi yonezu', 'nico', expect.anything());
+  });
+
+  it('un verbo ambiguo pasa si el grafo conoce al artista', async () => {
+    const { send, music } = await build();
+    await send('pon yorushika');
+    expect(music.processMusic).toHaveBeenCalledWith('yorushika', 'nico', expect.anything());
+  });
+
+  it.each(['pon atención', 'reproduce el video de ayer', 'reproduce eso otra vez?'])(
+    '"%s" no pide música ni llama al modelo',
+    async (content) => {
+      const { send, music, chat } = await build();
+      await send(content);
+      expect(music.processMusic).not.toHaveBeenCalled();
+      expect(chat.chat).not.toHaveBeenCalled();
+    },
+  );
+
+  it('respeta los topes de música igual que !music', async () => {
+    const { send, music, sent } = await build({ config: { 'music.perHour': 1 } });
+    await send('reproduce lemon', 'guest', 'invitado');
+    await send('reproduce unravel', 'guest', 'invitado');
+    expect(music.processMusic).toHaveBeenCalledTimes(1);
+    expect(sent.join(' ')).toContain('tope de 1 pedidos por hora');
   });
 });

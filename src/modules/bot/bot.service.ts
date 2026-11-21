@@ -20,6 +20,7 @@ import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
 import { MusicQuotaService, MusicAdmission } from './music-quota.service';
+import { MusicIntentService } from './music-intent.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { BbcodeSettingsService } from '../chat-socket/bbcode-settings.service';
 import {
@@ -129,6 +130,8 @@ export class BotService implements OnModuleInit {
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
     // Opcional para los tests armados a mano: sin él la música no tiene topes.
     @Optional() private readonly musicQuota?: MusicQuotaService,
+    // Opcional igual: sin él, "reproduce X" sin nombrar al bot no se atiende.
+    @Optional() private readonly musicIntent?: MusicIntentService,
   ) {}
 
   async onModuleInit() {
@@ -257,11 +260,21 @@ export class BotService implements OnModuleInit {
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
+    // Sin nombrar al bot, "reproduce X" sólo cuenta si el clasificador local
+    // (verbo al principio, sin señales de charla, o canción/artista conocido
+    // en el grafo) lo da por pedido. Ver MusicIntentService.
+    let intentQuery: string | null = null;
+    if (!isMusicRequest && !addressesBot && !isVideoReq && this.musicIntent) {
+      const intent = await this.musicIntent.classify(content);
+      if (intent?.isRequest) intentQuery = intent.query;
+    }
+
     if (
       !isReplyToBot &&
       !containsBotWord(content) &&
       !containsExactBotName(content) &&
       !isMusicRequest &&
+      !intentQuery &&
       !isOnlineReq &&
       !isVideoReq
     ) return;
@@ -275,6 +288,11 @@ export class BotService implements OnModuleInit {
 
     if (isMusicRequest) {
       await this.handleMusicRequest(content, authorUsername, authorRole);
+      return;
+    }
+
+    if (intentQuery) {
+      await this.handleMusicRequest(`!music ${intentQuery}`, authorUsername, authorRole);
       return;
     }
 
