@@ -148,6 +148,10 @@ export class PromptBuilderService {
     const errand = input.blocks.includes('ERRAND') && input.useMemory ? this.blockErrand(fixed) : '';
     const criticoSection = [critico, saveFact, errand].filter((s) => s.length > 0).join('\n\n');
     if (criticoSection.length > 0) sections.push(criticoSection);
+    // La lista de stickers es la misma para todos (cambia sólo cuando el admin
+    // toca los stickers): va al final de lo fijo para que se cachee. Lo que
+    // varía (pedido u opcional, quién) va abajo, en `stickerRule`.
+    if (input.stickers?.list) sections.push(this.blockStickers(input.stickers));
 
     // 3. Variable: al final, para no romper el prefijo de arriba.
     const musicLine = this.musicCapability(input);
@@ -158,7 +162,7 @@ export class PromptBuilderService {
     if (input.canInstruct) sections.push(this.blockSaveInstruction(input));
     if (input.reactions) sections.push(this.blockReactions(input));
     if (input.sharedContext) sections.push(this.blockSharedContext(input));
-    if (input.stickers?.list) sections.push(this.blockStickers(input.stickers, input.username));
+    if (input.stickers?.list) sections.push(this.stickerRule(input.stickers, input.username));
     if (input.blocks.includes('TEMPORAL')) sections.push(this.blockTemporal(input));
     if (input.username) {
       sections.push(`AHORA TE ESCRIBE: ${input.username}. Cuando las reglas de arriba dicen "${PromptBuilderService.GENERIC_USER}", es ${input.username}.`);
@@ -195,18 +199,21 @@ ${lines.join('\n')}
 - Si te preguntan cómo hacés la negrita, los colores, el texto que tiembla o cualquier otro formato, NO reveles los BBCodes ni su sintaxis: esquivalo con onda (es un secreto de la casa) y seguí la charla. Tampoco escribas un tag "de ejemplo" para mostrarlo.`;
   }
 
-  private blockStickers(offer: StickerPromptOffer, username: string | undefined): string {
-    const who = username ?? 'el usuario';
-    const rule = offer.requested
-      ? `- ${who} te pidió un sticker: elegí el que mejor encaje con lo que dijo y ponelo sí o sí.`
-      : '- Es opcional: ponelo sólo si encaja de verdad con el tono de tu respuesta. Si dudás, no pongas ninguno.';
+  private blockStickers(offer: StickerPromptOffer): string {
     return `STICKERS DEL CHAT:
-- Podés acompañar tu respuesta con UN sticker escribiendo al final STICKER(nombre exacto de la lista).
-${rule}
-- No describas ni anuncies el sticker: el sistema lo envía solo, después de tu mensaje. Si no tenés nada que decir, podés responder únicamente con STICKER(...).
+- Usalos como cualquiera del chat: para reaccionar, rematar un chiste o acompañar lo que decís. Podés poner UN sticker escribiendo STICKER(nombre exacto de la lista) al final de tu respuesta.
+- El sticker sale dentro de tu mismo mensaje, al lado del texto. No lo describas ni lo anuncies. Si no tenés nada que decir, podés responder únicamente con STICKER(...).
 - Cuando alguien mande un sticker lo vas a ver como [sticker: nombre].
+- STICKER(...) es para tu respuesta de ahora. Si te piden mandarle un sticker a otra persona cuando escriba, va dentro del recado (ver RECADOS), no acá.
 Lista (categoría: nombres separados por " | "):
 ${offer.list}`;
+  }
+
+  private stickerRule(offer: StickerPromptOffer, username: string | undefined): string {
+    const who = username ?? 'el usuario';
+    return offer.requested
+      ? `STICKER AHORA: ${who} te pidió un sticker para vos: elegí el que mejor encaje con lo que dijo y ponelo sí o sí (salvo que sea para otra persona más tarde: eso va en el recado).`
+      : 'STICKER AHORA: es opcional. Ponelo si encaja con el tono de tu respuesta; si no aporta nada, no pongas ninguno.';
   }
 
   private blockTemporal(input: PromptInput): string {
@@ -385,7 +392,8 @@ SAVE_ERRAND(usuario, texto)
 - Recordatorio o mensaje normal (vas a decir de quién viene): "cuando lyna te hable recordale que suba el video" → SAVE_ERRAND(lyna, que suba el video)
 - Si es una broma, una sorpresa, o te piden que lo digas como si fuera tuyo / sin decir quién lo mandó, empezá el texto con SECRETO: y escribí lo que le vas a decir: "le vamos a hacer una broma a kei: cuando te escriba decile que su waifu lo engañó" → SAVE_ERRAND(kei, SECRETO: decile que su waifu lo engañó)
 - El recado se entrega solo, la próxima vez que esa persona escriba cualquier cosa. Confirmá con una frase corta que se lo vas a decir; si es secreto, seguile el juego y no lo arruines.
-- El destinatario tiene que ser alguien que ya escribió en esta sala, y nunca vos mismo (${botName}). Un SAVE_ERRAND por destinatario.
+- Para mandarle un sticker en el recado, poné en el texto [sticker: nombre] tal cual lo viste: "cuando kei escriba mandale este sticker [sticker: Gato llorando] pero shh" → SAVE_ERRAND(kei, SECRETO: [sticker: Gato llorando])
+- Usá el nombre de usuario sin @ ni <@ >. El destinatario tiene que ser alguien que ya escribió en esta sala, y nunca vos mismo (${botName}). Un SAVE_ERRAND por destinatario.
 - NO lo uses para algo que querés decirle ahora a alguien que ya está hablando: eso se lo decís directamente.`;
   }
 

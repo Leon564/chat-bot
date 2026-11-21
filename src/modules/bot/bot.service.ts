@@ -284,13 +284,14 @@ export class BotService implements OnModuleInit {
       log.info(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
     }
 
-    if (response) await this.handleChatResponse(response, authorUsername, authorRole);
-    // El sticker va DESPUÉS del texto y sólo en respuestas de charla: en una
-    // de música, AniList, resumen o usuarios online el token del flujo
-    // (`{{...}}`) manda y un sticker encima sería ruido.
-    if (sticker && !/\{\{/.test(response)) {
-      if (response) await this.utilsService.sleep(this.configService.get<number>('bot.responseDelay') || 1000);
-      this.chatSocketService.sendSticker(sticker.code);
+    // El sticker va en el MISMO mensaje que el texto (`:code:` al final; el
+    // chat lo dibuja en línea), y sólo en respuestas de charla: en una de
+    // música, AniList, resumen o usuarios online el token del flujo (`{{...}}`)
+    // manda y un sticker encima sería ruido.
+    const withSticker = sticker && !/\{\{/.test(response);
+    const outgoing = withSticker ? `${response} :${sticker.code}:`.trim() : response;
+    if (outgoing) await this.handleChatResponse(outgoing, authorUsername, authorRole);
+    if (withSticker) {
       this.stickerGate.markSent();
       log.info(`🧩 Sticker enviado: ${sticker.name}`);
     }
@@ -1151,9 +1152,16 @@ export class BotService implements OnModuleInit {
     const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
     if (!errand) return false;
 
-    const drafted = await this.chatService
-      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text, errand.secret)
-      .catch(() => '');
+    // Un recado puede traer un sticker (`[sticker: nombre]`, como lo ve el
+    // modelo): se saca del texto y se manda en el mismo mensaje. Si no se
+    // reconoce, el texto queda como estaba.
+    const { text: errandText, sticker } = this.takeErrandSticker(errand.text);
+
+    const drafted = errandText
+      ? await this.chatService
+          .deliverErrand(botUsername, authorUsername, errand.fromLabel, errandText, errand.secret)
+          .catch(() => '')
+      : '';
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
     // el modelo falló no hay segunda oportunidad: se manda el texto fijo.
@@ -1162,9 +1170,11 @@ export class BotService implements OnModuleInit {
     // `handleChatResponse`. Si la limpieza no deja nada (el modelo redactó
     // sólo un token), cae al mismo texto fijo que ya cubría el fallo del
     // modelo — nunca se publica una mención pelada.
-    const message =
-      BotService.stripIntentTokens(drafted) ||
-      BotService.stripIntentTokens(errand.secret ? errand.text : `${errand.fromLabel} te dejó dicho: ${errand.text}`);
+    const fallback = errandText
+      ? (errand.secret ? errandText : `${errand.fromLabel} te dejó dicho: ${errandText}`)
+      : (errand.secret ? '' : `${errand.fromLabel} te manda esto:`);
+    const text = BotService.stripIntentTokens(drafted) || BotService.stripIntentTokens(fallback);
+    const message = sticker ? `${text} :${sticker.code}:`.trim() : text;
 
     // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
     // `handleChatResponse` y no por `sendBotMessage` directo. El camino
@@ -1181,6 +1191,30 @@ export class BotService implements OnModuleInit {
     // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
     await this.handleChatResponse(message, authorUsername);
     return true;
+  }
+
+  /**
+   * Saca el primer sticker de un recado: `[sticker: nombre]` (como lo ve el
+   * modelo) o `:code:`. Sólo si existe en el catálogo; si no, devuelve el
+   * texto intacto y sin sticker.
+   */
+  private takeErrandSticker(raw: string): { text: string; sticker: { code: string; name: string } | null } {
+    const text = raw ?? '';
+    const byName = /\[sticker:\s*([^\]]+?)\s*\]/i.exec(text);
+    if (byName) {
+      const found = this.stickerCatalog.findByName(byName[1]);
+      if (found) {
+        return { text: text.replace(byName[0], '').replace(/\s{2,}/g, ' ').trim(), sticker: { code: found.code, name: found.name } };
+      }
+    }
+    const byCode = /:([a-zA-Z0-9_]+):/.exec(text);
+    if (byCode) {
+      const name = this.stickerCatalog.nameForCode(byCode[1]);
+      if (name) {
+        return { text: text.replace(byCode[0], '').replace(/\s{2,}/g, ' ').trim(), sticker: { code: byCode[1], name } };
+      }
+    }
+    return { text: text.trim(), sticker: null };
   }
 
   /**

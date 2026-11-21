@@ -82,13 +82,15 @@ export default () => ({
     // Historial de conversación común a toda la sala en vez de uno por usuario.
     // Independiente de crossUserContext (que trata del grafo). Se puede mover
     // en caliente con !sharedcontext (admin), sin reiniciar.
-    sharedContext: process.env.SHARED_CONTEXT === 'true',
+    // Encendido por defecto: el bot charla con la sala como uno más. Sólo el
+    // literal 'false' lo apaga.
+    sharedContext: process.env.SHARED_CONTEXT?.trim().toLowerCase() !== 'false',
     // Stickers espontáneos: probabilidad (0..1) de ofrecerle al modelo mandar
     // un sticker en una respuesta normal. 0 apaga los espontáneos; un pedido
     // explícito ("mandame un sticker") se atiende igual. Ver StickerGateService.
-    stickerChance: Math.min(1, Math.max(0, parseFloatEnv(process.env.STICKER_CHANCE, 0.15))),
+    stickerChance: Math.min(1, Math.max(0, parseFloatEnv(process.env.STICKER_CHANCE, 0.35))),
     // Minutos mínimos entre dos stickers espontáneos, en todo el chat.
-    stickerCooldownMinutes: Math.max(0, parseFloatEnv(process.env.STICKER_COOLDOWN_MINUTES, 5)),
+    stickerCooldownMinutes: Math.max(0, parseFloatEnv(process.env.STICKER_COOLDOWN_MINUTES, 2)),
     // Precio del modelo en USD por millón de tokens, sólo para estimar el costo
     // en `!uso`. En 0 (default) `!uso` muestra tokens sin costo.
     llmPriceInputPerM: Math.max(0, parseFloatEnv(process.env.LLM_PRICE_INPUT_PER_M, 0)),

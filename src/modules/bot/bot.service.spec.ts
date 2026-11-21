@@ -34,6 +34,7 @@ const emptyStickerCatalog = {
   describeContent: (c: string) => c,
   promptList: () => '',
   findByName: () => null,
+  nameForCode: () => null,
 };
 const noStickerGate = { decide: () => 'none', markSent: () => {} };
 
@@ -1492,6 +1493,7 @@ const buildBotService = async (
     roomInstructions?: Record<string, jest.Mock>;
     usage?: Record<string, jest.Mock>;
     config?: Record<string, unknown>;
+    stickers?: Record<string, unknown>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1586,7 +1588,7 @@ const buildBotService = async (
       { provide: RateLimitService, useValue: rateLimit },
       { provide: CrossContextSettingsService, useValue: crossContext },
       { provide: ErrandService, useValue: errands },
-      { provide: StickerCatalogService, useValue: emptyStickerCatalog },
+      { provide: StickerCatalogService, useValue: { ...emptyStickerCatalog, ...overrides.stickers } },
       { provide: StickerGateService, useValue: noStickerGate },
       ...(overrides.roomInstructions
         ? [{ provide: RoomInstructionsService, useValue: overrides.roomInstructions }]
@@ -1837,6 +1839,66 @@ describe('entrega de recados', () => {
     expect(sent.join(' ')).toContain('tu gato se escapó');
     expect(sent.join(' ')).not.toContain('leon');
     expect(sent.join(' ')).not.toContain('te dejó dicho');
+  });
+
+  describe('recado con sticker', () => {
+    const stickers = {
+      findByName: (n: string) => (n.toLowerCase() === 'gato llorando' ? { code: 'stk_gato1', name: 'Gato llorando' } : null),
+      nameForCode: (c: string) => (c === 'stk_gato1' ? 'Gato llorando' : null),
+    };
+
+    it('secreto y sólo sticker: lo manda en un mensaje, sin llamar al modelo ni nombrar al autor', async () => {
+      const deliverErrand = jest.fn().mockResolvedValue('no debería usarse');
+      const { service, sent } = await buildBotService({
+        errands: {
+          claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: '[sticker: Gato llorando]', secret: true }),
+        },
+        chat: { deliverErrand },
+        stickers,
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'Victoria949H' } as any);
+
+      expect(deliverErrand).not.toHaveBeenCalled();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain(':stk_gato1:');
+      expect(sent[0]).toContain('Victoria949H');
+      expect(sent[0]).not.toContain('leon');
+    });
+
+    it('con texto: el modelo redacta el texto sin el sticker y el sticker va en el mismo mensaje', async () => {
+      const deliverErrand = jest.fn().mockResolvedValue('Che, leon dice que te extraña');
+      const { service, sent } = await buildBotService({
+        errands: {
+          claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'que te extraña [sticker: Gato llorando]', secret: false }),
+        },
+        chat: { deliverErrand },
+        stickers,
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(deliverErrand).toHaveBeenCalledWith(expect.any(String), 'lyna', 'leon', 'que te extraña', false);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain('Che, leon dice que te extraña');
+      expect(sent[0]).toContain(':stk_gato1:');
+    });
+
+    it('un sticker que no existe queda como texto', async () => {
+      const deliverErrand = jest.fn().mockResolvedValue('');
+      const { service, sent } = await buildBotService({
+        errands: {
+          claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: '[sticker: Perro bailando]', secret: true }),
+        },
+        chat: { deliverErrand },
+        stickers,
+      });
+
+      await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+      expect(deliverErrand).toHaveBeenCalledWith(expect.any(String), 'lyna', 'leon', '[sticker: Perro bailando]', true);
+      expect(sent.join(' ')).not.toContain(':stk_');
+    });
   });
 
   it('no entrega recados a un autor con role bot', async () => {
