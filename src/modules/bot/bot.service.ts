@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleInit, Optional, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -13,6 +13,8 @@ import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
 import { ProactiveService } from './proactive.service';
+import { PollService } from './poll.service';
+import { ReminderService } from '../chat/reminder.service';
 import { MusicQuotaService, MusicAdmission } from './music-quota.service';
 import { MusicIntentService } from './music-intent.service';
 import { BotOutputService } from './bot-output.service';
@@ -40,7 +42,11 @@ const log = createLog('BotService');
 const RATE_LIMITED_MESSAGE = '⏳ Estás mandando mensajes muy seguido. Esperá un poco antes de volver a escribirme.';
 
 @Injectable()
-export class BotService implements OnModuleInit {
+export class BotService implements OnModuleInit, OnModuleDestroy {
+  /** Cada cuánto se revisan los recordatorios vencidos. */
+  static readonly REMINDER_TICK_MS = 30_000;
+  private reminderTimer: NodeJS.Timeout | null = null;
+
   private readonly logger = new Logger(BotService.name);
 
   constructor(
@@ -71,7 +77,29 @@ export class BotService implements OnModuleInit {
     @Optional() private readonly musicIntent?: MusicIntentService,
     // Opcional igual: sin él, el bot nunca comenta sin que lo nombren.
     @Optional() private readonly proactive?: ProactiveService,
+    @Optional() private readonly reminders?: ReminderService,
+    @Optional() private readonly polls?: PollService,
   ) {}
+
+  onModuleDestroy() {
+    if (this.reminderTimer) clearInterval(this.reminderTimer);
+    this.reminderTimer = null;
+  }
+
+  /**
+   * Manda los recordatorios vencidos (los reclama de a uno en Mongo, así que
+   * un tick que se pisa con otro no duplica). Si el bot estuvo caído, salen
+   * tarde con una disculpa.
+   */
+  async deliverDueReminders(now = new Date()): Promise<void> {
+    if (!this.reminders) return;
+    const due = await this.reminders.claimDue(now);
+    for (const r of due) {
+      const late = now.getTime() - new Date(r.dueAt).getTime() > 10 * 60_000 ? ' (perdón la demora)' : '';
+      this.sendBotMessage(`⏰ <@${r.username}> te recuerdo: ${r.text}${late}`);
+      this.logOwnMessage(this.chatSocketService.username ?? '', `te recuerdo: ${r.text}`, r.username);
+    }
+  }
 
   async onModuleInit() {
     log.info('🤖 Inicializando Bot Service...');
@@ -86,6 +114,16 @@ export class BotService implements OnModuleInit {
         this.logger.error(`Error manejando el mensaje de ${msg?.authorUsername ?? '?'}: ${e.message}`, e.stack);
       });
     });
+
+    // Votos de las encuestas: el backend difunde cada cambio de reacciones.
+    this.chatSocketService.onReactionUpdate?.((messageId, reactions) => this.polls?.onReactions(messageId, reactions));
+
+    if (this.reminders) {
+      this.reminderTimer = setInterval(() => {
+        void this.deliverDueReminders().catch(() => {});
+      }, BotService.REMINDER_TICK_MS);
+      this.reminderTimer.unref?.();
+    }
   }
 
   // ─── Message dispatcher ────────────────────────────────────────────────────
@@ -228,6 +266,16 @@ export class BotService implements OnModuleInit {
     if (isOnlineReq) {
       await this.handleOnlineUsersRequest(authorUsername);
       return;
+    }
+
+    // "bot recordame en 2h que…": se entiende en código, sin modelo. Si la
+    // hora no se entiende, sigue al modelo como cualquier mensaje.
+    if (this.reminders && addressesBot && ReminderService.isReminderRequest(content)) {
+      const parsed = ReminderService.parse(content, new Date(), botUsername);
+      if (parsed) {
+        await this.commands.createReminderFor(authorUsername, parsed.text, parsed.dueAt);
+        return;
+      }
     }
 
     // Debug commands (owner only)
