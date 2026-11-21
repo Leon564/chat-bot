@@ -53,12 +53,12 @@ describe('PromptBuilderService — bloque de stickers', () => {
     const out = builder.build({ ...base, stickers: { list: 'Pepe: Pepe hacker', requested: false } });
     expect(out).toContain('STICKERS DEL CHAT');
     expect(out).toContain('Pepe: Pepe hacker');
-    expect(out).toContain('Es opcional');
+    expect(out).toContain('STICKER AHORA: es opcional');
   });
 
   it('pedido: le exige mandar uno', () => {
     const out = builder.build({ ...base, stickers: { list: 'Pepe: Pepe hacker', requested: true } });
     expect(out).toContain('Nico te pidió un sticker');
-    expect(out).not.toContain('Es opcional');
+    expect(out).not.toContain('es opcional');
   });
 });

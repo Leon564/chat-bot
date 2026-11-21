@@ -152,13 +152,17 @@ describe('PromptBuilderService', () => {
       expect(salida).toContain('AHORA TE ESCRIBE: Nico');
     });
 
-    it('lo variable (instrucciones de sala, stickers) va después de lo fijo', () => {
+    it('lo variable (instrucciones de sala, regla del sticker) va después de lo fijo; la lista de stickers, al final de lo fijo', () => {
       const salida = service.build(
         baseInput({ roomInstructions: ['Respondé con colores.'], stickers: { list: 'Varios: Gato', requested: false } }),
       );
       const fixedEnd = salida.indexOf('CONVERSACIÓN:');
       expect(salida.indexOf('INSTRUCCIONES DE LA SALA')).toBeGreaterThan(fixedEnd);
-      expect(salida.indexOf('STICKERS DEL CHAT')).toBeGreaterThan(salida.indexOf('INSTRUCCIONES DE LA SALA'));
+      expect(salida.indexOf('STICKERS DEL CHAT')).toBeLessThan(salida.indexOf('INSTRUCCIONES DE LA SALA'));
+      expect(salida.indexOf('STICKER AHORA')).toBeGreaterThan(salida.indexOf('INSTRUCCIONES DE LA SALA'));
+      // La lista no lleva el nombre de quien escribe: se cachea igual para todos.
+      const lista = salida.slice(salida.indexOf('STICKERS DEL CHAT'), salida.indexOf('INSTRUCCIONES DE LA SALA'));
+      expect(lista).not.toContain('Nico');
     });
 
     it('sin el bloque MUSIC, la línea de música sale una sola vez, en la parte variable', () => {

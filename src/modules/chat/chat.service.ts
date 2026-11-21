@@ -503,13 +503,16 @@ export class ChatService {
           // entrega y sólo consume el cupo del AUTOR hasta que caduque.
           if (
             botName &&
-            ChatService.normalizeAuthorName(errand.forUser) === ChatService.normalizeAuthorName(botName)
+            ChatService.normalizeAuthorName(errand.forUser.replace(/^<?@/, '').replace(/>$/, '')) === ChatService.normalizeAuthorName(botName)
           ) {
             continue;
           }
           const { text, secret } = ChatService.parseErrandText(errand.text);
+          // "@Victoria" / "<@Victoria>" → "Victoria": el modelo copia la
+          // mención tal como la vio y el grafo guarda el nombre pelado.
+          const forUser = errand.forUser.replace(/^<?@/, '').replace(/>$/, '').trim();
           const result = await this.errandService
-            .create(username ?? '', errand.forUser, text, { secret })
+            .create(username ?? '', forUser, text, { secret })
             .catch(() => 'invalid' as const);
           log.info(`📨 Recado ${secret ? 'secreto ' : ''}de ${username} para ${errand.forUser} → ${result}`);
           const notice = ChatService.errandNotice(result, errand.forUser);

@@ -871,6 +871,15 @@ describe('ChatService — instrumentación de tokens', () => {
       expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video', { secret: false });
     });
 
+    it('el destinatario llega sin @ ni <@ > aunque el modelo copie la mención', async () => {
+      mockCompletion('Shhh, entendido. SAVE_ERRAND(@Victoria949H, SECRETO: [sticker: Gato llorando])');
+
+      const out = await service.chat('bot cuando victoria escriba mandale este sticker', 'aria', 'leon');
+
+      expect(out).toBe('Shhh, entendido.');
+      expect(errands.create).toHaveBeenCalledWith('leon', 'Victoria949H', '[sticker: Gato llorando]', { secret: true });
+    });
+
     it('SECRETO: al principio marca el recado como secreto y se saca del texto', async () => {
       mockCompletion('Jaja dale, me hago el tonto. SAVE_ERRAND(lyna, SECRETO: decile que su gato se escapó)');
 

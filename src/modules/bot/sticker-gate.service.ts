@@ -42,7 +42,7 @@ export class StickerGateService {
     if (StickerGateService.isExplicitRequest(content)) return 'requested';
     const chance = this.configService.get<number>('bot.stickerChance') ?? 0;
     if (chance <= 0) return 'none';
-    const cooldownMs = (this.configService.get<number>('bot.stickerCooldownMinutes') ?? 5) * 60_000;
+    const cooldownMs = (this.configService.get<number>('bot.stickerCooldownMinutes') ?? 2) * 60_000;
     if (this.now() - this.lastSentAt < cooldownMs) return 'none';
     return this.random() < chance ? 'optional' : 'none';
   }

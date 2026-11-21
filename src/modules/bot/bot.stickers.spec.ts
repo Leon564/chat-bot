@@ -109,17 +109,17 @@ describe('BotService — stickers', () => {
     });
   });
 
-  it('manda el texto y DESPUÉS el sticker, y consume el cooldown', async () => {
+  it('manda el sticker en el MISMO mensaje que el texto, y consume el cooldown', async () => {
     const { send, events, gate } = await build('optional', 'jaja pobre {{sticker:gato LLORANDO}}');
     await send('bot se me cayó el helado');
-    expect(events).toEqual(['text:<@Nico> jaja pobre', 'sticker:stk_gato1']);
+    expect(events).toEqual(['text:<@Nico> jaja pobre :stk_gato1:']);
     expect(gate.markSent).toHaveBeenCalledTimes(1);
   });
 
-  it('una respuesta que es sólo el sticker no manda texto vacío', async () => {
+  it('una respuesta que es sólo el sticker sale como un mensaje con el sticker', async () => {
     const { send, events } = await build('requested', '{{sticker:Pepe hacker}}');
     await send('bot un sticker');
-    expect(events).toEqual(['sticker:stk_pepe1']);
+    expect(events).toEqual(['text:<@Nico> :stk_pepe1:']);
   });
 
   it('un nombre que no existe no manda sticker ni consume el cooldown', async () => {

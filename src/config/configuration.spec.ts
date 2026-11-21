@@ -51,16 +51,20 @@ describe('configuration — bot.sharedContext', () => {
     else process.env.SHARED_CONTEXT = ORIGINAL_ENV;
   });
 
-  it('está apagado cuando la variable no está seteada', () => {
+  it('está encendido cuando la variable no está seteada (modo por defecto)', () => {
     delete process.env.SHARED_CONTEXT;
-    expect(configuration().bot.sharedContext).toBe(false);
+    expect(configuration().bot.sharedContext).toBe(true);
   });
 
-  it("se enciende SÓLO con el literal 'true'", () => {
+  it("se apaga SÓLO con el literal 'false'", () => {
+    process.env.SHARED_CONTEXT = 'false';
+    expect(configuration().bot.sharedContext).toBe(false);
+    process.env.SHARED_CONTEXT = ' FALSE ';
+    expect(configuration().bot.sharedContext).toBe(false);
     process.env.SHARED_CONTEXT = 'true';
     expect(configuration().bot.sharedContext).toBe(true);
-    process.env.SHARED_CONTEXT = '1';
-    expect(configuration().bot.sharedContext).toBe(false);
+    process.env.SHARED_CONTEXT = '0';
+    expect(configuration().bot.sharedContext).toBe(true);
   });
 });
 
@@ -114,11 +118,11 @@ describe('configuration — stickers', () => {
     else process.env.STICKER_COOLDOWN_MINUTES = ORIGINAL.cooldown;
   });
 
-  it('usa 15% y 5 minutos por defecto', () => {
+  it('usa 35% y 2 minutos por defecto', () => {
     delete process.env.STICKER_CHANCE;
     delete process.env.STICKER_COOLDOWN_MINUTES;
-    expect(configuration().bot.stickerChance).toBe(0.15);
-    expect(configuration().bot.stickerCooldownMinutes).toBe(5);
+    expect(configuration().bot.stickerChance).toBe(0.35);
+    expect(configuration().bot.stickerCooldownMinutes).toBe(2);
   });
 
   it('acepta decimales y recorta la probabilidad a 0..1', () => {
@@ -133,8 +137,8 @@ describe('configuration — stickers', () => {
   it('un valor no numérico cae al default', () => {
     process.env.STICKER_CHANCE = 'mucho';
     process.env.STICKER_COOLDOWN_MINUTES = 'abc';
-    expect(configuration().bot.stickerChance).toBe(0.15);
-    expect(configuration().bot.stickerCooldownMinutes).toBe(5);
+    expect(configuration().bot.stickerChance).toBe(0.35);
+    expect(configuration().bot.stickerCooldownMinutes).toBe(2);
   });
 
   it('acepta 0 en ambas (sin espontáneos / sin cooldown)', () => {
