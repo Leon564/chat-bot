@@ -9,7 +9,8 @@ export type PromptBlock =
   | 'IDENTIDAD'
   | 'RESUMEN'
   | 'ONLINE'
-  | 'SAVE_FACT';
+  | 'SAVE_FACT'
+  | 'ERRAND';
 
 export const ALL_BLOCKS: PromptBlock[] = [
   'PERSONA',
@@ -20,6 +21,7 @@ export const ALL_BLOCKS: PromptBlock[] = [
   'RESUMEN',
   'ONLINE',
   'SAVE_FACT',
+  'ERRAND',
 ];
 
 /**
@@ -143,7 +145,8 @@ export class PromptBuilderService {
     if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(fixed));
     const critico = this.buildCritico(input.blocks);
     const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(fixed) : '';
-    const criticoSection = [critico, saveFact].filter((s) => s.length > 0).join('\n\n');
+    const errand = input.blocks.includes('ERRAND') && input.useMemory ? this.blockErrand(fixed) : '';
+    const criticoSection = [critico, saveFact, errand].filter((s) => s.length > 0).join('\n\n');
     if (criticoSection.length > 0) sections.push(criticoSection);
 
     // 3. Variable: al final, para no romper el prefijo de arriba.
@@ -363,6 +366,29 @@ ${items}
 - Confirmá en tu respuesta, con una frase corta, que lo vas a hacer siempre.`;
   }
 
+  /**
+   * Recados para cuando otra persona escriba. Bloque propio del router (antes
+   * vivía dentro de SAVE_FACT, que sólo entra con "me gusta / soy / tengo…",
+   * así que "cuando lyna te hable recordale…" nunca llegaba con la
+   * instrucción) y sin depender de CROSS_USER_CONTEXT.
+   *
+   * `SECRETO:` al principio del texto marca el recado como propio del bot
+   * (bromas, "decile X sin decir que fui yo"): se entrega sin nombrar al
+   * autor. Va dentro del texto y no como verbo aparte para no tocar los
+   * regex de extracción, que ya cuestan caro de mantener (ver ResponseVerbs).
+   */
+  private blockErrand(input: PromptInput): string {
+    const botName = input.botName || 'vos, el bot';
+    return `RECADOS PARA OTRA PERSONA:
+Si ${input.username} te pide que, cuando otra persona escriba o aparezca, le digas o le recuerdes algo, agregá al final de tu respuesta:
+SAVE_ERRAND(usuario, texto)
+- Recordatorio o mensaje normal (vas a decir de quién viene): "cuando lyna te hable recordale que suba el video" → SAVE_ERRAND(lyna, que suba el video)
+- Si es una broma, una sorpresa, o te piden que lo digas como si fuera tuyo / sin decir quién lo mandó, empezá el texto con SECRETO: y escribí lo que le vas a decir: "le vamos a hacer una broma a kei: cuando te escriba decile que su waifu lo engañó" → SAVE_ERRAND(kei, SECRETO: decile que su waifu lo engañó)
+- El recado se entrega solo, la próxima vez que esa persona escriba cualquier cosa. Confirmá con una frase corta que se lo vas a decir; si es secreto, seguile el juego y no lo arruines.
+- El destinatario tiene que ser alguien que ya escribió en esta sala, y nunca vos mismo (${botName}). Un SAVE_ERRAND por destinatario.
+- NO lo uses para algo que querés decirle ahora a alguien que ya está hablando: eso se lo decís directamente.`;
+  }
+
   private blockSaveFact(input: PromptInput): string {
     if (!input.useMemory) return '';
 
@@ -391,12 +417,7 @@ Ejemplo: "a lyna le encanta Berserk" → SAVE_FACT_ABOUT(lyna, likes, Berserk)
 Las tres relaciones válidas son las mismas de arriba (likes, dislikes, asked_about).
 Usá el nombre tal como aparece en el chat. Si no sabés de quién hablan, no lo emitas.
 El usuario tiene que ser alguien que YA escribió en esta sala: si es alguien de afuera, un personaje o un nombre inventado, no lo emitas.
-Nunca sobre vos mismo (${resolvedBotName}): no emitas SAVE_FACT_ABOUT con tu propio nombre.
-
-Si ${input.username} te pide dejarle un mensaje a otra persona para cuando aparezca, usá:
-SAVE_ERRAND(usuario, texto del recado)
-Ejemplo: "cuando lyna te hable recordale que suba el video" → SAVE_ERRAND(lyna, que suba el video)
-Mismas dos reglas para el destinatario: tiene que ser alguien que ya escribió en esta sala, y nunca podés ser vos mismo (${resolvedBotName}).`
+Nunca sobre vos mismo (${resolvedBotName}): no emitas SAVE_FACT_ABOUT con tu propio nombre.`
       : '';
 
     return `SISTEMA DE MEMORIA:

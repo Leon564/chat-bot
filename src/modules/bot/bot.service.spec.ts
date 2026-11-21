@@ -1711,15 +1711,15 @@ describe('entrega de recados', () => {
     expect(sent.join(' ')).toContain('No hay nadie conectado');
   });
 
-  it('con el flag apagado ni siquiera consulta recados', async () => {
+  it('ya no depende de CROSS_USER_CONTEXT: con el flag apagado también entrega', async () => {
     const { service, errands } = await buildBotService({
       crossContext: { isEnabled: () => false },
-      errands: { claimNext: jest.fn() },
+      errands: { claimNext: jest.fn().mockResolvedValue(null) },
     });
 
     await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
 
-    expect(errands.claimNext).not.toHaveBeenCalled();
+    expect(errands.claimNext).toHaveBeenCalledWith('lyna');
   });
 
   it('no consume el cupo del destinatario', async () => {
@@ -1770,6 +1770,23 @@ describe('entrega de recados', () => {
 
     expect(sent.join(' ')).toContain('subí el video');
     expect(sent.join(' ')).toContain('leon');
+  });
+
+  it('un recado secreto se entrega sin nombrar al autor (también en el texto fijo)', async () => {
+    const deliverErrand = jest.fn().mockResolvedValue('');
+    const { service, sent } = await buildBotService({
+      errands: {
+        claimNext: jest.fn().mockResolvedValue({ fromLabel: 'leon', text: 'tu gato se escapó', secret: true }),
+      },
+      chat: { deliverErrand },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hola gente', authorUsername: 'lyna' } as any);
+
+    expect(deliverErrand).toHaveBeenCalledWith(expect.any(String), 'lyna', 'leon', 'tu gato se escapó', true);
+    expect(sent.join(' ')).toContain('tu gato se escapó');
+    expect(sent.join(' ')).not.toContain('leon');
+    expect(sent.join(' ')).not.toContain('te dejó dicho');
   });
 
   it('no entrega recados a un autor con role bot', async () => {

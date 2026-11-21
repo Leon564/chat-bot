@@ -40,6 +40,7 @@ export interface SentErrand {
   forUser: string;
   text: string;
   expiresAt: Date;
+  secret: boolean;
 }
 
 export type CreateErrandResult =
@@ -151,7 +152,12 @@ export class ErrandService {
     return run;
   }
 
-  async create(fromUser: string, forUser: string, text: string): Promise<CreateErrandResult> {
+  async create(
+    fromUser: string,
+    forUser: string,
+    text: string,
+    opts: { secret?: boolean } = {},
+  ): Promise<CreateErrandResult> {
     try {
       // Revisión final de rama (CRITICAL): el texto de un recado NO se
       // sanitizaba en ningún punto del camino. El spec (§3) pide "las mismas
@@ -190,7 +196,7 @@ export class ErrandService {
       if (author.key === target.key) return this.reject('invalid', fromUser, forUser);
 
       // Sección crítica serializada — ver el comentario de `queue` arriba.
-      const result = await this.runExclusive(() => this.createLocked(author, target, clean));
+      const result = await this.runExclusive(() => this.createLocked(author, target, clean, opts.secret === true));
       if (result !== 'ok') this.reject(result, fromUser, forUser);
       return result;
     } catch (err) {
@@ -204,6 +210,7 @@ export class ErrandService {
     author: GraphNodeDocument,
     target: GraphNodeDocument,
     clean: string,
+    secret: boolean,
   ): Promise<CreateErrandResult> {
     const now = new Date();
     const pendingFilter = { deliveredAt: null, expiresAt: { $gt: now } };
@@ -222,6 +229,7 @@ export class ErrandService {
       text: clean,
       expiresAt: new Date(now.getTime() + ERRAND_TTL_DAYS * DAY_MS),
       deliveredAt: null,
+      secret,
     });
     return 'ok';
   }
@@ -268,7 +276,7 @@ export class ErrandService {
    */
   async listSent(fromUser: string): Promise<SentErrand[]> {
     const rows = await this.sentQuery(fromUser);
-    return rows.map((r) => ({ forUser: r.forUser, text: r.text, expiresAt: r.expiresAt }));
+    return rows.map((r) => ({ forUser: r.forUser, text: r.text, expiresAt: r.expiresAt, secret: r.secret === true }));
   }
 
   /**
@@ -285,7 +293,10 @@ export class ErrandService {
     const target = rows[position - 1];
     const res = await this.errandModel.deleteOne({ _id: target._id, deliveredAt: null }).exec();
     if (res.deletedCount !== 1) return { ok: false, reason: 'gone' };
-    return { ok: true, errand: { forUser: target.forUser, text: target.text, expiresAt: target.expiresAt } };
+    return {
+      ok: true,
+      errand: { forUser: target.forUser, text: target.text, expiresAt: target.expiresAt, secret: target.secret === true },
+    };
   }
 
   /**
@@ -313,7 +324,7 @@ export class ErrandService {
       .exec();
   }
 
-  async claimNext(forUser: string): Promise<{ fromLabel: string; text: string } | null> {
+  async claimNext(forUser: string): Promise<{ fromLabel: string; text: string; secret: boolean } | null> {
     try {
       const key = this.graph.normalizeUserKey(forUser);
       if (!key) return null;
@@ -332,7 +343,7 @@ export class ErrandService {
         )
         .exec();
 
-      return doc ? { fromLabel: doc.fromLabel, text: doc.text } : null;
+      return doc ? { fromLabel: doc.fromLabel, text: doc.text, secret: doc.secret === true } : null;
     } catch (err) {
       this.logger.warn(`No se pudo leer recados de ${forUser}: ${(err as Error)?.message}`);
       return null;

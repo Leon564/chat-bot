@@ -31,6 +31,24 @@ export class LoggingService {
     return rows.map((r) => ({ user: r.user, message: r.message }));
   }
 
+  /**
+   * Los últimos `limit` mensajes de la sala dentro de los últimos `minutes`,
+   * del más viejo al más nuevo. Alimenta el contexto de sala del modelo.
+   * Ojo: `!resumen` vacía este log, así que justo después el bot arranca sin
+   * contexto de sala hasta que se vuelva a hablar.
+   */
+  async getRecent(limit: number, minutes: number): Promise<{ user: string; message: string; at: Date }[]> {
+    if (limit <= 0 || minutes <= 0) return [];
+    const since = new Date(Date.now() - minutes * 60_000);
+    const rows = await this.messageLogModel
+      .find({ createdAt: { $gte: since } })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit)
+      .lean()
+      .exec();
+    return rows.reverse().map((r: any) => ({ user: r.user, message: r.message, at: r.createdAt }));
+  }
+
   async saveLog(user: string, message: string): Promise<void> {
     const cleanUser = this.utilsService.cleanHtmlFromMessage(user);
     const cleanMessage = this.utilsService.cleanHtmlFromMessage(message);

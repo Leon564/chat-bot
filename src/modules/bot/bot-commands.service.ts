@@ -484,7 +484,8 @@ export class BotCommandsService {
         }
         const now = Date.now();
         const lines = sent.map(
-          (e, i) => `${i + 1}. Para ${e.forUser}: "${e.text}" (vence en ${formatRemaining(e.expiresAt.getTime() - now)})`,
+          (e, i) =>
+            `${i + 1}. ${e.secret ? '🤫 ' : ''}Para ${e.forUser}: "${e.text}" (vence en ${formatRemaining(e.expiresAt.getTime() - now)})`,
         );
         const message = `📨 Tus recados pendientes:\n${lines.join('\n')}\nPara cancelar uno: !cancelarrecado <n>`;
         const parts = this.splitForChat(message, `@${authorUsername} `.length);

@@ -1152,13 +1152,13 @@ export class BotService implements OnModuleInit {
     authorUsername: string,
     botUsername: string,
   ): Promise<boolean> {
-    if (!this.crossContextSettings.isEnabled()) return false;
-
+    // Los recados ya no dependen de CROSS_USER_CONTEXT: se crean con la
+    // memoria activa y se entregan siempre que haya uno pendiente.
     const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
     if (!errand) return false;
 
     const drafted = await this.chatService
-      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
+      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text, errand.secret)
       .catch(() => '');
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
@@ -1170,7 +1170,7 @@ export class BotService implements OnModuleInit {
     // modelo — nunca se publica una mención pelada.
     const message =
       BotService.stripIntentTokens(drafted) ||
-      BotService.stripIntentTokens(`${errand.fromLabel} te dejó dicho: ${errand.text}`);
+      BotService.stripIntentTokens(errand.secret ? errand.text : `${errand.fromLabel} te dejó dicho: ${errand.text}`);
 
     // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
     // `handleChatResponse` y no por `sendBotMessage` directo. El camino

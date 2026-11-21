@@ -245,6 +245,30 @@ describe('IntentRouterService', () => {
     });
   });
 
+  describe('ERRAND (recados para cuando otra persona escriba)', () => {
+    it.each([
+      'bot cuando lyna te escriba recordale que suba el video',
+      'bot, cuando veas a lyna recuérdale lo del viernes',
+      'le vamos a hacer una broma a kei, bot',
+      'bot apenas aparezca kei decile que lo extrañamos',
+      'bot dejale dicho a lyna que ya llegué',
+      'bot si kei se conecta avisale que hay junta',
+    ])('se incluye para "%s"', async (msg) => {
+      expect(await rutear(msg)).toContain('ERRAND');
+    });
+
+    it.each(['bot qué opinás de Frieren?', 'bot recomendame un manga', 'hola'])(
+      'no se incluye para "%s"',
+      async (msg) => {
+        expect(await rutear(msg)).not.toContain('ERRAND');
+      },
+    );
+
+    it('nunca se incluye con useMemory desactivado', async () => {
+      expect(await rutear('bot cuando lyna escriba recordale algo', false)).not.toContain('ERRAND');
+    });
+  });
+
   describe('saludo simple — el caso que más ahorra', () => {
     it.each(['hola', 'hey bot', 'buenas', 'qué tal'])(
       'para "%s" sólo deja PERSONA y TEMPORAL',
