@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BotService } from './bot.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
+import { ProactiveService } from './proactive.service';
 import { MusicQuotaService } from './music-quota.service';
 import { MusicIntentService } from './music-intent.service';
 import { BotOutputService } from './bot-output.service';
@@ -25,6 +26,7 @@ import { CrossContextModule } from '../../common/settings/cross-context.module';
     StickerGateService,
     MusicQuotaService,
     MusicIntentService,
+    ProactiveService,
   ],
   exports: [BotService],
 })

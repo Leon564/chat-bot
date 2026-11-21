@@ -51,6 +51,27 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 - [x] **23. Instrucciones de sala con vencimiento** (`!instruccion 2h Respondé con colores`; acepta `m`/`min`, `h`/`horas`, `d`/`días`, de 1 minuto a 30 días). Se filtran al leer y además hay índice TTL. `!instrucciones` muestra cuánto falta. Las que crea el modelo (SAVE_INSTRUCTION) siguen siendo permanentes.
 - [x] **24. Reacciones**: con `reactionsEnabled` encendido el prompt ofrece `REACT(emoji)`; el bot puede reaccionar además de responder, o sólo reaccionar. El emoji se valida (un pictograma, sin letras ni números) porque el gateway acepta cualquier string.
 
+## 🗣️ Uno más del chat (2026-11-21)
+
+- [x] **25. `!resumen` ya no vacía el log.** Antes, cada resumen borraba `messages_log` y el bot se quedaba sin contexto de sala. Ahora el evento `Resumen` marca hasta dónde se resumió y el próximo arranca desde ahí (`LoggingService.getLastMessages(since)`).
+- [x] **26. El bot ve sus propias respuestas.** `BotService.logOwnMessage` guarda en el log lo que contestó (con `@destinatario`, sin tokens) y los recados que entrega; el contexto de sala las marca como "(vos)". Los stickers de la gente se guardan por nombre (`[sticker: …]`). El bot nunca es sujeto de un hecho del resumen.
+- [x] **27. Comentarios espontáneos.** Sin que lo nombren, con una charla viva (≥ 4 mensajes de ≥ 2 personas en 15 min), el bot puede meter un comentario corto: `PROACTIVE_CHANCE` (0.06 por mensaje, 0 apaga) y `PROACTIVE_COOLDOWN_MINUTES` (15, desde el último intento). El modelo puede pasar (`PASO`). Interruptor en caliente: `!proactivo on|off|reset|status` (admin).
+
+## 📋 Pendientes
+
+### Funciones nuevas
+- [ ] **28. Recordatorios.** "bot recordame en 2h que…" / "avisame a las 9 que…": un recado para uno mismo con hora (en memoria + Mongo para sobrevivir reinicios; hora de El Salvador).
+- [ ] **29. Encuestas con reacciones.** `!encuesta ¿Qué leemos? | Berserk | Vagabond`: publica las opciones con emojis, cuenta las reacciones (`reactionsState`) y anuncia el resultado al cerrar.
+- [ ] **30. Trivia de anime/manga.** El bot lanza una pregunta, el primero que acierta suma un punto; ranking semanal.
+- [ ] **31. `!resumen 2h` / `!resumen hoy`.** Resumen de un período en vez de "desde el último resumen" (el log ya no se vacía, pero se poda a 200 filas: para "hoy" haría falta un tope mayor o leer los mensajes del backend).
+
+### Mantenimiento
+- [ ] **32. % de caché en `!uso`.** Mostrar la proporción de tokens de entrada servidos desde caché (`prompt_cache_hit_tokens`) para confirmar el ahorro del orden del prompt (PR #22).
+- [ ] **33. Latencia del modelo.** Registrar cuánto tarda cada llamada en `bot_llm_usage` y mostrar p50/p95 en `!uso`.
+- [ ] **34. `!estado` (admin).** Conexión del socket, memoria del proceso, cola de música y si FileGarden / AniList responden.
+- [ ] **35. Tests de `UploadChainService`** y tipar los `any` de la parte de música.
+- [ ] **36. Migración a ESM + Nest 12 + TypeScript 6.** Grande y no urgente (ver 6b): saca las 3 moderadas de dev de `@nestjs/cli` 11.
+
 ## Notas de trabajo
 
 - **No correr el bot localmente para probar** (`node dist/main`, `npm run start:*`, ni `require('./dist/main.js')`): `.env` tiene credenciales reales y se conecta al chat en vivo como el bot de producción. Probar con `npx jest`.

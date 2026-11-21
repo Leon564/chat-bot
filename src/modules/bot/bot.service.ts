@@ -12,6 +12,7 @@ import { GraphService, Candidate, MAX_CANDIDATES, MIN_CANDIDATES } from '../grap
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
+import { ProactiveService } from './proactive.service';
 import { MusicQuotaService, MusicAdmission } from './music-quota.service';
 import { MusicIntentService } from './music-intent.service';
 import { BotOutputService } from './bot-output.service';
@@ -68,6 +69,8 @@ export class BotService implements OnModuleInit {
     @Optional() private readonly musicQuota?: MusicQuotaService,
     // Opcional igual: sin él, "reproduce X" sin nombrar al bot no se atiende.
     @Optional() private readonly musicIntent?: MusicIntentService,
+    // Opcional igual: sin él, el bot nunca comenta sin que lo nombren.
+    @Optional() private readonly proactive?: ProactiveService,
   ) {}
 
   async onModuleInit() {
@@ -112,7 +115,13 @@ export class BotService implements OnModuleInit {
 
     // El log alimenta el resumen, que sale al chat en público: sin formato y
     // con los spoilers tapados.
-    await this.loggingService.saveLog(authorUsername, bbcodeToPlain(content, 'hide'));
+    // Los stickers van por su nombre ("[sticker: Gato llorando]"): el log lo
+    // leen el resumen y el contexto de sala, y ":stk_x:" no le dice nada al
+    // modelo.
+    await this.loggingService.saveLog(
+      authorUsername,
+      bbcodeToPlain(this.stickerCatalog.describeContent(content, msg.type), 'hide'),
+    );
     // Alimenta el grafo con TODO el tráfico, no solo lo dirigido al bot —
     // por eso va acá y no después del filtro de menciones de abajo.
     // Fire-and-forget: la ingesta es best-effort y no debe demorar la
@@ -192,7 +201,12 @@ export class BotService implements OnModuleInit {
       !intentQuery &&
       !isOnlineReq &&
       !isVideoReq
-    ) return;
+    ) {
+      // No le hablaron: a lo sumo, un comentario espontáneo cada tanto.
+      // Sin await: no demora nada y sus fallos se tragan adentro.
+      void this.maybeChimeIn(content, botUsername).catch(() => {});
+      return;
+    }
 
     log.info(`📨 Mensaje de ${authorUsername}: "${content}"`);
 
@@ -291,6 +305,9 @@ export class BotService implements OnModuleInit {
     const withSticker = sticker && !/\{\{/.test(response);
     const outgoing = withSticker ? `${response} :${sticker.code}:`.trim() : response;
     if (outgoing) await this.handleChatResponse(outgoing, authorUsername, authorRole);
+    if (!response.includes('{{resumen}}')) {
+      this.logOwnMessage(botUsername, withSticker ? `${response} [sticker: ${sticker.name}]` : response, authorUsername);
+    }
     if (withSticker) {
       this.stickerGate.markSent();
       log.info(`🧩 Sticker enviado: ${sticker.name}`);
@@ -1085,9 +1102,10 @@ export class BotService implements OnModuleInit {
       if (resumen.text === ChatService.SUMMARY_PARSE_ERROR) {
         log.info('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
       } else {
+        // El evento marca hasta dónde se resumió: el próximo resumen arranca
+        // desde acá. El log NO se vacía (el bot lo usa como contexto de sala).
         await this.loggingService.saveEventsLog('Resumen', authorUsername);
-        const clearedCount = await this.loggingService.clearMessagesLog();
-        log.info(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+        log.info('✅ Resumen completado');
       }
     } catch (error) {
       log.error('❌ Error generating summary:', error);
@@ -1190,7 +1208,45 @@ export class BotService implements OnModuleInit {
     // del bot que no pasa por el mismo embudo. El prefijo de mención lo pone
     // `handleChatResponse` (`<@usuario>`), por eso `message` ya no lo trae.
     await this.handleChatResponse(message, authorUsername);
+    this.logOwnMessage(botUsername, sticker ? `${text} [sticker: ${sticker.name}]` : text, authorUsername);
     return true;
+  }
+
+  /**
+   * Comentario espontáneo como uno más del chat (ver `ProactiveService`).
+   * Orden de los filtros: primero los gratis (probabilidad, pausa, largo),
+   * después Mongo (¿charla viva?), y recién ahí el modelo, que igual puede
+   * pasar. Sale sin mención y queda en el log como cualquier respuesta.
+   */
+  private async maybeChimeIn(content: string, botUsername: string): Promise<void> {
+    if (!this.proactive?.shouldTry(content)) return;
+    const rows = await this.loggingService.getRecent(20, 15).catch(() => []);
+    if (!ProactiveService.isLively(rows, botUsername)) return;
+    this.proactive.markAttempt();
+    const text = await this.chatService.chatProactive(botUsername, rows).catch(() => '');
+    if (!text) {
+      log.info('🤐 Comentario espontáneo: el modelo pasó');
+      return;
+    }
+    for (const part of this.splitForChat(text, 0)) {
+      if (part.trim()) this.sendBotMessage(part.trim());
+    }
+    log.info(`🗣️ Comentario espontáneo: ${text}`);
+    this.logOwnMessage(botUsername, text);
+  }
+
+  /**
+   * Guarda en el log de la sala lo que dijo el bot, para que el contexto de
+   * sala y el resumen vean sus respuestas (antes sólo veían a la gente:
+   * "lyna: bot qué opinás de X" sin lo que el bot le contestó). Sólo texto
+   * de charla: sin tokens `{{…}}`, sin tarjetas de AniList ni el resumen.
+   * Fire-and-forget: un fallo de Mongo no puede afectar la respuesta.
+   */
+  private logOwnMessage(botUsername: string, text: string, toUser?: string): void {
+    const clean = bbcodeToPlain(BotService.stripIntentTokens(text ?? ''), 'hide').trim();
+    if (!clean || !botUsername) return;
+    const line = toUser ? `@${toUser} ${clean}` : clean;
+    void Promise.resolve(this.loggingService.saveLog?.(botUsername, line)).catch(() => {});
   }
 
   /**
