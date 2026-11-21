@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import fetch from 'node-fetch';
 
+/**
+ * Cuánto se espera a AniList (incluida la lectura del cuerpo). Antes no había
+ * tope: si la API se colgaba, el pedido quedaba esperando para siempre y el
+ * usuario nunca recibía ni la ficha ni un aviso.
+ */
+export const ANILIST_TIMEOUT_MS = 10_000;
+
 export type AniListKind = 'manga' | 'manhwa' | 'manhua' | 'anime';
 
 export interface AniListResult {
@@ -76,8 +83,13 @@ export class AniListService {
           Accept: 'application/json',
         },
         body: JSON.stringify({ query: QUERY, variables }),
+        signal: AbortSignal.timeout(ANILIST_TIMEOUT_MS) as any,
       });
     } catch (err) {
+      if (AniListService.isTimeout(err)) {
+        this.logger.warn(`AniList no respondió en ${ANILIST_TIMEOUT_MS / 1000}s`);
+        throw new Error('TIMEOUT');
+      }
       this.logger.warn(`AniList network error: ${(err as Error).message}`);
       throw new Error('NETWORK');
     }
@@ -90,10 +102,15 @@ export class AniListService {
       throw new Error(`HTTP_${res.status}`);
     }
 
-    const json = (await res.json()) as {
-      data?: { Media?: any };
-      errors?: { message: string; status?: number }[];
-    };
+    // El timeout también corta la lectura del cuerpo (un servidor que manda
+    // los headers y después se cuelga).
+    let json: { data?: { Media?: any }; errors?: { message: string; status?: number }[] };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch (err) {
+      if (AniListService.isTimeout(err)) throw new Error('TIMEOUT');
+      throw new Error('NETWORK');
+    }
 
     // AniList devuelve un error con status 404 dentro de `errors` cuando no
     // encuentra nada — no es un 4xx HTTP. Tratarlo como "sin resultado" en vez
@@ -109,6 +126,12 @@ export class AniListService {
     if (!media) return null;
 
     return this.toResult(kind, media);
+  }
+
+  /** node-fetch v2 rechaza con `AbortError` cuando vence la señal. */
+  private static isTimeout(err: unknown): boolean {
+    const name = (err as { name?: string })?.name ?? '';
+    return name === 'AbortError' || name === 'TimeoutError';
   }
 
   private buildVariables(kind: AniListKind, search: string): Record<string, any> {

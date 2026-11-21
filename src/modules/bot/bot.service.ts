@@ -165,7 +165,13 @@ export class BotService implements OnModuleInit {
     const addressesBot = isReplyToBot || containsBotWord(content) || containsExactBotName(content);
     const isMusicRequest =
       MusicService.isMusicRequest(content) && (/^\s*!music\s/i.test(content) || addressesBot);
-    const isOnlineReq = this.isOnlineUsersRequest(content);
+    // Igual que con la música: una pregunta que nombra el chat ("¿quién está en
+    // línea?", "¿cuántos hay conectados?") se atiende sin mención, pero una
+    // ambigua ("¿cuántas personas fueron al concierto?", "la gente activa del
+    // gym") sólo si le hablan al bot. Antes cualquiera de las dos publicaba la
+    // lista de conectados.
+    const onlineCandidate = this.isOnlineUsersRequest(content);
+    const isOnlineReq = onlineCandidate && (addressesBot || BotService.mentionsChatPresence(content));
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
@@ -678,6 +684,8 @@ export class BotService implements OnModuleInit {
       const text =
         code === 'RATE_LIMIT'
           ? `@${authorUsername} ⏱️ AniList me está limitando. Probá en un minuto.`
+          : code === 'TIMEOUT'
+            ? `@${authorUsername} ⌛ AniList está tardando demasiado. Probá de nuevo en un rato.`
           : code === 'NETWORK'
             ? `@${authorUsername} 📡 No pude alcanzar AniList. Intentalo de nuevo en un rato.`
             : `@${authorUsername} 😕 AniList no respondió bien esta vez.`;
@@ -1237,6 +1245,20 @@ export class BotService implements OnModuleInit {
    * imply listing or counting, and a guard rejects singular questions
    * targeted at a specific user.
    */
+  /**
+   * ¿El mensaje habla explícitamente de presencia en el chat? (online, en
+   * línea, conectado/s, "en el chat", "por aquí"). Es lo que separa "¿cuántos
+   * hay conectados?" de "¿cuántas personas fueron?".
+   */
+  static mentionsChatPresence(message: string): boolean {
+    const lower = (message ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return /(^|[^a-z])(online|en\s+linea|conectad[oa]s?|en\s+(el\s+)?chat|por\s+aqui|aqui)([^a-z]|$)/.test(lower) ||
+      /\b(who('?s|\s+is)\s+online|users\s+online|online\s+users)\b/.test(lower);
+  }
+
   private isOnlineUsersRequest(message: string): boolean {
     if (!message || typeof message !== 'string') return false;
     const lower = this.stripAccents(message.toLowerCase()); // strip accents so linea/línea both match
