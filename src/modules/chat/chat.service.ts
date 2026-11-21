@@ -170,6 +170,10 @@ export class ChatService {
    */
   private static readonly ACK_WITHOUT_TEXT = 'Listo 👍';
 
+  /** Respuesta cuando el modelo agotó `max_tokens` sin escribir nada visible. */
+  static readonly TOO_LONG_REPLY =
+    'Uf, eso es demasiado largo para mandarlo por el chat 😅 Pedime algo más corto o por partes.';
+
   // Los extractores viven en `ResponseVerbs`; se re-exponen acá porque eran
   // API pública de ChatService (tests y llamadores los usan así).
   static readonly extractStickerVerb = ResponseVerbs.extractStickerVerb;
@@ -401,7 +405,17 @@ export class ChatService {
       this.recordUsage('chat', response, username, intents, { latencyMs: Date.now() - startedAt });
 
       let content = response.choices[0].message.content || '';
-      log.info(`Respuesta de OpenAI: ${content}`);
+      const finishReason = response.choices[0].finish_reason;
+      log.info(`Respuesta de OpenAI${finishReason && finishReason !== 'stop' ? ` (finish_reason=${finishReason})` : ''}: ${content}`);
+
+      // Pedido que no entra en `max_tokens` (p. ej. "pasame el código del
+      // tetris"): el modelo se gasta todo el presupuesto (o en razonamiento,
+      // según el modelo detrás del alias) y vuelve con el contenido vacío.
+      // Sin esto el bot se queda callado y nadie sabe por qué.
+      if (!content.trim() && finishReason === 'length') {
+        log.warn(`⚠️ Respuesta vacía cortada por max_tokens (${maxTokens}) para ${username}`);
+        content = ChatService.TOO_LONG_REPLY;
+      }
       
       // Verificar si contiene token de resumen ANTES del procesamiento
       const containsResumenToken = content.includes('{{resumen}}');

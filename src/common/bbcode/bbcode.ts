@@ -186,6 +186,7 @@ function isInvalidPair(open: Extract<Token, { kind: 'open' }>, body: string): bo
 }
 
 const EMPTY_BBCODE_GLOBAL_RE = new RegExp(EMPTY_BBCODE_SRC, 'gi');
+const HTML_COLOR_TAG_RE = /<(\/)?\s*color\s*(?:=\s*"?([^>"\s]*)"?\s*)?>/gi;
 
 /**
  * Red de seguridad de todo lo que el bot manda al chat. Devuelve el texto con:
@@ -196,7 +197,15 @@ const EMPTY_BBCODE_GLOBAL_RE = new RegExp(EMPTY_BBCODE_SRC, 'gi');
  * Sólo toca los 12 de formato; adjuntos, `[youtube]`, etc. quedan igual.
  */
 export function sanitizeBotBbcode(text: string, disabled: ReadonlySet<string> = new Set()): string {
-  if (!text || (!text.includes('[') && !text.includes('||'))) return text ?? '';
+  if (!text) return text ?? '';
+  // El modelo a veces escribe el color al estilo HTML (`</color>` suelto al
+  // final, o `<color=#hex>…</color>`): el widget lo mostraría literal. Se pasa
+  // a BBCode para que el emparejado de abajo lo trate como cualquier tag (un
+  // cierre huérfano se quita, un par válido se pinta).
+  text = text.replace(HTML_COLOR_TAG_RE, (_m, slash: string, attr?: string) =>
+    slash ? '[/color]' : `[color${attr !== undefined ? `=${attr.trim()}` : ''}]`,
+  );
+  if (!text.includes('[') && !text.includes('||')) return text;
   const tokens = tokenize(text);
   const { pairs, orphan } = pairTokens(tokens);
 
