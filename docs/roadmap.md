@@ -55,7 +55,7 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 
 - [x] **25. `!resumen` ya no vacía el log.** Antes, cada resumen borraba `messages_log` y el bot se quedaba sin contexto de sala. Ahora el evento `Resumen` marca hasta dónde se resumió y el próximo arranca desde ahí (`LoggingService.getLastMessages(since)`).
 - [x] **26. El bot ve sus propias respuestas.** `BotService.logOwnMessage` guarda en el log lo que contestó (con `@destinatario`, sin tokens) y los recados que entrega; el contexto de sala las marca como "(vos)". Los stickers de la gente se guardan por nombre (`[sticker: …]`). El bot nunca es sujeto de un hecho del resumen.
-- [x] **27. Comentarios espontáneos.** Sin que lo nombren, con una charla viva (≥ 4 mensajes de ≥ 2 personas en 15 min), el bot puede meter un comentario corto: `PROACTIVE_CHANCE` (0.06 por mensaje, 0 apaga) y `PROACTIVE_COOLDOWN_MINUTES` (15, desde el último intento). El modelo puede pasar (`PASO`). Interruptor en caliente: `!proactivo on|off|reset|status` (admin).
+- [x] **27. Comentarios espontáneos.** Sin que lo nombren, con una charla viva (≥ 4 mensajes de ≥ 2 personas en 15 min), el bot puede meter un comentario corto: `PROACTIVE_CHANCE` (0.06 por mensaje, 0 apaga) y `PROACTIVE_COOLDOWN_MINUTES` (15, desde el último intento). El modelo puede pasar (`PASO`). Interruptor en caliente: `!proactivo on|off|reset|status|<n>%|pausa <min>` (admin).
 
 ## 📋 Pendientes
 

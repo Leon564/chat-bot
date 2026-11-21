@@ -2722,3 +2722,54 @@ describe('el bot como uno más del chat', () => {
     expect(proactive.markAttempt).not.toHaveBeenCalled();
   });
 });
+
+describe('!proactivo (porcentaje y pausa en caliente)', () => {
+  const build = async () => {
+    const proactive = new ProactiveService({
+      get: (k: string) => ({ 'bot.proactiveChance': 0.06, 'bot.proactiveCooldownMinutes': 15 })[k],
+    } as any);
+    const built = await buildBotService({ proactive: proactive as any });
+    const handle = (content: string, role = 'admin') =>
+      built.service['commands']['handleProactiveCommand'](content, 'leon', role);
+    return { ...built, proactive, handle };
+  };
+
+  it.each([
+    ['!proactivo 15', 0.15],
+    ['!proactivo 15%', 0.15],
+    ['!proactivo 2,5%', 0.025],
+  ])('"%s" cambia la probabilidad', async (cmd, chance) => {
+    const { handle, proactive, sent } = await build();
+    expect(await handle(cmd)).toBe(true);
+    expect(proactive.getInfo().chance).toBeCloseTo(chance);
+    expect(proactive.isEnabled()).toBe(true);
+    expect(sent.join(' ')).toContain('por mensaje');
+  });
+
+  it('"!proactivo 0" lo apaga y más de 100 se rechaza', async () => {
+    const { handle, proactive, sent } = await build();
+    await handle('!proactivo 0');
+    expect(proactive.isEnabled()).toBe(false);
+    await handle('!proactivo 150%');
+    expect(sent.join(' ')).toContain('de 0 a 100');
+    expect(proactive.getInfo().chance).toBe(0);
+  });
+
+  it('"!proactivo pausa 5" cambia la pausa y reset vuelve al .env', async () => {
+    const { handle, proactive, sent } = await build();
+    await handle('!proactivo pausa 5');
+    expect(proactive.getInfo().cooldownMinutes).toBe(5);
+    await handle('!proactivo pausa 0');
+    expect(sent.join(' ')).toContain('Uso: !proactivo pausa');
+    await handle('!proactivo 30%');
+    await handle('!proactivo reset');
+    expect(proactive.getInfo()).toEqual({ enabled: true, source: 'env', chance: 0.06, cooldownMinutes: 15 });
+  });
+
+  it('sólo admins', async () => {
+    const { handle, proactive, sent } = await build();
+    await handle('!proactivo 50%', 'user');
+    expect(proactive.getInfo().chance).toBe(0.06);
+    expect(sent.join(' ')).toContain('Solo admins');
+  });
+});
