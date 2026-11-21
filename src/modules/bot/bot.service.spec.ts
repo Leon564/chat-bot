@@ -4,6 +4,8 @@ import { BotOutputService } from './bot-output.service';
 import { BotCommandsService } from './bot-commands.service';
 import { BotService, formatRemaining } from './bot.service';
 import { ProactiveService } from './proactive.service';
+import { PollService } from './poll.service';
+import { ReminderService } from '../chat/reminder.service';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
@@ -1498,6 +1500,8 @@ const buildBotService = async (
     stickers?: Record<string, unknown>;
     proactive?: Record<string, unknown>;
     logging?: Record<string, jest.Mock>;
+    reminders?: Record<string, unknown>;
+    polls?: Record<string, unknown>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1599,6 +1603,8 @@ const buildBotService = async (
         ? [{ provide: RoomInstructionsService, useValue: overrides.roomInstructions }]
         : []),
       ...(overrides.proactive ? [{ provide: ProactiveService, useValue: overrides.proactive }] : []),
+      ...(overrides.reminders ? [{ provide: ReminderService, useValue: overrides.reminders }] : []),
+      ...(overrides.polls ? [{ provide: PollService, useValue: overrides.polls }] : []),
     ],
   }).compile();
 
@@ -2489,6 +2495,27 @@ describe('!uso', () => {
     expect(out).toContain('15.000 desde caché');
   });
 
+  it('muestra el % de la entrada servida desde caché y el ahorro', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, cachedPromptTokens: 15000 }) };
+    const { service, sent } = await buildBotService({
+      usage,
+      config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4, 'bot.llmPriceCachedInputPerM': 0.02 },
+    });
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
+    // 15000 de 20000 = 75 %; ahorro (1 - 0.02) * 15000 / 1M = 0.0147
+    const out = sent.join(' ');
+    expect(out).toContain('Caché: 75 % de la entrada');
+    expect(out).toContain('ahorro estimado US$ 0.0147');
+  });
+
+  it('sin precios igual muestra el % de caché (0 % si no hubo)', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen }) };
+    const { service, sent } = await buildBotService({ usage });
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('Caché: 0 % de la entrada');
+    expect(sent.join(' ')).not.toContain('ahorro');
+  });
+
   it('sin precio de caché, la entrada cacheada se cobra como entrada normal', async () => {
     const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, cachedPromptTokens: 15000 }) };
     const { service, sent } = await buildBotService({
@@ -2771,5 +2798,126 @@ describe('!proactivo (porcentaje y pausa en caliente)', () => {
     await handle('!proactivo 50%', 'user');
     expect(proactive.getInfo().chance).toBe(0.06);
     expect(sent.join(' ')).toContain('Solo admins');
+  });
+});
+
+describe('recordatorios y encuestas desde el chat', () => {
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+
+  it('"bot recordame en 2 horas que…" crea el recordatorio sin llamar al modelo', async () => {
+    const reminders = { create: jest.fn().mockResolvedValue('ok'), claimDue: jest.fn().mockResolvedValue([]) };
+    const chatFn = jest.fn();
+    const { service, sent } = await buildBotService({ reminders, chat: { chat: chatFn } });
+
+    await service['handleNewChatMessage']({ content: 'bot recordame en 2 horas que saque la ropa', authorUsername: 'kei' } as any);
+    await dejarCorrer();
+
+    expect(reminders.create).toHaveBeenCalledWith('kei', 'saque la ropa', expect.any(Date), expect.any(Date));
+    expect(chatFn).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('te lo recuerdo');
+  });
+
+  it('si la hora no se entiende, sigue al modelo', async () => {
+    const reminders = { create: jest.fn(), claimDue: jest.fn().mockResolvedValue([]) };
+    const chatFn = jest.fn().mockResolvedValue('¿para cuándo?');
+    const { service } = await buildBotService({ reminders, chat: { chat: chatFn } });
+
+    await service['handleNewChatMessage']({ content: 'bot recordame algo', authorUsername: 'kei' } as any);
+    await dejarCorrer();
+
+    expect(reminders.create).not.toHaveBeenCalled();
+    expect(chatFn).toHaveBeenCalled();
+  });
+
+  it('deliverDueReminders manda los vencidos con mención', async () => {
+    const now = new Date('2026-11-21T05:00:00Z');
+    const reminders = {
+      claimDue: jest.fn().mockResolvedValue([
+        { username: 'kei', text: 'saque la ropa', dueAt: new Date('2026-11-21T05:00:00Z') },
+        { username: 'lyna', text: 'pagar', dueAt: new Date('2026-11-21T03:00:00Z') },
+      ]),
+    };
+    const { service, sent } = await buildBotService({ reminders });
+
+    await service.deliverDueReminders(now);
+
+    expect(sent[0]).toContain('⏰ <@kei> te recuerdo: saque la ropa');
+    expect(sent[0]).not.toContain('demora');
+    expect(sent[1]).toContain('<@lyna> te recuerdo: pagar (perdón la demora)');
+  });
+
+  it('!recordar 30m / !recordatorios / !cancelarrecordatorio', async () => {
+    const reminders = {
+      create: jest.fn().mockResolvedValue('ok'),
+      listPending: jest.fn().mockResolvedValue([{ text: 'sacar la ropa', dueAt: new Date(Date.now() + 30 * 60_000 + 5_000) }]),
+      cancel: jest.fn().mockResolvedValue({ text: 'sacar la ropa', dueAt: new Date() }),
+    };
+    const { service, sent } = await buildBotService({ reminders });
+    const handle = (c: string) => service['commands'].handle(c, 'kei', 'user');
+
+    await handle('!recordar 30m sacar la ropa');
+    expect(reminders.create).toHaveBeenCalledWith('kei', 'sacar la ropa', expect.any(Date), expect.any(Date));
+    await handle('!recordatorios');
+    expect(sent.join(' ')).toContain('1. en 30 min: sacar la ropa');
+    await handle('!cancelarrecordatorio 1');
+    expect(reminders.cancel).toHaveBeenCalledWith('kei', 1);
+    expect(sent.join(' ')).toContain('ya no te recuerdo');
+    await handle('!recordar');
+    expect(sent.join(' ')).toContain('Uso: !recordar');
+  });
+
+  describe('!encuesta', () => {
+    const build = async (overrides: { reactions?: boolean } = {}) => {
+      const polls = new PollService();
+      const toggleReaction = jest.fn();
+      const built = await buildBotService({
+        polls: polls as any,
+        socket: {
+          reactionsEnabled: overrides.reactions ?? true,
+          toggleReaction,
+          sendMessageAndAwaitId: jest.fn().mockResolvedValue('msg-1'),
+        },
+      });
+      const handle = (c: string, role = 'user', user = 'leon') => built.service['commands'].handle(c, user, role);
+      return { ...built, polls, toggleReaction, handle };
+    };
+
+    it('publica la encuesta, pone los botones y arranca', async () => {
+      const { handle, polls, toggleReaction } = await build();
+      await handle('!encuesta ¿Qué leemos? | Berserk | Vagabond');
+      expect(toggleReaction).toHaveBeenCalledWith('msg-1', '1️⃣');
+      expect(toggleReaction).toHaveBeenCalledWith('msg-1', '2️⃣');
+      expect(polls.current).toEqual(expect.objectContaining({ messageId: 'msg-1', author: 'leon', options: ['Berserk', 'Vagabond'] }));
+      polls.close();
+    });
+
+    it('cuenta los votos que llegan por el socket y cierra con el resultado', async () => {
+      const { handle, polls, sent } = await build();
+      await handle('!encuesta ¿Qué leemos? | Berserk | Vagabond');
+      polls.onReactions('msg-1', [
+        { emoji: '1️⃣', usernames: ['Aria', 'kei'] },
+        { emoji: '2️⃣', usernames: ['Aria'] },
+      ]);
+      await handle('!encuesta cerrar');
+      expect(sent.join(' ')).toContain('Ganó Berserk');
+      expect(polls.current).toBeNull();
+    });
+
+    it('invitados no, sin reacciones no, y una a la vez', async () => {
+      const off = await build({ reactions: false });
+      await off.handle('!encuesta p | a | b');
+      expect(off.sent.join(' ')).toContain('reacciones están apagadas');
+
+      const { handle, sent, polls } = await build();
+      await handle('!encuesta p | a | b', 'guest');
+      expect(sent.join(' ')).toContain('usuarios registrados');
+      await handle('!encuesta p | a | b');
+      await handle('!encuesta otra | a | b', 'user', 'kei');
+      expect(sent.join(' ')).toContain('Ya hay una encuesta abierta');
+      await handle('!encuesta cerrar', 'user', 'kei');
+      expect(sent.join(' ')).toContain('Solo leon o el staff');
+      await handle('!encuesta cerrar', 'mod', 'kei');
+      expect(polls.current).toBeNull();
+    });
   });
 });

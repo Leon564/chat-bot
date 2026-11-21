@@ -67,6 +67,7 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   private jwt: string | null = null;
   private botUsername: string | null = null;
   private messageHandler: ((msg: ChatMessage) => void) | null = null;
+  private reactionHandler: ((messageId: string, reactions: { emoji: string; usernames: string[] }[]) => void) | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   /** Fallos seguidos desde la última vez que el bot entró al chat. */
   private reconnectAttempts = 0;
@@ -105,6 +106,11 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     this.socket.removeAllListeners();
     this.socket.disconnect();
     this.socket = null;
+  }
+
+  /** Cambios de reacciones de cualquier mensaje (`messageReactionUpdated`); lo usan las encuestas. */
+  onReactionUpdate(handler: (messageId: string, reactions: { emoji: string; usernames: string[] }[]) => void) {
+    this.reactionHandler = handler;
   }
 
   /** Register a handler to be called for every incoming message */
@@ -190,6 +196,9 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     });
     this.socket.on('reactionsState', (data: { enabled?: unknown }) => {
       this.reactionsOn = data?.enabled === true;
+    });
+    this.socket.on('messageReactionUpdated', (data: { messageId?: string; reactions?: { emoji: string; usernames: string[] }[] }) => {
+      if (data?.messageId && Array.isArray(data.reactions)) this.reactionHandler?.(data.messageId, data.reactions);
     });
     this.socket.on('reactionError', (data: { message?: string }) => {
       this.logger.warn(`reactionError: ${data?.message ?? '(sin mensaje)'}`);

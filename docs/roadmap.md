@@ -60,13 +60,13 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 ## 📋 Pendientes
 
 ### Funciones nuevas
-- [ ] **28. Recordatorios.** "bot recordame en 2h que…" / "avisame a las 9 que…": un recado para uno mismo con hora (en memoria + Mongo para sobrevivir reinicios; hora de El Salvador).
-- [ ] **29. Encuestas con reacciones.** `!encuesta ¿Qué leemos? | Berserk | Vagabond`: publica las opciones con emojis, cuenta las reacciones (`reactionsState`) y anuncia el resultado al cerrar.
+- [x] **28. Recordatorios.** ✅ "bot recordame en 2h que…", "avisame a las 9 que…", "recordame mañana a las 8:30 …": la hora se entiende en código (`ReminderService.parse`, hora de El Salvador; sin am/pm toma la próxima). Si no se entiende, sigue al modelo. Comandos `!recordar 30m <texto>` (o `a las 21:30 …`), `!recordatorios`, `!cancelarrecordatorio <n>`. Mongo (`bot_reminders`, TTL), tope de 5 pendientes por persona, de 1 min a 30 días; un tick cada 30 s los reclama de a uno (atómico) y los manda con mención; si el bot estuvo caído salen tarde con disculpa.
+- [x] **29. Encuestas con reacciones.** ✅ `!encuesta [10m] ¿Qué leemos? | Berserk | Vagabond` (2 a 6 opciones, de 1 min a 24 h, default 5 min): el bot publica con 1️⃣ 2️⃣ …, pone él mismo las reacciones como botones (no cuentan) y cuenta lo que llega por `messageReactionUpdated`. `!encuesta` muestra la abierta, `!encuesta cerrar` (autor o staff). Una a la vez, en memoria (se pierde al reiniciar). Sólo registrados y con las reacciones encendidas. Se puede votar más de una opción.
 - [ ] **30. Trivia de anime/manga.** El bot lanza una pregunta, el primero que acierta suma un punto; ranking semanal.
 - [ ] **31. `!resumen 2h` / `!resumen hoy`.** Resumen de un período en vez de "desde el último resumen" (el log ya no se vacía, pero se poda a 200 filas: para "hoy" haría falta un tope mayor o leer los mensajes del backend).
 
 ### Mantenimiento
-- [ ] **32. % de caché en `!uso`.** Mostrar la proporción de tokens de entrada servidos desde caché (`prompt_cache_hit_tokens`) para confirmar el ahorro del orden del prompt (PR #22).
+- [x] **32. % de caché en `!uso`.** ✅ Línea "Caché: N % de la entrada" y, con precios, el ahorro estimado (`(precio entrada − precio caché) × tokens cacheados`).
 - [ ] **33. Latencia del modelo.** Registrar cuánto tarda cada llamada en `bot_llm_usage` y mostrar p50/p95 en `!uso`.
 - [ ] **34. `!estado` (admin).** Conexión del socket, memoria del proceso, cola de música y si FileGarden / AniList responden.
 - [ ] **35. Tests de `UploadChainService`** y tipar los `any` de la parte de música.

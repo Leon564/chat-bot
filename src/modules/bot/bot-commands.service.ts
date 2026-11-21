@@ -14,6 +14,8 @@ import {
   MAX_ROOM_INSTRUCTIONS,
 } from '../chat/room-instructions.service';
 import { ProactiveService } from './proactive.service';
+import { PollService, POLL_EMOJIS } from './poll.service';
+import { ReminderService, MAX_PENDING_REMINDERS } from '../chat/reminder.service';
 import { BotOutputService } from './bot-output.service';
 import { createLog } from '../../common/utils/log';
 
@@ -92,6 +94,8 @@ export class BotCommandsService {
     private readonly output: BotOutputService,
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
     @Optional() private readonly proactive?: ProactiveService,
+    @Optional() private readonly reminders?: ReminderService,
+    @Optional() private readonly polls?: PollService,
   ) {}
 
   /**
@@ -109,12 +113,171 @@ export class BotCommandsService {
       (await this.handleUsageCommand(content, authorUsername, authorRole)) ||
       (await this.handleMemoryCommand(content, authorUsername)) ||
       (await this.handleForgetCommand(content, authorUsername)) ||
-      (await this.handleErrandCommands(content, authorUsername))
+      (await this.handleErrandCommands(content, authorUsername)) ||
+      (await this.handleReminderCommands(content, authorUsername)) ||
+      (await this.handlePollCommand(content, authorUsername, authorRole))
     );
   }
 
   private sendBotMessage(text: string): void {
     this.output.sendBotMessage(text);
+  }
+
+  // ─── Recordatorios ─────────────────────────────────────────────────────────
+
+  /**
+   * Crea el recordatorio y contesta. Lo usan `!recordar` y el pedido en
+   * lenguaje natural ("bot recordame en 2h que…", desde `BotService`).
+   */
+  async createReminderFor(username: string, text: string, dueAt: Date): Promise<void> {
+    if (!this.reminders) return;
+    const now = new Date();
+    const result = await this.reminders.create(username, text, dueAt, now).catch(() => 'invalid' as const);
+    const messages: Record<string, string> = {
+      ok: `⏰ Dale, te lo recuerdo ${ReminderService.describeWhen(dueAt, now)}.`,
+      full: `Ya tenés ${MAX_PENDING_REMINDERS} recordatorios pendientes. Mirá los tuyos con !recordatorios y cancelá alguno con !cancelarrecordatorio <n>.`,
+      too_soon: 'Eso es ya mismo 😅 Pedímelo para dentro de un minuto o más.',
+      too_far: 'Como mucho te puedo recordar algo dentro de 30 días.',
+      invalid: 'No pude guardar ese recordatorio.',
+    };
+    this.sendBotMessage(`<@${username}> ${messages[result] ?? messages.invalid}`);
+  }
+
+  /**
+   * `!recordar <30m|2h|1d> <texto>` (o `!recordar a las 9 <texto>`),
+   * `!recordatorios` y `!cancelarrecordatorio <n>`. Siempre sobre quien
+   * escribe, como los recados.
+   */
+  private async handleReminderCommands(content: string, authorUsername: string): Promise<boolean> {
+    if (!this.reminders) return false;
+    const text = content.trim();
+
+    if (/^!recordatorios\s*$/i.test(text)) {
+      const list = await this.reminders.listPending(authorUsername).catch(() => null);
+      if (list === null) {
+        this.sendBotMessage(`@${authorUsername} No pude leer tus recordatorios. Probá de nuevo en un rato.`);
+      } else if (list.length === 0) {
+        this.sendBotMessage(`@${authorUsername} No tenés recordatorios pendientes.`);
+      } else {
+        const now = new Date();
+        const lines = list.map((r, i) => `${i + 1}. ${ReminderService.describeWhen(r.dueAt, now)}: ${r.text}`);
+        this.sendBotMessage(`@${authorUsername} ⏰ Tus recordatorios:\n${lines.join('\n')}`);
+      }
+      return true;
+    }
+
+    const cancel = text.match(/^!cancelarrecordatorio(?:\s+#?(\S+))?\s*$/i);
+    if (cancel) {
+      const n = Number(cancel[1]);
+      const removed = await this.reminders.cancel(authorUsername, n).catch(() => null);
+      this.sendBotMessage(
+        removed
+          ? `@${authorUsername} 🗑️ Listo, ya no te recuerdo "${removed.text}".`
+          : `@${authorUsername} No encontré ese recordatorio. Mirá los números con !recordatorios.`,
+      );
+      return true;
+    }
+
+    const create = text.match(/^!recordar(?:\s+([\s\S]*))?$/i);
+    if (!create) return false;
+    const rest = (create[1] ?? '').trim();
+    const now = new Date();
+    const dur = /^(\d{1,4})\s*(m|min|mins|minutos?|h|hs|horas?|d|d[ií]as?)\s+([\s\S]+)$/i.exec(rest);
+    if (dur) {
+      const n = Number(dur[1]);
+      const unit = dur[2].toLowerCase()[0];
+      const ms = n * (unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000);
+      await this.createReminderFor(authorUsername, dur[3], new Date(now.getTime() + ms));
+      return true;
+    }
+    const parsed = rest ? ReminderService.parse(`recordame ${rest}`, now) : null;
+    if (parsed) {
+      await this.createReminderFor(authorUsername, parsed.text, parsed.dueAt);
+      return true;
+    }
+    this.sendBotMessage(
+      `@${authorUsername} Uso: !recordar 30m sacar la ropa · !recordar a las 21:30 llamar a mamá · !recordar mañana a las 9 pagar la luz`,
+    );
+    return true;
+  }
+
+  // ─── Encuestas ─────────────────────────────────────────────────────────────
+
+  /**
+   * `!encuesta [10m] Pregunta | A | B`, `!encuesta` (la activa) y
+   * `!encuesta cerrar` (quien la creó o el staff). Una a la vez; se vota con
+   * reacciones, así que necesita las reacciones encendidas y sólo pueden
+   * crearla usuarios registrados (los invitados tampoco pueden reaccionar).
+   */
+  private async handlePollCommand(content: string, authorUsername: string, authorRole?: string): Promise<boolean> {
+    const match = content.trim().match(/^!encuesta(?:\s+([\s\S]*))?$/i);
+    if (!match || !this.polls) return false;
+    const args = (match[1] ?? '').trim();
+    const staff = authorRole === 'mod' || authorRole === 'admin' || authorRole === 'superAdmin';
+    this.polls.botName = this.chatSocketService.username ?? undefined;
+
+    if (!args) {
+      const p = this.polls.current;
+      this.sendBotMessage(
+        p
+          ? `@${authorUsername} 📊 Hay una encuesta abierta de ${p.author}: ${p.question} (cierra en ${Math.max(1, Math.round((p.endsAt - Date.now()) / 60_000))} min).`
+          : `@${authorUsername} No hay ninguna encuesta abierta. Creá una con: !encuesta [10m] Pregunta | opción 1 | opción 2`,
+      );
+      return true;
+    }
+
+    if (/^cerrar$/i.test(args)) {
+      const p = this.polls.current;
+      if (!p) {
+        this.sendBotMessage(`@${authorUsername} No hay ninguna encuesta abierta.`);
+      } else if (!staff && p.author.toLowerCase() !== authorUsername.toLowerCase()) {
+        this.sendBotMessage(`@${authorUsername} Solo ${p.author} o el staff pueden cerrarla.`);
+      } else {
+        const result = this.polls.close();
+        if (result) this.sendBotMessage(PollService.renderResult(result));
+      }
+      return true;
+    }
+
+    if (!authorRole || authorRole === 'guest') {
+      this.sendBotMessage(`@${authorUsername} Las encuestas son para usuarios registrados (se vota con reacciones).`);
+      return true;
+    }
+    if (!this.chatSocketService.reactionsEnabled) {
+      this.sendBotMessage(`@${authorUsername} Las reacciones están apagadas en el chat, así que no se puede votar.`);
+      return true;
+    }
+    if (this.polls.current) {
+      this.sendBotMessage(`@${authorUsername} Ya hay una encuesta abierta. Esperá a que cierre (o cerrala con !encuesta cerrar).`);
+      return true;
+    }
+
+    const parsed = PollService.parse(args);
+    if ('error' in parsed) {
+      this.sendBotMessage(`@${authorUsername} ${parsed.error}`);
+      return true;
+    }
+
+    const messageId = await this.output.sendBotMessageAndAwaitId(
+      PollService.render(authorUsername, parsed.question, parsed.options, parsed.durationMs),
+    );
+    if (!messageId) {
+      this.sendBotMessage(`@${authorUsername} No pude publicar la encuesta. Probá de nuevo en un rato.`);
+      return true;
+    }
+    // Las reacciones del bot dejan los "botones" a mano; no cuentan como voto.
+    parsed.options.forEach((_, i) => this.chatSocketService.toggleReaction(messageId, POLL_EMOJIS[i]));
+    this.polls.start(
+      {
+        messageId,
+        author: authorUsername,
+        question: parsed.question,
+        options: parsed.options,
+        endsAt: Date.now() + parsed.durationMs,
+      },
+      (result) => this.sendBotMessage(PollService.renderResult(result)),
+    );
+    return true;
   }
 
   private splitForChat(text: string, overhead: number): string[] {
@@ -501,6 +664,9 @@ export class BotCommandsService {
       ...(video ? ['• !video <búsqueda> — paso un video'] : []),
       `• "${bot} resumen" — resumen de lo que se habló`,
       '• !quesabes — lo que recuerdo de vos',
+      '• !recordar 30m <texto> / !recordar a las 21:30 <texto> — te lo recuerdo (también: "bot recordame en 2h que…")',
+      '• !recordatorios / !cancelarrecordatorio <n>',
+      '• !encuesta [10m] Pregunta | opción 1 | opción 2 — encuesta con reacciones (!encuesta cerrar)',
       '• !olvida <algo> | !olvida todo — que me olvide de cosas tuyas',
       '• !misrecados — recados que dejaste y todavía no entregué',
       '• !cancelarrecado <n> — cancela uno de tus recados',
@@ -609,6 +775,18 @@ export class BotCommandsService {
   // ─── Usage (!uso) ────────────────────────────────────────────────────────
 
   /** `!uso [24h|7d|30d]` (admin): llamadas, tokens, costo estimado y quién más usa. */
+  /**
+   * Cuánto de la entrada sirvió el proveedor desde su caché de prefijo, y
+   * cuánto se ahorró por eso si hay precios. Es la forma de comprobar que el
+   * orden del system prompt (fijo arriba, variable abajo) está funcionando.
+   */
+  static cacheLine(cached: number, prompt: number, priceIn: number, priceCached: number): string {
+    const pct = prompt > 0 ? Math.round((cached / prompt) * 100) : 0;
+    const saved = ((priceIn - priceCached) * cached) / 1_000_000;
+    const savedText = saved > 0 ? ` — ahorro estimado US$ ${saved.toFixed(saved < 1 ? 4 : 2)}` : '';
+    return `• Caché: ${pct} % de la entrada${savedText}`;
+  }
+
   private async handleUsageCommand(
     content: string,
     authorUsername: string,
@@ -653,6 +831,7 @@ export class BotCommandsService {
       `• ${fmt(summary.calls)} llamadas`,
       `• ${fmt(summary.promptTokens)} tokens de entrada${summary.cachedPromptTokens ? ` (${fmt(summary.cachedPromptTokens)} desde caché)` : ''} + ${fmt(summary.completionTokens)} de salida`,
       ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
+      ...(summary.promptTokens > 0 ? [BotCommandsService.cacheLine(cached, summary.promptTokens, priceIn, priceCached)] : []),
     ];
     if (summary.topUsers.length > 0) {
       lines.push(
