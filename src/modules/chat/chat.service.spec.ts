@@ -176,6 +176,14 @@ describe('ChatService — instrumentación de tokens', () => {
     );
   });
 
+  it('avisa en vez de callarse si el modelo agota max_tokens sin escribir nada', async () => {
+    crearMock.mockResolvedValue({ choices: [{ message: { content: '' }, finish_reason: 'length' }] });
+
+    const resultado = await service.chat('dame el código del tetris', 'Aria', 'Sleepy Ash');
+
+    expect(resultado).toContain(ChatService.TOO_LONG_REPLY);
+  });
+
   it('registra 0 tokens cuando el proveedor no devuelve usage', async () => {
     crearMock.mockResolvedValue({ choices: [{ message: { content: 'hola' } }] });
 

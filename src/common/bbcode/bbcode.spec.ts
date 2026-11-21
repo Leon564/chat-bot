@@ -13,6 +13,14 @@ describe('bbcode (bot)', () => {
       expect(sanitizeBotBbcode(text)).toBe(text);
     });
 
+    it('quita el </color> suelto estilo HTML y convierte un par <color> a BBCode', () => {
+      expect(sanitizeBotBbcode('Tranqui, cumplo 😌 quién sabe</color>')).toBe('Tranqui, cumplo 😌 quién sabe');
+      expect(sanitizeBotBbcode('<@kiki> hola </color> [color=#f06]rosa[/color]')).toBe('<@kiki> hola  [color=#f06]rosa[/color]');
+      expect(sanitizeBotBbcode('<color=#ff6699>hola</color>')).toBe('[color=#ff6699]hola[/color]');
+      expect(sanitizeBotBbcode('<color=rojo>hola</color>')).toBe('hola');
+      expect(sanitizeBotBbcode('<color>hola')).toBe('hola');
+    });
+
     it('quita tags vacíos, en cascada', () => {
       expect(sanitizeBotBbcode('hola [b][/b] mundo')).toBe('hola  mundo');
       expect(sanitizeBotBbcode('x [b][i]   [/i][/b] y')).toBe('x   y');
