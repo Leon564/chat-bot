@@ -135,6 +135,39 @@ describe('PromptBuilderService', () => {
     });
   });
 
+  describe('caché de prefijo del proveedor', () => {
+    const prefixBeforeTemporal = (s: string) => s.slice(0, s.indexOf('CONTEXTO TEMPORAL'));
+
+    it('con distinto usuario y distinta hora, todo lo anterior a la parte variable es idéntico', () => {
+      const a = service.build(baseInput({ username: 'Nico', now: new Date('2026-03-17T15:30:00-06:00') }));
+      const b = service.build(baseInput({ username: 'Kei', now: new Date('2026-03-18T09:07:00-06:00') }));
+      expect(prefixBeforeTemporal(a).length).toBeGreaterThan(1000);
+      expect(prefixBeforeTemporal(a)).toBe(prefixBeforeTemporal(b));
+    });
+
+    it('el nombre real aparece sólo al final, después de la hora', () => {
+      const salida = service.build(baseInput({ username: 'Nico' }));
+      expect(prefixBeforeTemporal(salida)).not.toContain('Nico');
+      expect(salida.trimEnd().endsWith('es Nico.')).toBe(true);
+      expect(salida).toContain('AHORA TE ESCRIBE: Nico');
+    });
+
+    it('lo variable (instrucciones de sala, stickers) va después de lo fijo', () => {
+      const salida = service.build(
+        baseInput({ roomInstructions: ['Respondé con colores.'], stickers: { list: 'Varios: Gato', requested: false } }),
+      );
+      const fixedEnd = salida.indexOf('CONVERSACIÓN:');
+      expect(salida.indexOf('INSTRUCCIONES DE LA SALA')).toBeGreaterThan(fixedEnd);
+      expect(salida.indexOf('STICKERS DEL CHAT')).toBeGreaterThan(salida.indexOf('INSTRUCCIONES DE LA SALA'));
+    });
+
+    it('sin el bloque MUSIC, la línea de música sale una sola vez, en la parte variable', () => {
+      const salida = service.build(baseInput({ blocks: ['PERSONA', 'TEMPORAL'] }));
+      expect(salida.match(/Sí podés pasar canciones/g)).toHaveLength(1);
+      expect(salida.indexOf('MÚSICA:')).toBeGreaterThan(salida.indexOf('CONVERSACIÓN:'));
+    });
+  });
+
   describe('conversación natural (sin forzar el anime)', () => {
     it.each(['default', 'unfiltered'] as const)(
       'con personalidad %s no obliga a enfocarse en anime y pide seguir el tema',
@@ -142,7 +175,7 @@ describe('PromptBuilderService', () => {
         const salida = service.build(baseInput({ personality, blocks: ['PERSONA'] }));
         expect(salida).not.toContain('enfócate en anime');
         expect(salida).not.toContain('especializado en anime');
-        expect(salida).toContain('Seguí el tema que trae Nico');
+        expect(salida).toContain('Seguí el tema que trae quien te escribe');
         expect(salida).toContain('No preguntes qué anime o manga está viendo');
         expect(salida).toContain('solo si viene al caso');
       },

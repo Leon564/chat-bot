@@ -105,31 +105,61 @@ const BBCODE_PROMPT_EXAMPLES: Record<string, string> = {
  */
 @Injectable()
 export class PromptBuilderService {
+  /** Cómo se nombra a quien escribe en los bloques fijos (ver `build`). */
+  static readonly GENERIC_USER = 'quien te escribe';
+
+  /**
+   * El orden está pensado para el caché de prefijo del proveedor (DeepSeek
+   * cobra ~50 veces menos la parte del prompt que se repite IDÉNTICA desde el
+   * principio). Antes el nombre de quien escribe estaba en casi todos los
+   * bloques y la hora con minutos era la tercera sección: dos usuarios nunca
+   * compartían prefijo y el de uno mismo cambiaba cada minuto. Ahora:
+   *
+   *  1. FIJO, siempre presente: persona, BBCode, reglas de conversación.
+   *  2. FIJO, opcional según el router: música, AniList, identidad, resumen,
+   *     usuarios online, CRÍTICO + SAVE_FACT. Con el mismo juego de bloques el
+   *     prefijo sigue siendo idéntico.
+   *  3. VARIABLE, al final: la línea de música sin bloque, instrucciones de
+   *     sala, staff, reacciones, historial compartido, stickers (oferta al
+   *     azar), la hora y quién escribe ahora.
+   *
+   * Los bloques 1 y 2 nombran a la persona como "quien te escribe"; el nombre
+   * real va una sola vez, en la última sección.
+   */
   build(input: PromptInput): string {
     const sections: string[] = [];
+    const fixed: PromptInput = { ...input, username: PromptBuilderService.GENERIC_USER };
 
-    if (input.blocks.includes('PERSONA')) sections.push(this.blockPersona(input));
+    // 1. Fijo y siempre presente.
+    if (input.blocks.includes('PERSONA')) sections.push(this.blockPersona(fixed));
     if (input.bbcodes && input.bbcodes.length > 0) sections.push(this.blockBbcode(input.bbcodes));
-    if (input.blocks.includes('TEMPORAL')) sections.push(this.blockTemporal(input));
-    if (input.blocks.includes('MUSIC')) sections.push(this.blockMusic(input));
-    if (input.blocks.includes('ANILIST')) sections.push(this.blockAnilist(input));
-    if (input.blocks.includes('IDENTIDAD')) sections.push(this.blockIdentidad(input));
-    if (input.blocks.includes('RESUMEN')) sections.push(this.blockResumen(input));
-    if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(input));
-    if (input.sharedContext) sections.push(this.blockSharedContext(input));
+    sections.push(this.closingLine(fixed));
+
+    // 2. Fijo, según los bloques que eligió el router.
+    if (input.blocks.includes('MUSIC')) sections.push(this.blockMusic(fixed));
+    if (input.blocks.includes('ANILIST')) sections.push(this.blockAnilist(fixed));
+    if (input.blocks.includes('IDENTIDAD')) sections.push(this.blockIdentidad(fixed));
+    if (input.blocks.includes('RESUMEN')) sections.push(this.blockResumen(fixed));
+    if (input.blocks.includes('ONLINE')) sections.push(this.blockOnline(fixed));
+    const critico = this.buildCritico(input.blocks);
+    const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(fixed) : '';
+    const criticoSection = [critico, saveFact].filter((s) => s.length > 0).join('\n\n');
+    if (criticoSection.length > 0) sections.push(criticoSection);
+
+    // 3. Variable: al final, para no romper el prefijo de arriba.
+    const musicLine = this.musicCapability(input);
+    if (musicLine) sections.push(musicLine);
     if (input.roomInstructions && input.roomInstructions.length > 0) {
       sections.push(this.blockRoomInstructions(input.roomInstructions));
     }
     if (input.canInstruct) sections.push(this.blockSaveInstruction(input));
     if (input.reactions) sections.push(this.blockReactions(input));
+    if (input.sharedContext) sections.push(this.blockSharedContext(input));
     if (input.stickers?.list) sections.push(this.blockStickers(input.stickers, input.username));
-
-    const critico = this.buildCritico(input.blocks);
-    const saveFact = input.blocks.includes('SAVE_FACT') ? this.blockSaveFact(input) : '';
-    const criticoSection = [critico, saveFact].filter((s) => s.length > 0).join('\n\n');
-    if (criticoSection.length > 0) sections.push(criticoSection);
-
-    sections.push(this.closingLine(input));
+    if (input.blocks.includes('TEMPORAL')) sections.push(this.blockTemporal(input));
+    if (input.username) {
+      sections.push(`AHORA TE ESCRIBE: ${input.username}. Cuando las reglas de arriba dicen "${PromptBuilderService.GENERIC_USER}", es ${input.username}.`);
+    }
 
     return sections.join('\n\n');
   }
@@ -428,7 +458,7 @@ NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${third
 - Seguí el tema que trae ${input.username} y respondé lo que dijo o preguntó; no lo relaciones con anime o manga si no tiene que ver.
 - Hablá de anime, manga o manhwa solo si ${input.username} lo saca o de verdad viene al caso.
 - No preguntes qué anime o manga está viendo o leyendo, ni cierres cada mensaje con una pregunta: preguntá solo si hace falta.
-- Lo que sepas de sus gustos usalo solo si viene al caso; no lo saques de la nada.${this.musicCapability(input)}`;
+- Lo que sepas de sus gustos usalo solo si viene al caso; no lo saques de la nada.`;
   }
 
   /**
@@ -441,7 +471,9 @@ NO uses SAVE_FACT para charla genérica ni para datos que no sean gustos.${third
    */
   private musicCapability(input: PromptInput): string {
     if (input.blocks.includes('MUSIC')) return '';
-    return `\n- Sí podés pasar canciones al chat (se buscan y se envían solas): si te piden una, confirmá corto y agregá {{music:canción y artista}}. Nunca digas que no podés poner música.`;
+    // Sección propia (antes iba pegada al final de CONVERSACIÓN): depende de
+    // los bloques del router, así que va en la parte variable del prompt.
+    return `MÚSICA:\n- Sí podés pasar canciones al chat (se buscan y se envían solas): si te piden una, confirmá corto y agregá {{music:canción y artista}}. Nunca digas que no podés poner música.`;
   }
 
   /**
