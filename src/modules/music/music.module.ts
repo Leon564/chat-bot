@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MusicService } from './music.service';
+import { UploadChainService } from './upload-chain.service';
 import { GraphModule } from '../graph/graph.module';
 
 /**
@@ -10,7 +11,7 @@ import { GraphModule } from '../graph/graph.module';
  */
 @Module({
   imports: [GraphModule],
-  providers: [MusicService],
+  providers: [MusicService, UploadChainService],
   exports: [MusicService],
 })
 export class MusicModule {}
