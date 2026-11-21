@@ -1,5 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { BotOutputService } from './bot-output.service';
+import { BotCommandsService } from './bot-commands.service';
 import { BotService, formatRemaining } from './bot.service';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -144,6 +146,8 @@ describe('BotService — handleAniListRequest (caché)', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -432,6 +436,8 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -591,6 +597,8 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -797,6 +805,8 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -982,6 +992,8 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -1166,6 +1178,8 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: {} },
@@ -1505,6 +1519,8 @@ const buildBotService = async (
   const moduleRef = await Test.createTestingModule({
     providers: [
       BotService,
+      BotOutputService,
+      BotCommandsService,
       { provide: ConfigService, useValue: { get: jest.fn((k: string) => overrides.config?.[k]) } },
       { provide: ChatService, useValue: chat },
       { provide: MusicService, useValue: {} },
@@ -1544,7 +1560,7 @@ describe('!sharedcontext', () => {
     const chat = dobles(false, 'env');
     const { service, sent } = await buildBotService({ chat });
 
-    const handled = await service['handleSharedContextCommand']('!sharedcontext on', 'lyna', 'mod');
+    const handled = await service['commands']['handleSharedContextCommand']('!sharedcontext on', 'lyna', 'mod');
 
     expect(handled).toBe(true);
     expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
@@ -1559,7 +1575,7 @@ describe('!sharedcontext', () => {
     const chat = dobles(false, 'env');
     const { service } = await buildBotService({ chat });
 
-    await service['handleSharedContextCommand'](`!sharedcontext ${sub}`, 'leon', 'superAdmin');
+    await service['commands']['handleSharedContextCommand'](`!sharedcontext ${sub}`, 'leon', 'superAdmin');
 
     expect(chat.setSharedContextOverride).toHaveBeenCalledWith(esperado);
   });
@@ -1568,7 +1584,7 @@ describe('!sharedcontext', () => {
     const chat = dobles(true, 'override');
     const { service, sent } = await buildBotService({ chat });
 
-    await service['handleSharedContextCommand']('!sharedcontext', 'leon', 'admin');
+    await service['commands']['handleSharedContextCommand']('!sharedcontext', 'leon', 'admin');
 
     expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('activado (override en runtime)');
@@ -1578,7 +1594,7 @@ describe('!sharedcontext', () => {
     const chat = dobles(false, 'env');
     const { service, sent } = await buildBotService({ chat });
 
-    await service['handleSharedContextCommand']('!sharedcontext quizas', 'leon', 'admin');
+    await service['commands']['handleSharedContextCommand']('!sharedcontext quizas', 'leon', 'admin');
 
     expect(chat.setSharedContextOverride).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('Uso:');
@@ -1587,8 +1603,8 @@ describe('!sharedcontext', () => {
   it('devuelve false para un mensaje que no es el comando, incluido !contextocruzado', async () => {
     const { service } = await buildBotService({});
 
-    expect(await service['handleSharedContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
-    expect(await service['handleSharedContextCommand']('!contextocruzado on', 'leon', 'admin')).toBe(false);
+    expect(await service['commands']['handleSharedContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
+    expect(await service['commands']['handleSharedContextCommand']('!contextocruzado on', 'leon', 'admin')).toBe(false);
   });
 });
 
@@ -1599,7 +1615,7 @@ describe('!contextocruzado', () => {
       crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
     });
 
-    await service['handleCrossContextCommand']('!contextocruzado on', 'lyna', 'user');
+    await service['commands']['handleCrossContextCommand']('!contextocruzado on', 'lyna', 'user');
 
     expect(setOverride).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('Solo admins');
@@ -1611,7 +1627,7 @@ describe('!contextocruzado', () => {
       crossContext: { setOverride, getInfo: () => ({ enabled: true, source: 'override' }) },
     });
 
-    const handled = await service['handleCrossContextCommand']('!contextocruzado on', 'leon', 'admin');
+    const handled = await service['commands']['handleCrossContextCommand']('!contextocruzado on', 'leon', 'admin');
 
     expect(handled).toBe(true);
     expect(setOverride).toHaveBeenCalledWith(true);
@@ -1623,14 +1639,14 @@ describe('!contextocruzado', () => {
       crossContext: { setOverride, getInfo: () => ({ enabled: false, source: 'env' }) },
     });
 
-    await service['handleCrossContextCommand']('!contextocruzado reset', 'leon', 'admin');
+    await service['commands']['handleCrossContextCommand']('!contextocruzado reset', 'leon', 'admin');
 
     expect(setOverride).toHaveBeenCalledWith(null);
   });
 
   it('devuelve false para un mensaje que no es el comando', async () => {
     const { service } = await buildBotService({});
-    expect(await service['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
+    expect(await service['commands']['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
   });
 });
 
@@ -1987,6 +2003,8 @@ describe('BotService — entrega de canciones', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         BotService,
+        BotOutputService,
+        BotCommandsService,
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: ChatService, useValue: chat },
         { provide: MusicService, useValue: music },
@@ -2070,7 +2088,7 @@ describe('instrucciones de sala (!instruccion / !instrucciones)', () => {
     clear: jest.fn().mockResolvedValue(list.length),
   });
   const handle = (service: BotService, content: string, role?: string) =>
-    service['handleRoomInstructionsCommand'](content, 'leon', role);
+    service['commands']['handleRoomInstructionsCommand'](content, 'leon', role);
 
   it('no toca mensajes que no son el comando', async () => {
     const { service } = await buildBotService({ roomInstructions: dobles() });
@@ -2204,7 +2222,7 @@ describe('instrucciones de sala con vencimiento', () => {
   it('"!instruccion 2h <texto>" guarda con vencimiento y lo confirma', async () => {
     const roomInstructions = dobles();
     const { service, sent } = await buildBotService({ roomInstructions });
-    await service['handleRoomInstructionsCommand']('!instruccion 2h Respondé con colores', 'leon', 'admin');
+    await service['commands']['handleRoomInstructionsCommand']('!instruccion 2h Respondé con colores', 'leon', 'admin');
     expect(roomInstructions.add).toHaveBeenCalledWith('Respondé con colores', 'leon', 'command', 2 * 3_600_000);
     expect(sent.join(' ')).toContain('durante 2h');
   });
@@ -2212,7 +2230,7 @@ describe('instrucciones de sala con vencimiento', () => {
   it('"!instruccion 2h" sin texto muestra el uso', async () => {
     const roomInstructions = dobles();
     const { service, sent } = await buildBotService({ roomInstructions });
-    await service['handleRoomInstructionsCommand']('!instruccion 2h', 'leon', 'admin');
+    await service['commands']['handleRoomInstructionsCommand']('!instruccion 2h', 'leon', 'admin');
     expect(roomInstructions.add).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('Uso:');
   });
@@ -2220,7 +2238,7 @@ describe('instrucciones de sala con vencimiento', () => {
   it('una primera palabra que no es duración es parte del texto', async () => {
     const roomInstructions = dobles();
     const { service } = await buildBotService({ roomInstructions });
-    await service['handleRoomInstructionsCommand']('!instruccion Hablá en verso', 'leon', 'admin');
+    await service['commands']['handleRoomInstructionsCommand']('!instruccion Hablá en verso', 'leon', 'admin');
     expect(roomInstructions.add).toHaveBeenCalledWith('Hablá en verso', 'leon', 'command', null);
   });
 
@@ -2229,7 +2247,7 @@ describe('instrucciones de sala con vencimiento', () => {
       { text: 'temporal', createdBy: 'leon', source: 'command', expiresAt: new Date(Date.now() + 90 * 60_000 + 30_000) },
     ]);
     const { service, sent } = await buildBotService({ roomInstructions });
-    await service['handleRoomInstructionsCommand']('!instrucciones', 'leon', 'admin');
+    await service['commands']['handleRoomInstructionsCommand']('!instrucciones', 'leon', 'admin');
     expect(sent.join(' ')).toContain('1. temporal (de leon, vence en 1h 30m)');
   });
 });
@@ -2250,7 +2268,7 @@ describe('formatRemaining', () => {
 describe('!ayuda', () => {
   it('a un invitado le muestra sólo los comandos generales', async () => {
     const { service, sent } = await buildBotService();
-    expect(await service['handleHelpCommand']('!ayuda', 'nico', 'guest')).toBe(true);
+    expect(await service['commands']['handleHelpCommand']('!ayuda', 'nico', 'guest')).toBe(true);
     const out = sent.join('\n');
     expect(out).toContain('!music');
     expect(out).toContain('!quesabes');
@@ -2260,7 +2278,7 @@ describe('!ayuda', () => {
 
   it('a un mod le suma la sección de staff, no la de admin', async () => {
     const { service, sent } = await buildBotService();
-    await service['handleHelpCommand']('!help', 'kei', 'mod');
+    await service['commands']['handleHelpCommand']('!help', 'kei', 'mod');
     const out = sent.join('\n');
     expect(out).toContain('!instrucciones');
     expect(out).not.toContain('!uso');
@@ -2268,7 +2286,7 @@ describe('!ayuda', () => {
 
   it('a un admin le muestra todo, y !video sólo si está activo', async () => {
     const { service, sent } = await buildBotService({ config: { 'video.enabled': true } });
-    await service['handleHelpCommand']('!comandos', 'leon', 'superAdmin');
+    await service['commands']['handleHelpCommand']('!comandos', 'leon', 'superAdmin');
     const out = sent.join('\n');
     expect(out).toContain('!uso');
     expect(out).toContain('!sharedcontext');
@@ -2277,7 +2295,7 @@ describe('!ayuda', () => {
 
   it('no toca otros mensajes', async () => {
     const { service } = await buildBotService();
-    expect(await service['handleHelpCommand']('!ayudame con esto', 'nico', 'guest')).toBe(false);
+    expect(await service['commands']['handleHelpCommand']('!ayudame con esto', 'nico', 'guest')).toBe(false);
   });
 });
 
@@ -2293,7 +2311,7 @@ describe('!uso', () => {
   it('rechaza a quien no es admin', async () => {
     const usage = { summarize: jest.fn() };
     const { service, sent } = await buildBotService({ usage });
-    await service['handleUsageCommand']('!uso', 'kei', 'mod');
+    await service['commands']['handleUsageCommand']('!uso', 'kei', 'mod');
     expect(usage.summarize).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('Solo admins');
   });
@@ -2301,7 +2319,7 @@ describe('!uso', () => {
   it('muestra totales y top; sin precio no muestra costo', async () => {
     const usage = { summarize: jest.fn().mockResolvedValue(resumen) };
     const { service, sent } = await buildBotService({ usage });
-    await service['handleUsageCommand']('!uso 7d', 'leon', 'admin');
+    await service['commands']['handleUsageCommand']('!uso 7d', 'leon', 'admin');
 
     const since = usage.summarize.mock.calls[0][0] as Date;
     expect(Date.now() - since.getTime()).toBeGreaterThanOrEqual(7 * 86_400_000 - 1000);
@@ -2318,7 +2336,7 @@ describe('!uso', () => {
       usage,
       config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4 },
     });
-    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
     // 20000 * 1 / 1M + 3000 * 4 / 1M = 0.032
     expect(sent.join(' ')).toContain('US$ 0.0320');
   });
@@ -2329,7 +2347,7 @@ describe('!uso', () => {
       usage,
       config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4, 'bot.llmPriceCachedInputPerM': 0.02 },
     });
-    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
     // 5000 * 1 + 15000 * 0.02 + 3000 * 4 = 17300 → /1M = 0.0173
     const out = sent.join(' ');
     expect(out).toContain('US$ 0.0173');
@@ -2342,21 +2360,21 @@ describe('!uso', () => {
       usage,
       config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4 },
     });
-    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    await service['commands']['handleUsageCommand']('!uso', 'leon', 'admin');
     expect(sent.join(' ')).toContain('US$ 0.0320');
   });
 
   it('avisa si los registros no cubren toda la ventana', async () => {
     const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, oldest: new Date(Date.now() - 3_600_000) }) };
     const { service, sent } = await buildBotService({ usage });
-    await service['handleUsageCommand']('!uso 30d', 'leon', 'admin');
+    await service['commands']['handleUsageCommand']('!uso 30d', 'leon', 'admin');
     expect(sent.join(' ')).toContain('Solo hay registros desde');
   });
 
   it.each(['!uso 3x', '!uso constructor'])('ventana inválida (%s) muestra el uso', async (cmd) => {
     const usage = { summarize: jest.fn() };
     const { service, sent } = await buildBotService({ usage });
-    await service['handleUsageCommand'](cmd, 'leon', 'admin');
+    await service['commands']['handleUsageCommand'](cmd, 'leon', 'admin');
     expect(usage.summarize).not.toHaveBeenCalled();
     expect(sent.join(' ')).toContain('Uso: !uso');
   });
@@ -2364,7 +2382,7 @@ describe('!uso', () => {
   it('si Mongo falla avisa en vez de tirar el proceso', async () => {
     const usage = { summarize: jest.fn().mockRejectedValue(new Error('mongo caído')) };
     const { service, sent } = await buildBotService({ usage });
-    await expect(service['handleUsageCommand']('!uso', 'leon', 'admin')).resolves.toBe(true);
+    await expect(service['commands']['handleUsageCommand']('!uso', 'leon', 'admin')).resolves.toBe(true);
     expect(sent.join(' ')).toContain('No pude leer el consumo');
   });
 });
@@ -2428,7 +2446,7 @@ describe('escribiendo… y reacciones', () => {
 });
 
 describe('recados: !misrecados / !cancelarrecado / !rechazarrecados', () => {
-  const handle = (service: BotService, content: string) => service['handleErrandCommands'](content, 'leon');
+  const handle = (service: BotService, content: string) => service['commands']['handleErrandCommands'](content, 'leon');
 
   it('no toca otros mensajes', async () => {
     const { service } = await buildBotService();

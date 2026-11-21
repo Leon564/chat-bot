@@ -1,5 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { BotOutputService } from './bot-output.service';
+import { BotCommandsService } from './bot-commands.service';
 import { BotService } from './bot.service';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -56,6 +58,8 @@ const build = async (opts: { quota?: boolean; config?: Record<string, unknown> }
   const moduleRef = await Test.createTestingModule({
     providers: [
       BotService,
+      BotOutputService,
+      BotCommandsService,
       { provide: ConfigService, useValue: { get: (k: string) => config[k] } },
       { provide: ChatService, useValue: chat },
       { provide: MusicService, useValue: music },

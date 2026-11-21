@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { UploadChainService } from './upload-chain.service';
 import { MusicService } from './music.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
 import { GraphService } from '../graph/graph.service';
@@ -91,6 +92,7 @@ describe('MusicService — caché de pistas y dedup de pedidos en vuelo', () => 
     const moduleRef = await Test.createTestingModule({
       providers: [
         MusicService,
+        UploadChainService,
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
         { provide: GraphCacheService, useValue: graphCache },
         // normalizeKey es una función pura (no toca los modelos de Mongoose)
@@ -314,6 +316,7 @@ describe('MusicService — orden de la cola y posición reportada', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         MusicService,
+        UploadChainService,
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
         { provide: GraphCacheService, useValue: { findTrack: jest.fn(), invalidateTrack: jest.fn() } },
         { provide: GraphService, useValue: new GraphService({} as any, {} as any) },
