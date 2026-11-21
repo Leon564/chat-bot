@@ -37,6 +37,7 @@ const build = async (opts: { quota?: boolean; config?: Record<string, unknown> }
     sendMessage: jest.fn((t: string) => sent.push(t)),
     sendMessageAndAwaitId: jest.fn().mockResolvedValue('buscando-id'),
     deleteMessage: jest.fn(),
+    getOnlineUsers: jest.fn().mockResolvedValue([{ username: 'kei', role: 'user', isActive: true }]),
     username: 'Aria',
   };
   // Pedido de música que no termina hasta que el test lo resuelva.
@@ -232,5 +233,35 @@ describe('2b. "reproduce X" sin nombrar al bot, con el clasificador local', () =
     await send('reproduce unravel', 'guest', 'invitado');
     expect(music.processMusic).toHaveBeenCalledTimes(1);
     expect(sent.join(' ')).toContain('tope de 1 pedidos por hora');
+  });
+});
+
+describe('lista de conectados: las preguntas ambiguas exigen nombrar al bot', () => {
+  it.each([
+    '¿quién está en línea?',
+    'cuántos hay conectados?',
+    'quienes estan online',
+    "who's online",
+    'quién más está por aquí?',
+  ])('"%s" (nombra la presencia en el chat) la pide sin mención', async (content) => {
+    const { send, socket } = await build();
+    await send(content);
+    expect(socket.getOnlineUsers).toHaveBeenCalled();
+  });
+
+  it.each(['¿cuántas personas fueron al concierto?', 'la gente activa del gym', 'cuantos hay que pagar?'])(
+    '"%s" sin nombrar al bot no la pide',
+    async (content) => {
+      const { send, socket, chat } = await build();
+      await send(content);
+      expect(socket.getOnlineUsers).not.toHaveBeenCalled();
+      expect(chat.chat).not.toHaveBeenCalled();
+    },
+  );
+
+  it('la misma pregunta ambigua nombrando al bot sí la pide', async () => {
+    const { send, socket } = await build();
+    await send('Aria cuántas personas hay?');
+    expect(socket.getOnlineUsers).toHaveBeenCalled();
   });
 });
