@@ -122,9 +122,15 @@ describe('RoomInstructionsService', () => {
     // `quitar 2` apunta a lo que se ve ahora, no a la vencida.
     expect((await service.removeAt(2))?.text).toBe('otra fija');
 
-    // También se fue de Mongo (de fondo).
-    await new Promise((r) => setImmediate(r));
-    expect(await model.countDocuments({ text: 'temporal' })).toBe(0);
+    // También se fue de Mongo. El borrado corre de fondo (fire-and-forget), así
+    // que se espera a que termine en vez de asumir un tick: en el runner de CI,
+    // más lento, un solo `setImmediate` no alcanzaba y el test fallaba a veces.
+    let left = 1;
+    for (let i = 0; i < 50 && left > 0; i++) {
+      left = await model.countDocuments({ text: 'temporal' });
+      if (left > 0) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(left).toBe(0);
   });
 
   it('una vencida no cuenta para el tope ni como duplicada', async () => {
