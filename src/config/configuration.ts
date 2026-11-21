@@ -68,10 +68,15 @@ export default () => ({
       process.env.RATE_LIMIT_REGISTERED_WINDOW_MINUTES,
       15,
     ),
+    // Contexto de la sala: los últimos N mensajes de los últimos M minutos
+    // (aunque no le hablen al bot) van al modelo como contexto en cada
+    // respuesta. 0 en cualquiera de los dos lo apaga.
+    roomContextMessages: Math.max(0, parseIntEnv(process.env.ROOM_CONTEXT_MESSAGES, 20)),
+    roomContextMinutes: Math.max(0, parseIntEnv(process.env.ROOM_CONTEXT_MINUTES, 15)),
     // Contexto cruzado entre usuarios. Apagado por defecto: es opt-in.
-    // Enciende tres capacidades a la vez — que el bot lea del grafo de OTROS
-    // usuarios mencionados, que acepte hechos sobre terceros, y los recados
-    // diferidos. Se puede mover en caliente con !contextocruzado (admin), sin
+    // Enciende dos capacidades — que el bot lea del grafo de OTROS usuarios
+    // mencionados y que acepte hechos sobre terceros. Los recados ya NO
+    // dependen de este flag (sólo de USE_MEMORY). Se puede mover en caliente con !contextocruzado (admin), sin
     // reiniciar — mismo rol de interruptor de emergencia que CACHE_ENABLED.
     crossUserContext: process.env.CROSS_USER_CONTEXT === 'true',
     // Historial de conversación común a toda la sala en vez de uno por usuario.

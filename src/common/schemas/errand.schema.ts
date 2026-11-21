@@ -35,6 +35,14 @@ export class Errand {
 
   @Prop({ type: Date, default: null })
   deliveredAt: Date | null;
+
+  /**
+   * Recado "secreto" (bromas, "decile X sin decir que fui yo"): el bot lo
+   * entrega como propio, sin nombrar al autor. El autor lo sigue viendo y
+   * cancelando con `!misrecados` / `!cancelarrecado`.
+   */
+  @Prop({ type: Boolean, default: false })
+  secret: boolean;
 }
 
 export const ErrandSchema = SchemaFactory.createForClass(Errand);

@@ -71,6 +71,14 @@ export class IntentRouterService {
   private static readonly SAVE_FACT_RE =
     /\b(me gusta|me encanta|odio|prefiero|soy|tengo|vivo en|estudio|trabajo)\b/;
 
+  // ERRAND: "cuando <alguien> escriba/aparezca…", "recordale/decile/avisale
+  // a…", "dejale dicho", "broma". Sobre el texto ya normalizado (sin
+  // acentos), así que "recuérdale" llega como "recuerdale". Sin `\b` al final
+  // de los verbos con clítico: `decile`/`dile` ya son la palabra entera y el
+  // `\b` de JS sólo falla con acentos, que acá ya no hay.
+  static readonly ERRAND_RE =
+    /\b(cuando|apenas|si|en cuanto)\b[^.?!]{0,40}\b(escriba|escribe|hable|habla|aparezca|aparece|venga|entre|se conecte|conecte|llegue|veas|vea|salude|vuelva|regrese)\b|\b(recordale|recuerdale|recordarle|decile|dile|decirle|avisale|avisarle|preguntale|dejale dicho|dale el recado|pasale el recado)\b|\bbroma\b/;
+
   // ANILIST — condición 1: vocabulario de media concreto.
   //
   // `\bcap\b` y `\bscan\b` (antes `cap\b` y `scan` sin ancla izquierda):
@@ -237,6 +245,10 @@ export class IntentRouterService {
 
     if (opts.useMemory && IntentRouterService.SAVE_FACT_RE.test(normalized)) {
       included.add('SAVE_FACT');
+    }
+
+    if (opts.useMemory && IntentRouterService.ERRAND_RE.test(normalized)) {
+      included.add('ERRAND');
     }
 
     return ALL_BLOCKS.filter((block) => included.has(block));

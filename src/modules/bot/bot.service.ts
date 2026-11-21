@@ -1046,7 +1046,7 @@ export class BotService implements OnModuleInit {
 
     try {
       log.info('📋 Generando resumen del chat...');
-      const resumen = await this.chatService.generateSummary(authorUsername);
+      const resumen = await this.chatService.generateSummary(authorUsername, this.chatSocketService.username ?? undefined);
 
       // Ingesta en lote de los hechos que el modelo extrajo del resumen
       // (Task 5, fase 4b) — captura lo que se habla en el chat sin mencionar
@@ -1060,22 +1060,16 @@ export class BotService implements OnModuleInit {
           .catch(() => {});
       }
 
-      // Margen para el encabezado "📋✨ RESUMEN DEL CHAT (n/m)" y el cierre.
+      // El resumen lo cuenta el modelo con su voz: sin encabezado ni cierre
+      // fijos ("📋✨ RESUMEN DEL CHAT", "¡Eso es todo por ahora!"), sólo un
+      // 📋 al principio para que se distinga en el chat.
       const resumenParts = this.splitForChat(resumen.text, BotService.SUMMARY_FRAME_CHARS);
       log.info(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
         const part = resumenParts[i].trim();
         if (!part) continue;
-        const partIndicator = resumenParts.length > 1 ? ` (${i + 1}/${resumenParts.length})` : '';
-        const prefix = i === 0
-          ? `📋✨ RESUMEN DEL CHAT${partIndicator}\n\n`
-          : `📋 RESUMEN${partIndicator}\n\n`;
-        const suffix =
-          i === resumenParts.length - 1 && resumenParts.length > 1
-            ? '\n\n¡Eso es todo por ahora! 🎬'
-            : '';
-        this.sendBotMessage(`${prefix}${part}${suffix}`);
+        this.sendBotMessage(i === 0 ? `📋 ${part}` : part);
         if (i < resumenParts.length - 1) await this.utilsService.sleep(responseDelay);
       }
 
@@ -1112,8 +1106,8 @@ export class BotService implements OnModuleInit {
     return this.output.sendBotMessageAndAwaitId(text);
   }
 
-  /** Lugar reservado para el marco del resumen (encabezado + cierre). */
-  private static readonly SUMMARY_FRAME_CHARS = 64;
+  /** Lugar reservado para el "📋 " del principio del resumen. */
+  private static readonly SUMMARY_FRAME_CHARS = 8;
 
   /** Ver `BotOutputService.splitForChat`. */
   private splitForChat(text: string, overhead: number): string[] {
@@ -1152,13 +1146,13 @@ export class BotService implements OnModuleInit {
     authorUsername: string,
     botUsername: string,
   ): Promise<boolean> {
-    if (!this.crossContextSettings.isEnabled()) return false;
-
+    // Los recados ya no dependen de CROSS_USER_CONTEXT: se crean con la
+    // memoria activa y se entregan siempre que haya uno pendiente.
     const errand = await this.errandService.claimNext(authorUsername).catch(() => null);
     if (!errand) return false;
 
     const drafted = await this.chatService
-      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text)
+      .deliverErrand(botUsername, authorUsername, errand.fromLabel, errand.text, errand.secret)
       .catch(() => '');
 
     // El recado ya está marcado como entregado (ver `claimNext`), así que si
@@ -1170,7 +1164,7 @@ export class BotService implements OnModuleInit {
     // modelo — nunca se publica una mención pelada.
     const message =
       BotService.stripIntentTokens(drafted) ||
-      BotService.stripIntentTokens(`${errand.fromLabel} te dejó dicho: ${errand.text}`);
+      BotService.stripIntentTokens(errand.secret ? errand.text : `${errand.fromLabel} te dejó dicho: ${errand.text}`);
 
     // Revisión final de rama (CRITICAL, tercera parte): la entrega sale por
     // `handleChatResponse` y no por `sendBotMessage` directo. El camino

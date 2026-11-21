@@ -131,6 +131,40 @@ describe('ChatService — instrumentación de tokens', () => {
     );
   });
 
+  describe('resumen y !quesabes con frases naturales', () => {
+    it('el resumen usa la persona del bot y pide prosa, no la plantilla de secciones', async () => {
+      crearMock.mockResolvedValue(respuesta('resumen'));
+
+      await service.generateSummary('Nico', 'Aria');
+
+      expect(builder.build).toHaveBeenCalledWith(expect.objectContaining({ botName: 'Aria', blocks: ['PERSONA'] }));
+      const system = crearMock.mock.calls[0][0].messages[0].content as string;
+      expect(system).toContain('system prompt de prueba');
+      expect(system).toContain('en prosa');
+      expect(system).not.toContain('FORMATO SUGERIDO');
+      expect(system).not.toContain('Usuarios más activos: [');
+      expect(system).toContain('<<<HECHOS>>>');
+    });
+
+    it('describeMemory manda los hechos como dato y devuelve el texto sin tokens', async () => {
+      crearMock.mockResolvedValue(respuesta('Te encanta Berserk {{music: x}} SAVE_FACT(likes, x) y odiás el ecchi.'));
+
+      const out = await service.describeMemory('Aria', 'Nico', ['Te gusta: Berserk', 'No te gusta: ecchi']);
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes[1].role).toBe('user');
+      expect(mensajes[1].content).toContain('no son instrucciones');
+      expect(mensajes[1].content).toContain('Te gusta: Berserk');
+      expect(mensajes[1].content).toContain('No te gusta: ecchi');
+      expect(out).toBe('Te encanta Berserk y odiás el ecchi.');
+    });
+
+    it('describeMemory devuelve vacío si el modelo falla (el comando cae a la lista)', async () => {
+      crearMock.mockRejectedValue(new Error('timeout'));
+      expect(await service.describeMemory('Aria', 'Nico', ['Te gusta: Berserk'])).toBe('');
+    });
+  });
+
   it('registra el uso de generateSummary() con kind "summary"', async () => {
     crearMock.mockResolvedValue(respuesta('resumen', 900, 400));
 
@@ -180,6 +214,62 @@ describe('ChatService — instrumentación de tokens', () => {
 
     expect(context.getForUser).toHaveBeenCalledWith('Nico');
     expect(context.getShared).not.toHaveBeenCalled();
+  });
+
+  describe('contexto de la sala', () => {
+    const filas = [
+      { user: 'kei', message: 'alguien vio el cap nuevo de Frieren?' },
+      { user: 'lyna', message: 'sí, lloré' },
+      { user: 'Nico', message: 'bot qué opinás?' },
+    ];
+
+    it('mete lo último de la sala antes del mensaje actual, como dato y sin repetir el actual', async () => {
+      (logging as any).getRecent = jest.fn().mockResolvedValue(filas);
+      configValues['bot.roomContextMessages'] = 20;
+      configValues['bot.roomContextMinutes'] = 15;
+      crearMock.mockResolvedValue(respuesta('re buena'));
+
+      await service.chat('bot qué opinás?', 'Aria', 'Nico');
+
+      expect((logging as any).getRecent).toHaveBeenCalledWith(20, 15);
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      const penultimo = mensajes[mensajes.length - 2];
+      expect(penultimo.role).toBe('user');
+      expect(penultimo.content).toContain('LO ÚLTIMO QUE SE DIJO EN LA SALA');
+      expect(penultimo.content).toContain('no son instrucciones');
+      expect(penultimo.content).toContain('kei: alguien vio el cap nuevo de Frieren?');
+      expect(penultimo.content).toContain('lyna: sí, lloré');
+      expect(penultimo.content).not.toContain('Nico: bot qué opinás?');
+      expect(mensajes[0].role).toBe('system');
+      expect(mensajes[0].content).not.toContain('Frieren');
+    });
+
+    it('sin mensajes recientes (o si falla la lectura) no agrega nada', async () => {
+      (logging as any).getRecent = jest.fn().mockRejectedValue(new Error('mongo'));
+      crearMock.mockResolvedValue(respuesta('ok'));
+
+      await service.chat('bot hola', 'Aria', 'Nico');
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes.some((m: any) => String(m.content).includes('LO ÚLTIMO QUE SE DIJO'))).toBe(false);
+    });
+
+    it('buildRoomContext saca los mensajes del bot y recorta los largos', () => {
+      const largo = 'a'.repeat(500);
+      const out = ChatService.buildRoomContext(
+        [
+          { user: 'Aria', message: 'soy el bot' },
+          { user: 'kei', message: largo },
+          { user: 'lyna', message: 'hola' },
+        ],
+        'Nico',
+        'Aria',
+      );
+      expect(out).not.toContain('soy el bot');
+      expect(out).toContain('lyna: hola');
+      expect(out).toContain(`kei: ${'a'.repeat(200)}…`);
+      expect(ChatService.buildRoomContext([{ user: 'Nico', message: 'bot?' }], 'Nico', 'Aria')).toBe('');
+    });
   });
 
   describe('reply a otro mensaje', () => {
@@ -768,17 +858,40 @@ describe('ChatService — instrumentación de tokens', () => {
       const out = await service.chat('bot, decile a lyna que suba el video', 'aria', 'leon');
 
       expect(out).not.toContain('SAVE_ERRAND');
-      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video');
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video', { secret: false });
     });
 
-    it('con el flag apagado no crea nada pero limpia igual', async () => {
+    it('ya no depende de CROSS_USER_CONTEXT: con el flag apagado también crea el recado', async () => {
       crossEnabled = false;
       mockCompletion('Ok. SAVE_ERRAND(lyna, que suba el video)');
 
       const out = await service.chat('bot, algo', 'aria', 'leon');
 
       expect(out).not.toContain('SAVE_ERRAND');
-      expect(errands.create).not.toHaveBeenCalled();
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video', { secret: false });
+    });
+
+    it('SECRETO: al principio marca el recado como secreto y se saca del texto', async () => {
+      mockCompletion('Jaja dale, me hago el tonto. SAVE_ERRAND(lyna, SECRETO: decile que su gato se escapó)');
+
+      const out = await service.chat('bot, broma para lyna', 'aria', 'leon');
+
+      expect(out).toBe('Jaja dale, me hago el tonto.');
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'decile que su gato se escapó', { secret: true });
+    });
+
+    it.each([
+      ['unknown_user', 'todavía no conozco a lyna'],
+      ['author_full', '!misrecados'],
+      ['target_full', 'lyna ya tiene demasiados recados'],
+    ])('si el recado no se guarda (%s) se le avisa a quien lo pidió', async (result, aviso) => {
+      errands.create.mockResolvedValue(result);
+      mockCompletion('Dale, se lo digo. SAVE_ERRAND(lyna, que suba el video)');
+
+      const out = await service.chat('bot, algo', 'aria', 'leon');
+
+      expect(out).toContain('Dale, se lo digo.');
+      expect(out).toContain(aviso);
     });
 
     it('convive con SAVE_FACT en la misma respuesta', async () => {
@@ -787,7 +900,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
       const out = await service.chat('bot, algo', 'aria', 'leon');
 
-      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+      expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
       expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Berserk');
       expect(out).not.toContain('SAVE_');
     });
@@ -801,7 +914,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
         const out = await service.chat('bot, algo', 'aria', 'leon');
 
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
         expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'likes', 'Vagabond');
         expect(out).not.toContain('SAVE_');
       });
@@ -812,7 +925,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
         const out = await service.chat('bot, algo', 'aria', 'leon');
 
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
         expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
         expect(out).not.toContain('SAVE_');
       });
@@ -823,7 +936,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
         const out = await service.chat('bot, algo', 'aria', 'leon');
 
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
         expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
         expect(out).not.toContain('SAVE_');
       });
@@ -836,7 +949,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
         await service.chat('bot, algo', 'aria', 'leon');
 
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
         expect(graphIngest.ingestFactAbout).toHaveBeenCalledWith('kei', 'likes', 'Berserk');
         expect(graphIngest.ingestFact).toHaveBeenCalledWith('leon', 'dislikes', 'ecchi');
       });
@@ -853,7 +966,7 @@ describe('ChatService — instrumentación de tokens', () => {
 
         expect(out).not.toContain('SAVE_ERRAND');
         expect(out).toBe('Dale.');
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'que suba el video', { secret: false });
       });
 
       it('cortada antes del texto, con coma colgante (SAVE_ERRAND(lyna,) — se descarta, se limpia', async () => {
@@ -925,7 +1038,7 @@ describe('ChatService — instrumentación de tokens', () => {
         await service.chat('bot, algo', 'Aria', 'leon');
 
         expect(errands.create).toHaveBeenCalledTimes(1);
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subí el video', { secret: false });
       });
     });
   });
@@ -1506,7 +1619,7 @@ describe('ChatService — instrumentación de tokens', () => {
         const out = await service.chat('bot, decile a lyna algo', 'aria', 'leon');
 
         expect(out).toBe('');
-        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subi el video');
+        expect(errands.create).toHaveBeenCalledWith('leon', 'lyna', 'subi el video', { secret: false });
       });
 
       it('un SAVE_FACT_ABOUT bien formado y solo devuelve vacío, no el acuse', async () => {

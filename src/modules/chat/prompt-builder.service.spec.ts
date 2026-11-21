@@ -309,7 +309,7 @@ describe('PromptBuilderService', () => {
     // único que hace que el modelo emita `SAVE_ERRAND`, así que las Tasks 4 y
     // 5 enteras (la colección `bot_errands`, la cola FIFO, el camino de
     // entrega) podían quedar inertes en producción con la suite en verde.
-    it('el tramo de terceros también enseña SAVE_ERRAND, no sólo SAVE_FACT_ABOUT', () => {
+    it('SAVE_ERRAND tiene su propio bloque (ERRAND), sin depender de crossContext ni de SAVE_FACT', () => {
       const base = {
         botName: 'aria',
         username: 'leon',
@@ -317,11 +317,18 @@ describe('PromptBuilderService', () => {
         personality: 'default' as const,
         useMemory: true,
         now: new Date('2026-08-02T12:00:00Z'),
-        blocks: ['SAVE_FACT'] as PromptBlock[],
       };
 
-      expect(service.build({ ...base, crossContext: false })).not.toContain('SAVE_ERRAND');
-      expect(service.build({ ...base, crossContext: true })).toContain('SAVE_ERRAND');
+      expect(service.build({ ...base, blocks: ['SAVE_FACT'], crossContext: true })).not.toContain('SAVE_ERRAND');
+      const conErrand = service.build({ ...base, blocks: ['ERRAND'], crossContext: false });
+      expect(conErrand).toContain('SAVE_ERRAND(usuario, texto)');
+      expect(conErrand).toContain('SECRETO:');
+      expect(conErrand).toContain('nunca vos mismo (aria)');
+      // Bloque fijo: no lleva el nombre de quien escribe (caché de prefijo).
+      const bloque = conErrand.slice(conErrand.indexOf('RECADOS PARA OTRA PERSONA'), conErrand.indexOf('AHORA TE ESCRIBE'));
+      expect(bloque).not.toContain('leon');
+      // Sin memoria no hay recados.
+      expect(service.build({ ...base, useMemory: false, blocks: ['ERRAND'] })).not.toContain('SAVE_ERRAND');
     });
 
     // ─── Revisión final de rama (deuda #2) ────────────────────────────────
@@ -342,9 +349,8 @@ describe('PromptBuilderService', () => {
         crossContext: true,
       });
 
-      expect(salida).toContain('ya escribió en esta sala');
+      expect(salida).toContain('YA escribió en esta sala');
       expect(salida).toContain('Nunca sobre vos mismo (aria)');
-      expect(salida).toContain('nunca podés ser vos mismo (aria)');
     });
 
     it('sin botName, el tramo no dice "vos mismo (undefined)"', () => {
