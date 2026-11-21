@@ -5,6 +5,9 @@ import { Model } from 'mongoose';
 import { UtilsService } from './utils.service';
 import { MessageLog, MessageLogDocument } from '../schemas/message-log.schema';
 import { EventLog, EventLogDocument } from '../schemas/event-log.schema';
+import { createLog } from './log';
+
+const log = createLog('LoggingService');
 
 const MESSAGES_CAP = 200;
 const EVENTS_CAP = 200;
@@ -55,7 +58,7 @@ export class LoggingService {
   async clearMessagesLog(): Promise<number> {
     const before = await this.messageLogModel.estimatedDocumentCount();
     await this.messageLogModel.deleteMany({});
-    console.log(`📝 Log de mensajes limpiado: ${before} mensajes eliminados`);
+    log.info(`📝 Log de mensajes limpiado: ${before} mensajes eliminados`);
     return before;
   }
 
@@ -108,7 +111,7 @@ export class LoggingService {
     if (!botUsername) return;
     const result = await this.messageLogModel.deleteMany({ user: botUsername });
     if (result.deletedCount && result.deletedCount > 0) {
-      console.log(`🧹 Limpieza del log: ${result.deletedCount} mensajes del bot removidos`);
+      log.info(`🧹 Limpieza del log: ${result.deletedCount} mensajes del bot removidos`);
     }
   }
 }

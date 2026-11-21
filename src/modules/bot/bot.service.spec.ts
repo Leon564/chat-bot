@@ -6,7 +6,6 @@ import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
@@ -157,7 +156,6 @@ describe('BotService — handleAniListRequest (caché)', () => {
           },
         },
         { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: cache },
@@ -440,7 +438,6 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -600,7 +597,6 @@ describe('BotService — handleMemoryCommand (!quesabes, Task 2 fase 5a)', () =>
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -807,7 +803,6 @@ describe('BotService — handleForgetCommand (!olvida, Task 3 fase 5a)', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -993,7 +988,6 @@ describe('BotService — guard de límite de gasto (Task 4, fase 5a)', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: utils },
         { provide: LoggingService, useValue: logging },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: ingest },
         { provide: GraphCacheService, useValue: {} },
@@ -1184,7 +1178,6 @@ describe('BotService — marcado de recomendación colaborativa (Task 3, fase 5b
           },
         },
         { provide: LoggingService, useValue: { saveLog: jest.fn().mockResolvedValue(undefined) } },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
         { provide: GraphCacheService, useValue: {} },
@@ -1518,7 +1511,6 @@ const buildBotService = async (
       { provide: AniListService, useValue: {} },
       { provide: UtilsService, useValue: utils },
       { provide: LoggingService, useValue: logging },
-      { provide: MemoryService, useValue: {} },
       { provide: ChatSocketService, useValue: socket },
       { provide: GraphIngestService, useValue: { ingestSocial: jest.fn().mockResolvedValue(undefined) } },
       { provide: GraphCacheService, useValue: {} },
@@ -2001,7 +1993,6 @@ describe('BotService — entrega de canciones', () => {
         { provide: AniListService, useValue: {} },
         { provide: UtilsService, useValue: { sleep: jest.fn().mockResolvedValue(undefined) } },
         { provide: LoggingService, useValue: {} },
-        { provide: MemoryService, useValue: {} },
         { provide: ChatSocketService, useValue: socket },
         { provide: GraphIngestService, useValue: { ingestTrack: jest.fn().mockResolvedValue(undefined) } },
         { provide: GraphCacheService, useValue: {} },
@@ -2332,6 +2323,29 @@ describe('!uso', () => {
     expect(sent.join(' ')).toContain('US$ 0.0320');
   });
 
+  it('con precio de caché, la entrada cacheada se cobra aparte', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, cachedPromptTokens: 15000 }) };
+    const { service, sent } = await buildBotService({
+      usage,
+      config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4, 'bot.llmPriceCachedInputPerM': 0.02 },
+    });
+    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    // 5000 * 1 + 15000 * 0.02 + 3000 * 4 = 17300 → /1M = 0.0173
+    const out = sent.join(' ');
+    expect(out).toContain('US$ 0.0173');
+    expect(out).toContain('15.000 desde caché');
+  });
+
+  it('sin precio de caché, la entrada cacheada se cobra como entrada normal', async () => {
+    const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, cachedPromptTokens: 15000 }) };
+    const { service, sent } = await buildBotService({
+      usage,
+      config: { 'bot.llmPriceInputPerM': 1, 'bot.llmPriceOutputPerM': 4 },
+    });
+    await service['handleUsageCommand']('!uso', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('US$ 0.0320');
+  });
+
   it('avisa si los registros no cubren toda la ventana', async () => {
     const usage = { summarize: jest.fn().mockResolvedValue({ ...resumen, oldest: new Date(Date.now() - 3_600_000) }) };
     const { service, sent } = await buildBotService({ usage });
@@ -2410,5 +2424,78 @@ describe('escribiendo… y reacciones', () => {
     chat.chat.mockResolvedValue('hola');
     await service['handleNewChatMessage'](msg());
     expect(chat.chat.mock.calls[0][3]).toBeUndefined();
+  });
+});
+
+describe('recados: !misrecados / !cancelarrecado / !rechazarrecados', () => {
+  const handle = (service: BotService, content: string) => service['handleErrandCommands'](content, 'leon');
+
+  it('no toca otros mensajes', async () => {
+    const { service } = await buildBotService();
+    expect(await handle(service, 'hola')).toBe(false);
+    expect(await handle(service, '!misrecadosss')).toBe(false);
+  });
+
+  it('!misrecados lista numerado con vencimiento', async () => {
+    const listSent = jest.fn().mockResolvedValue([
+      { forUser: 'lyna', text: 'que suba el video', expiresAt: new Date(Date.now() + 2 * 86_400_000 + 60_000) },
+    ]);
+    const { service, sent } = await buildBotService({ errands: { listSent } as never });
+    await handle(service, '!misrecados');
+    expect(listSent).toHaveBeenCalledWith('leon');
+    expect(sent.join('\n')).toContain('1. Para lyna: "que suba el video" (vence en 2d)');
+  });
+
+  it('!misrecados sin pendientes lo dice', async () => {
+    const { service, sent } = await buildBotService({ errands: { listSent: jest.fn().mockResolvedValue([]) } as never });
+    await handle(service, '!misrecados');
+    expect(sent.join(' ')).toContain('No tenés recados pendientes');
+  });
+
+  it('!cancelarrecado <n> cancela el propio', async () => {
+    const cancelSent = jest.fn().mockResolvedValue({ ok: true, errand: { forUser: 'lyna', text: 'x', expiresAt: new Date() } });
+    const { service, sent } = await buildBotService({ errands: { cancelSent } as never });
+    await handle(service, '!cancelarrecado 1');
+    expect(cancelSent).toHaveBeenCalledWith('leon', 1);
+    expect(sent.join(' ')).toContain('Cancelé el recado para lyna');
+  });
+
+  it('!cancelarrecado de uno ya entregado avisa', async () => {
+    const cancelSent = jest.fn().mockResolvedValue({ ok: false, reason: 'gone' });
+    const { service, sent } = await buildBotService({ errands: { cancelSent } as never });
+    await handle(service, '!cancelarrecado 1');
+    expect(sent.join(' ')).toContain('ya lo entregué');
+  });
+
+  it.each(['!cancelarrecado', '!cancelarrecado dos'])('"%s" muestra el uso', async (cmd) => {
+    const cancelSent = jest.fn();
+    const { service, sent } = await buildBotService({ errands: { cancelSent } as never });
+    await handle(service, cmd);
+    expect(cancelSent).not.toHaveBeenCalled();
+    expect(sent.join(' ')).toContain('Uso: !cancelarrecado');
+  });
+
+  it('!rechazarrecados borra los entrantes sin mostrarlos', async () => {
+    const rejectIncoming = jest.fn().mockResolvedValue(2);
+    const { service, sent } = await buildBotService({ errands: { rejectIncoming } as never });
+    await handle(service, '!rechazarrecados');
+    expect(rejectIncoming).toHaveBeenCalledWith('leon');
+    expect(sent.join(' ')).toContain('Borré 2 recados');
+  });
+
+  it('el comando corta antes de la entrega: rechazar no dispara el recado que se rechaza', async () => {
+    const claimNext = jest.fn().mockResolvedValue({ fromLabel: 'kei', text: 'secreto' });
+    const rejectIncoming = jest.fn().mockResolvedValue(1);
+    const { service } = await buildBotService({ errands: { claimNext, rejectIncoming } as never });
+    await service['handleNewChatMessage']({ content: '!rechazarrecados', authorUsername: 'leon', authorRole: 'user' } as ChatMessage);
+    expect(rejectIncoming).toHaveBeenCalled();
+    expect(claimNext).not.toHaveBeenCalled();
+  });
+
+  it('si Mongo falla avisa en vez de tirar el proceso', async () => {
+    const listSent = jest.fn().mockRejectedValue(new Error('caído'));
+    const { service, sent } = await buildBotService({ errands: { listSent } as never });
+    await expect(handle(service, '!misrecados')).resolves.toBe(true);
+    expect(sent.join(' ')).toContain('No pude leer los recados');
   });
 });

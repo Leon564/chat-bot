@@ -890,7 +890,7 @@ describe('GraphContextService', () => {
         // lo que separa el guard "quirúrgico" (vacía sólo si no queda NADA)
         // de uno que vaciara de más (si CUALQUIER sección degenera, sin
         // mirar si otra sobrevivió) -- ver el mutante probado en el reporte.
-        const leon = await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
+        await graph.upsertNode({ type: 'user', key: 'leon', label: 'leon' });
         const lyna = await graph.upsertNode({ type: 'user', key: 'lyna', label: 'lyna' });
         const shortWork = await graph.upsertNode({ type: 'work', key: 'anilist:2', label: 'Vagabond' });
         const hugeWork = await graph.upsertNode({ type: 'work', key: 'anilist:3', label: hugeLabel });

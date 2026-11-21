@@ -42,3 +42,6 @@ export const ErrandSchema = SchemaFactory.createForClass(Errand);
 ErrandSchema.index({ forUser: 1, deliveredAt: 1, expiresAt: 1, createdAt: 1 });
 // El tope por autor.
 ErrandSchema.index({ fromUser: 1, deliveredAt: 1 });
+// TTL: Mongo borra cada recado al llegar a `expiresAt` (entregado o no).
+// Antes los vencidos y los ya entregados se acumulaban para siempre.
+ErrandSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

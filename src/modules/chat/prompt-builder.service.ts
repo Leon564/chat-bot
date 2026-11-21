@@ -248,8 +248,8 @@ ${offer.list}`;
 - Emití el token SIEMPRE que haya una obra concreta, aunque no la conozcas o no estés seguro de que exista: el sistema avisa solo si AniList no la encuentra. NUNCA reemplaces el token por una respuesta tuya sobre la obra (trama, autor, si está buena, si existe o no).`;
   }
 
-  private blockIdentidad(input: PromptInput): string {
-    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 3. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
+  private blockIdentidad(_input: PromptInput): string {
+    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 4. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
     return `INFORMACIÓN PERSONAL (solo si preguntan):
 - Creador/Padre: Leon564 (<@Sleepy Ash>)
 - Madre: <@Isis>

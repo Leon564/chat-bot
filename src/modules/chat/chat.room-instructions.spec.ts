@@ -106,6 +106,27 @@ describe('ChatService — instrucciones de sala', () => {
     service = moduleRef.get(ChatService);
   });
 
+  it('4–5. el cliente tiene timeout y un reintento, y max_tokens no usa los caracteres', async () => {
+    const OpenAI = jest.requireMock('openai').default as jest.Mock;
+    expect(OpenAI.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({ timeout: 30_000, maxRetries: 1 }));
+
+    crearMock.mockResolvedValue(respuesta('hola'));
+    await service.chat('contame algo', 'Aria', 'nico');
+    // maxLengthResponse es 200 (caracteres) en este test: ya no se pasa como tokens.
+    expect(crearMock.mock.calls[0][0].max_tokens).toBe(800);
+  });
+
+  it('registra los tokens de caché de DeepSeek (prompt_cache_hit_tokens)', async () => {
+    crearMock.mockResolvedValue({
+      choices: [{ message: { content: 'hola' } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 20, prompt_cache_hit_tokens: 900 },
+    });
+    const usage = (service as unknown as { usageService: { record: jest.Mock } }).usageService;
+    await service.chat('hola', 'Aria', 'nico');
+    await new Promise((r) => setImmediate(r));
+    expect(usage.record).toHaveBeenCalledWith(expect.objectContaining({ promptTokens: 1000, cachedPromptTokens: 900 }));
+  });
+
   it('las instrucciones vigentes van al prompt de cualquiera', async () => {
     crearMock.mockResolvedValue(respuesta('hola'));
     await service.chat('hola', 'Aria', 'nico');

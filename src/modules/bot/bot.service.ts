@@ -1,11 +1,10 @@
-﻿import { Injectable, OnModuleInit, Optional } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
 import { UtilsService } from '../../common/utils/utils.service';
 import { LoggingService } from '../../common/utils/logging.service';
-import { MemoryService } from '../../common/utils/memory.service';
 import { ChatSocketService, ChatMessage } from '../chat-socket/chat-socket.service';
 import { GraphIngestService } from '../graph/graph-ingest.service';
 import { GraphCacheService } from '../graph/graph-cache.service';
@@ -20,6 +19,8 @@ import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { StickerGateService } from './sticker-gate.service';
+import { MusicQuotaService, MusicAdmission } from './music-quota.service';
+import { MusicIntentService } from './music-intent.service';
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
 import { BbcodeSettingsService } from '../chat-socket/bbcode-settings.service';
 import {
@@ -58,6 +59,9 @@ import {
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { MusicProgress } from '../../common/interfaces';
+import { createLog } from '../../common/utils/log';
+
+const log = createLog('BotService');
 
 /**
  * Mensaje fijo cuando `RateLimitService.check` rechaza a alguien. Corto y
@@ -99,6 +103,8 @@ const RELATION_ORDER: EdgeType[] = [
 
 @Injectable()
 export class BotService implements OnModuleInit {
+  private readonly logger = new Logger(BotService.name);
+
   constructor(
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
@@ -106,7 +112,6 @@ export class BotService implements OnModuleInit {
     private readonly aniListService: AniListService,
     private readonly utilsService: UtilsService,
     private readonly loggingService: LoggingService,
-    private readonly memoryService: MemoryService,
     private readonly chatSocketService: ChatSocketService,
     private readonly graphIngestService: GraphIngestService,
     private readonly graphCacheService: GraphCacheService,
@@ -123,18 +128,25 @@ export class BotService implements OnModuleInit {
     @Optional() private readonly bbcodeSettings?: BbcodeSettingsService,
     // Opcional por el mismo motivo: sin él no hay instrucciones de sala.
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
+    // Opcional para los tests armados a mano: sin él la música no tiene topes.
+    @Optional() private readonly musicQuota?: MusicQuotaService,
+    // Opcional igual: sin él, "reproduce X" sin nombrar al bot no se atiende.
+    @Optional() private readonly musicIntent?: MusicIntentService,
   ) {}
 
   async onModuleInit() {
-    console.log('🤖 Inicializando Bot Service...');
+    log.info('🤖 Inicializando Bot Service...');
 
-    const useMemory = this.configService.get<boolean>('bot.useMemory');
-    if (useMemory) {
-      await this.memoryService.migrateMemoriesToUserFormat();
-      await this.memoryService.cleanExistingMemories();
-    }
-
-    this.chatSocketService.onMessage((msg) => this.handleNewChatMessage(msg));
+    // El socket no espera al handler, así que un rechazo acá era una promesa
+    // flotante: `main.ts` corta el proceso ante cualquier `unhandledRejection`,
+    // y un parpadeo de Mongo en `saveLog` (que corre en CADA mensaje)
+    // reiniciaba el bot. Se loguea y se sigue con el próximo mensaje.
+    this.chatSocketService.onMessage((msg) => {
+      this.handleNewChatMessage(msg).catch((err: unknown) => {
+        const e = err instanceof Error ? err : new Error(String(err));
+        this.logger.error(`Error manejando el mensaje de ${msg?.authorUsername ?? '?'}: ${e.message}`, e.stack);
+      });
+    });
   }
 
   // ─── Message dispatcher ────────────────────────────────────────────────────
@@ -200,6 +212,11 @@ export class BotService implements OnModuleInit {
     // dispatcher la deje pasar por casualidad.
     if (await this.handleForgetCommand(content, authorUsername)) return;
 
+    // Recados: ver/cancelar los propios y rechazar los entrantes. Antes de la
+    // entrega de abajo, para que `!rechazarrecados` no dispare justo la
+    // entrega del recado que se quiere rechazar.
+    if (await this.handleErrandCommands(content, authorUsername)) return;
+
     // Entrega de recados. Va antes del filtro de menciones a propósito: el
     // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
     // dirigirse al bot. Con el filtro delante, el recado no se entregaría
@@ -233,29 +250,49 @@ export class BotService implements OnModuleInit {
     const isReplyToBot =
       !!msg.replyTo && msg.replyTo.authorUsername?.toLowerCase() === botUsername.toLowerCase();
 
-    const isMusicRequest = MusicService.isMusicRequest(content);
+    // `!music` funciona sin nombrar al bot; una frase natural ("reproduce X")
+    // sólo si el mensaje le habla al bot. Antes cualquier mensaje con
+    // "reproduce" o "tema de" disparaba una descarga.
+    const addressesBot = isReplyToBot || containsBotWord(content) || containsExactBotName(content);
+    const isMusicRequest =
+      MusicService.isMusicRequest(content) && (/^\s*!music\s/i.test(content) || addressesBot);
     const isOnlineReq = this.isOnlineUsersRequest(content);
     const videoEnabled = !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
+
+    // Sin nombrar al bot, "reproduce X" sólo cuenta si el clasificador local
+    // (verbo al principio, sin señales de charla, o canción/artista conocido
+    // en el grafo) lo da por pedido. Ver MusicIntentService.
+    let intentQuery: string | null = null;
+    if (!isMusicRequest && !addressesBot && !isVideoReq && this.musicIntent) {
+      const intent = await this.musicIntent.classify(content);
+      if (intent?.isRequest) intentQuery = intent.query;
+    }
 
     if (
       !isReplyToBot &&
       !containsBotWord(content) &&
       !containsExactBotName(content) &&
       !isMusicRequest &&
+      !intentQuery &&
       !isOnlineReq &&
       !isVideoReq
     ) return;
 
-    console.log(`📨 Mensaje de ${authorUsername}: "${content}"`);
+    log.info(`📨 Mensaje de ${authorUsername}: "${content}"`);
 
     if (isVideoReq) {
-      await this.handleVideoRequest(content, authorUsername);
+      await this.handleVideoRequest(content, authorUsername, authorRole);
       return;
     }
 
     if (isMusicRequest) {
-      await this.handleMusicRequest(content, authorUsername);
+      await this.handleMusicRequest(content, authorUsername, authorRole);
+      return;
+    }
+
+    if (intentQuery) {
+      await this.handleMusicRequest(`!music ${intentQuery}`, authorUsername, authorRole);
       return;
     }
 
@@ -265,7 +302,9 @@ export class BotService implements OnModuleInit {
     }
 
     // Debug commands (owner only)
-    if (authorUsername === 'Sleepy Ash' && content.toLowerCase().includes('debug')) {
+    // Por rol y no por nombre: antes sólo respondía al nombre exacto
+    // 'Sleepy Ash', fijo en el código.
+    if ((authorRole === 'admin' || authorRole === 'superAdmin') && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
       this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
       return;
@@ -327,10 +366,10 @@ export class BotService implements OnModuleInit {
     // La reacción va primero: es instantánea y no compite con el texto.
     if (reaction) {
       this.chatSocketService.toggleReaction(msg._id, reaction);
-      console.log(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
+      log.info(`💬 Reacción ${reaction} al mensaje de ${authorUsername}`);
     }
 
-    if (response) await this.handleChatResponse(response, authorUsername);
+    if (response) await this.handleChatResponse(response, authorUsername, authorRole);
     // El sticker va DESPUÉS del texto y sólo en respuestas de charla: en una
     // de música, AniList, resumen o usuarios online el token del flujo
     // (`{{...}}`) manda y un sticker encima sería ruido.
@@ -338,7 +377,7 @@ export class BotService implements OnModuleInit {
       if (response) await this.utilsService.sleep(this.configService.get<number>('bot.responseDelay') || 1000);
       this.chatSocketService.sendSticker(sticker.code);
       this.stickerGate.markSent();
-      console.log(`🧩 Sticker enviado: ${sticker.name}`);
+      log.info(`🧩 Sticker enviado: ${sticker.name}`);
     }
 
     // Fire-and-forget, con su propio catch, como el resto de la ingesta al
@@ -382,7 +421,7 @@ export class BotService implements OnModuleInit {
     if (!match) return { text: response ?? '', sticker: null };
     const text = response.replace(re, '').replace(/[ \t]{2,}/g, ' ').trim();
     const found = this.stickerCatalog.findByName(match[1]);
-    if (!found) console.log(`🧩 El modelo eligió un sticker que no existe: "${match[1]}"`);
+    if (!found) log.info(`🧩 El modelo eligió un sticker que no existe: "${match[1]}"`);
     return { text, sticker: found ? { code: found.code, name: found.name } : null };
   }
 
@@ -511,12 +550,15 @@ export class BotService implements OnModuleInit {
 
   // ─── Music ─────────────────────────────────────────────────────────────────
 
-  private async handleMusicRequest(message: string, authorUsername: string): Promise<void> {
+  private async handleMusicRequest(message: string, authorUsername: string, authorRole?: string): Promise<void> {
     const query = MusicService.extractMusicQuery(message);
     if (!query || query.trim().length < 2) {
       this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué canción quieres. Probá con: "!music nombre de la canción"`);
       return;
     }
+
+    const admission = this.admitMusic(authorUsername, authorRole, 'canción');
+    if (!admission) return;
 
     const searchingId = await this.sendBotMessageAndAwaitId(
       `@${authorUsername} 🎵 Buscando "${query}"… un momento.`,
@@ -555,7 +597,32 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyMusicError(error, query)}`);
-      });
+      })
+      .finally(admission.release);
+  }
+
+  /**
+   * Pide lugar en `MusicQuotaService`. Si no hay, avisa y devuelve `null`.
+   * Sin el servicio (tests armados a mano) siempre deja pasar.
+   */
+  private admitMusic(
+    authorUsername: string,
+    authorRole: string | undefined,
+    what: 'canción' | 'video',
+  ): Extract<MusicAdmission, { ok: true }> | null {
+    if (!this.musicQuota) return { ok: true, release: () => {} };
+    const admission = this.musicQuota.admit(authorUsername, authorRole);
+    if (admission.ok === true) return admission;
+
+    const rejected = admission as Extract<MusicAdmission, { ok: false }>;
+    const text = {
+      user_pending: `⏳ Ya tenés ${rejected.limit} pedidos en camino; esperá a que lleguen antes de pedir otra ${what}.`,
+      global_pending: `🎧 Hay muchos pedidos en cola ahora mismo; probá de nuevo en un ratito.`,
+      hourly: `⏱️ Llegaste al tope de ${rejected.limit} pedidos por hora; probá más tarde.`,
+    }[rejected.reason];
+    this.sendBotMessage(`@${authorUsername} ${text}`);
+    log.info(`🎵 [QUOTA] ${authorUsername} (${authorRole ?? 'sin rol'}) rechazado: ${rejected.reason}`);
+    return null;
   }
 
   /**
@@ -836,12 +903,15 @@ export class BotService implements OnModuleInit {
 
   // ─── Video ─────────────────────────────────────────────────────────────────
 
-  private async handleVideoRequest(message: string, authorUsername: string): Promise<void> {
+  private async handleVideoRequest(message: string, authorUsername: string, authorRole?: string): Promise<void> {
     const query = MusicService.extractVideoQuery(message);
     if (!query || query.trim().length < 2) {
       this.sendBotMessage(`@${authorUsername} 🤔 No entendí qué video quieres. Probá con: "!video nombre del video"`);
       return;
     }
+
+    const admission = this.admitMusic(authorUsername, authorRole, 'video');
+    if (!admission) return;
 
     const searchingId = await this.sendBotMessageAndAwaitId(
       `@${authorUsername} 🎬 Buscando video "${query}"… un momento.`,
@@ -866,7 +936,8 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);
         this.sendBotMessage(`@${authorUsername} ${this.friendlyVideoError(error, query)}`);
-      });
+      })
+      .finally(admission.release);
   }
 
   /** Same friendly mapping as music but with a video-flavoured default. */
@@ -963,7 +1034,7 @@ export class BotService implements OnModuleInit {
 
   // ─── Chat / GPT response ───────────────────────────────────────────────────
 
-  private async handleChatResponse(response: string, authorUsername: string): Promise<void> {
+  private async handleChatResponse(response: string, authorUsername: string, authorRole?: string): Promise<void> {
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
 
     if (response.includes('{{resumen}}')) {
@@ -988,7 +1059,7 @@ export class BotService implements OnModuleInit {
         await this.utilsService.sleep(responseDelay);
       }
       for (const query of queries) {
-        await this.handleMusicRequest(`!music ${query}`, authorUsername);
+        await this.handleMusicRequest(`!music ${query}`, authorUsername, authorRole);
       }
       return;
     }
@@ -1057,7 +1128,7 @@ export class BotService implements OnModuleInit {
     await this.utilsService.sleep(responseDelay);
 
     try {
-      console.log('📋 Generando resumen del chat...');
+      log.info('📋 Generando resumen del chat...');
       const resumen = await this.chatService.generateSummary(authorUsername);
 
       // Ingesta en lote de los hechos que el modelo extrajo del resumen
@@ -1074,7 +1145,7 @@ export class BotService implements OnModuleInit {
 
       // Margen para el encabezado "📋✨ RESUMEN DEL CHAT (n/m)" y el cierre.
       const resumenParts = this.splitForChat(resumen.text, BotService.SUMMARY_FRAME_CHARS);
-      console.log(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
+      log.info(`📋 Enviando resumen en ${resumenParts.length} parte(s)`);
 
       for (let i = 0; i < resumenParts.length; i++) {
         const part = resumenParts[i].trim();
@@ -1100,14 +1171,14 @@ export class BotService implements OnModuleInit {
       // reintentar por un fallo que no fue suyo. Sólo se consume el estado
       // cuando de verdad se generó y envió un resumen.
       if (resumen.text === ChatService.SUMMARY_PARSE_ERROR) {
-        console.log('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
+        log.info('⚠️ El resumen falló al parsear: no se consume el cooldown ni se limpia el log de mensajes.');
       } else {
         await this.loggingService.saveEventsLog('Resumen', authorUsername);
         const clearedCount = await this.loggingService.clearMessagesLog();
-        console.log(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
+        log.info(`✅ Resumen completado y log limpiado (${clearedCount} mensajes eliminados)`);
       }
     } catch (error) {
-      console.error('❌ Error generating summary:', error);
+      log.error('❌ Error generating summary:', error);
       this.sendBotMessage('❌ Error al generar el resumen. Inténtalo más tarde.');
     }
   }
@@ -1201,7 +1272,7 @@ export class BotService implements OnModuleInit {
     if (sub === 'default' || sub === 'unfiltered') {
       this.chatService.setPersonalityOverride(sub);
       this.sendBotMessage(`@${authorUsername} ✅ Personalidad cambiada a "${sub}".`);
-      console.log(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
+      log.info(`🎭 [PERSONALITY] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1211,7 +1282,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ↩️ Personalidad reseteada al valor del .env: "${info.current}".`,
       );
-      console.log(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
+      log.info(`🎭 [PERSONALITY] ${authorUsername} → reset (.env: ${info.current})`);
       return true;
     }
 
@@ -1257,7 +1328,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ✅ Contexto cruzado ${sub === 'on' ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
+      log.info(`🔗 [CROSS-CONTEXT] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1310,7 +1381,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ✅ Contexto compartido ${sub === 'on' ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → ${sub}`);
+      log.info(`👥 [SHARED-CONTEXT] ${authorUsername} → ${sub}`);
       return true;
     }
 
@@ -1320,7 +1391,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} ↩️ Contexto compartido reseteado al valor del .env: ${info.enabled ? 'activado' : 'desactivado'}.`,
       );
-      console.log(`👥 [SHARED-CONTEXT] ${authorUsername} → reset (.env: ${info.enabled})`);
+      log.info(`👥 [SHARED-CONTEXT] ${authorUsername} → reset (.env: ${info.enabled})`);
       return true;
     }
 
@@ -1407,7 +1478,7 @@ export class BotService implements OnModuleInit {
       this.sendBotMessage(
         `@${authorUsername} 🧹 ${count > 0 ? `Borré ${count} instrucción${count === 1 ? '' : 'es'} de sala.` : 'No había instrucciones de sala.'}`,
       );
-      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → reset (${count})`);
+      log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → reset (${count})`);
       return true;
     }
 
@@ -1419,7 +1490,7 @@ export class BotService implements OnModuleInit {
           ? `@${authorUsername} 🗑️ Quité la instrucción ${n}: "${removed.text}"`
           : `@${authorUsername} ❌ No hay instrucción número ${n}. Mirá la lista con !instrucciones`,
       );
-      if (removed) console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → quitar #${n}`);
+      if (removed) log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → quitar #${n}`);
       return true;
     }
 
@@ -1450,7 +1521,7 @@ export class BotService implements OnModuleInit {
     if (result.ok) {
       const lasts = ttlMs ? ` durante ${formatRemaining(ttlMs)}` : ' hasta que la quiten';
       this.sendBotMessage(`@${authorUsername} 📌 Instrucción ${result.position} guardada. Va a aplicar a todas mis respuestas${lasts}.`);
-      console.log(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
+      log.info(`📌 [ROOM-INSTRUCTIONS] ${authorUsername} → agregar #${result.position}`);
     } else {
       const reason = {
         empty: 'La instrucción está vacía.',
@@ -1486,6 +1557,9 @@ export class BotService implements OnModuleInit {
       `• "${bot} resumen" — resumen de lo que se habló`,
       '• !quesabes — lo que recuerdo de vos',
       '• !olvida <algo> | !olvida todo — que me olvide de cosas tuyas',
+      '• !misrecados — recados que dejaste y todavía no entregué',
+      '• !cancelarrecado <n> — cancela uno de tus recados',
+      '• !rechazarrecados — borra sin leer los recados que hay para vos',
       '• !ayuda — esta lista',
     ];
     if (isStaff) {
@@ -1511,6 +1585,78 @@ export class BotService implements OnModuleInit {
       if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
     return true;
+  }
+
+  // ─── Recados (!misrecados / !cancelarrecado / !rechazarrecados) ─────────
+
+  /**
+   * Hasta ahora un recado no se podía ver ni cancelar: ni el autor (que se
+   * arrepentía) ni el destinatario (que lo iba a escuchar en público con la
+   * voz del bot la próxima vez que escribiera). Los tres comandos operan
+   * SIEMPRE sobre quien escribe, igual que `!quesabes`/`!olvida`; no hay forma
+   * de tocar recados de otra persona. `!rechazarrecados` no muestra el texto:
+   * la idea es poder sacárselos de encima sin leerlos.
+   */
+  private async handleErrandCommands(content: string, authorUsername: string): Promise<boolean> {
+    const text = content.trim();
+    const list = /^!misrecados\s*$/i.test(text);
+    const cancel = text.match(/^!cancelarrecado(?:\s+#?(\S+))?\s*$/i);
+    const reject = /^!rechazarrecados\s*$/i.test(text);
+    if (!list && !cancel && !reject) return false;
+
+    try {
+      if (list) {
+        const sent = await this.errandService.listSent(authorUsername);
+        if (sent.length === 0) {
+          this.sendBotMessage(`@${authorUsername} 📭 No tenés recados pendientes.`);
+          return true;
+        }
+        const now = Date.now();
+        const lines = sent.map(
+          (e, i) => `${i + 1}. Para ${e.forUser}: "${e.text}" (vence en ${formatRemaining(e.expiresAt.getTime() - now)})`,
+        );
+        const message = `📨 Tus recados pendientes:\n${lines.join('\n')}\nPara cancelar uno: !cancelarrecado <n>`;
+        const parts = this.splitForChat(message, `@${authorUsername} `.length);
+        const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+        for (let i = 0; i < parts.length; i++) {
+          this.sendBotMessage(i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i]);
+          if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
+        }
+        return true;
+      }
+
+      if (cancel) {
+        const n = Number(cancel[1]);
+        if (!cancel[1] || !Number.isInteger(n)) {
+          this.sendBotMessage(`@${authorUsername} Uso: !cancelarrecado <n> (mirá los números con !misrecados)`);
+          return true;
+        }
+        const result = await this.errandService.cancelSent(authorUsername, n);
+        if (result.ok === true) {
+          this.sendBotMessage(`@${authorUsername} 🗑️ Cancelé el recado para ${result.errand.forUser}.`);
+        } else {
+          const reason = (result as { reason: 'not_found' | 'gone' }).reason;
+          this.sendBotMessage(
+            reason === 'gone'
+              ? `@${authorUsername} 📬 Ese recado ya lo entregué, no se puede cancelar.`
+              : `@${authorUsername} ❌ No tenés un recado número ${n}. Mirá la lista con !misrecados`,
+          );
+        }
+        return true;
+      }
+
+      const removed = await this.errandService.rejectIncoming(authorUsername);
+      this.sendBotMessage(
+        removed > 0
+          ? `@${authorUsername} 🧹 Borré ${removed} recado${removed === 1 ? '' : 's'} que había para vos, sin entregarlos.`
+          : `@${authorUsername} 📭 No había recados para vos.`,
+      );
+      return true;
+    } catch (err) {
+      log.warn(`📨 [RECADOS] Falló un comando de recados de ${authorUsername}: ${(err as Error)?.message}`);
+      this.sendBotMessage(`@${authorUsername} ❌ No pude leer los recados, probá de nuevo.`);
+      return true;
+    }
   }
 
   // ─── Usage (!uso) ────────────────────────────────────────────────────────
@@ -1541,7 +1687,7 @@ export class BotService implements OnModuleInit {
     try {
       summary = await this.usageService.summarize(since);
     } catch (err) {
-      console.log(`📊 [USO] Falló el resumen de consumo: ${(err as Error)?.message}`);
+      log.info(`📊 [USO] Falló el resumen de consumo: ${(err as Error)?.message}`);
       this.sendBotMessage(`@${authorUsername} ❌ No pude leer el consumo, probá de nuevo.`);
       return true;
     }
@@ -1549,12 +1695,16 @@ export class BotService implements OnModuleInit {
     const fmt = (n: number) => n.toLocaleString('es-ES');
     const priceIn = this.configService.get<number>('bot.llmPriceInputPerM') ?? 0;
     const priceOut = this.configService.get<number>('bot.llmPriceOutputPerM') ?? 0;
-    const cost = (summary.promptTokens * priceIn + summary.completionTokens * priceOut) / 1_000_000;
+    // Sin precio propio para la entrada cacheada, se cobra como entrada normal.
+    const priceCached = this.configService.get<number | null>('bot.llmPriceCachedInputPerM') ?? priceIn;
+    const cached = Math.min(summary.cachedPromptTokens ?? 0, summary.promptTokens);
+    const cost =
+      ((summary.promptTokens - cached) * priceIn + cached * priceCached + summary.completionTokens * priceOut) / 1_000_000;
 
     const lines = [
       `📊 Consumo del modelo (${window.label}):`,
       `• ${fmt(summary.calls)} llamadas`,
-      `• ${fmt(summary.promptTokens)} tokens de entrada + ${fmt(summary.completionTokens)} de salida`,
+      `• ${fmt(summary.promptTokens)} tokens de entrada${summary.cachedPromptTokens ? ` (${fmt(summary.cachedPromptTokens)} desde caché)` : ''} + ${fmt(summary.completionTokens)} de salida`,
       ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
     ];
     if (summary.topUsers.length > 0) {

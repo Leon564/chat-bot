@@ -1,4 +1,5 @@
-import { MongooseModule } from '@nestjs/mongoose';
+import * as os from 'os';
+import { MongooseModule, MongooseModuleOptions } from '@nestjs/mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { Connection } from 'mongoose';
 
@@ -14,7 +15,12 @@ export const rootMongooseTestModule = () =>
   MongooseModule.forRootAsync({
     useFactory: async () => {
       mongod = await MongoMemoryServer.create();
-      return { uri: mongod.getUri() };
+      // El driver de mongodb >= 7.8 carga `os` con un `import()` dinámico, que
+      // Jest en modo CommonJS no soporta: la carga falla, la metadata del
+      // handshake sale sin `driver` y el servidor rechaza la conexión
+      // ("Missing required sub-document 'driver'"). Se le pasa `os` a mano.
+      // Sólo afecta a los tests: en producción Node resuelve el import solo.
+      return { uri: mongod.getUri(), runtimeAdapters: { os } } as MongooseModuleOptions;
     },
   });
 

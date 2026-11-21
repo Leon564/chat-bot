@@ -397,4 +397,69 @@ describe('ErrandService', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('target_full'));
     });
   });
+
+  describe('ver, cancelar y rechazar recados', () => {
+    beforeEach(async () => {
+      await graph.upsertNode({ type: 'user', key: 'kei', label: 'kei' });
+    });
+
+    it('listSent devuelve los pendientes del autor, del más viejo al más nuevo', async () => {
+      await service.create('leon', 'lyna', 'primero');
+      await service.create('leon', 'kei', 'segundo');
+      await service.create('kei', 'lyna', 'de otro autor');
+
+      const sent = await service.listSent('Leon');
+      expect(sent.map((e) => [e.forUser, e.text])).toEqual([
+        ['lyna', 'primero'],
+        ['kei', 'segundo'],
+      ]);
+      expect(sent[0].expiresAt).toBeInstanceOf(Date);
+    });
+
+    it('listSent no muestra los ya entregados', async () => {
+      await service.create('leon', 'lyna', 'hola');
+      await service.claimNext('lyna');
+      expect(await service.listSent('leon')).toEqual([]);
+    });
+
+    it('cancelSent borra el número pedido y renumera', async () => {
+      await service.create('leon', 'lyna', 'a');
+      await service.create('leon', 'kei', 'b');
+
+      const res = await service.cancelSent('leon', 1);
+      expect(res).toEqual({ ok: true, errand: expect.objectContaining({ forUser: 'lyna', text: 'a' }) });
+      expect((await service.listSent('leon')).map((e) => e.text)).toEqual(['b']);
+      expect(await service.claimNext('lyna')).toBeNull();
+    });
+
+    it('cancelSent fuera de rango no borra nada', async () => {
+      await service.create('leon', 'lyna', 'a');
+      expect(await service.cancelSent('leon', 2)).toEqual({ ok: false, reason: 'not_found' });
+      expect(await service.cancelSent('leon', 0)).toEqual({ ok: false, reason: 'not_found' });
+      expect(await model.countDocuments()).toBe(1);
+    });
+
+    it('cancelSent no puede tocar recados de otra persona', async () => {
+      await service.create('kei', 'lyna', 'ajeno');
+      expect(await service.cancelSent('leon', 1)).toEqual({ ok: false, reason: 'not_found' });
+      expect(await model.countDocuments()).toBe(1);
+    });
+
+    it('rejectIncoming borra los pendientes para el destinatario y nada más', async () => {
+      await service.create('leon', 'lyna', 'uno');
+      await service.create('kei', 'lyna', 'dos');
+      await service.create('lyna', 'leon', 'para leon');
+
+      expect(await service.rejectIncoming('Lyna')).toBe(2);
+      expect(await service.claimNext('lyna')).toBeNull();
+      expect(await service.claimNext('leon')).toEqual(expect.objectContaining({ text: 'para leon' }));
+    });
+
+    it('el índice TTL sobre expiresAt existe', async () => {
+      const indexes = await model.collection.indexes();
+      expect(indexes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ key: { expiresAt: 1 }, expireAfterSeconds: 0 })]),
+      );
+    });
+  });
 });

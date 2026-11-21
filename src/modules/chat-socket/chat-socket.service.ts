@@ -23,6 +23,23 @@ const TYPING_REFRESH_MS = 2500;
 /** Tope de seguridad: un "escribiendo…" nunca dura más que esto aunque nadie lo corte. */
 const TYPING_MAX_MS = 60_000;
 
+/** Primer reintento de reconexión; se duplica en cada fallo seguido. */
+export const RECONNECT_BASE_MS = 5_000;
+/** Techo del backoff: con el backend caído, un intento cada 5 min como mucho. */
+export const RECONNECT_MAX_MS = 5 * 60_000;
+/** Cuánto se espera la autenticación por HTTP antes de darla por fallida. */
+const AUTH_TIMEOUT_MS = 15_000;
+
+/**
+ * Espera antes del intento número `attempt` (0 = primero): exponencial con
+ * techo, más hasta un 20 % al azar para que varias instancias no reintenten
+ * todas en el mismo segundo. `rand` es inyectable para los tests.
+ */
+export function reconnectDelay(attempt: number, rand: () => number = Math.random): number {
+  const base = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, attempt), RECONNECT_MAX_MS);
+  return Math.round(base * (1 + 0.2 * rand()));
+}
+
 export interface ChatMessage {
   _id: string;
   content: string;
@@ -51,6 +68,10 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   private botUsername: string | null = null;
   private messageHandler: ((msg: ChatMessage) => void) | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  /** Fallos seguidos desde la última vez que el bot entró al chat. */
+  private reconnectAttempts = 0;
+  /** Apagando: ningún evento del socket puede programar otra reconexión. */
+  private shuttingDown = false;
   private pendingAcks = new Map<string, { resolve: (id: string | null) => void; timer: NodeJS.Timeout }>();
   /** Mensajes recientes por `_id` (orden de inserción = antigüedad), incluidos los del propio bot. */
   private recentMessages = new Map<string, { authorUsername: string; content: string; type?: string }>();
@@ -69,8 +90,21 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
+    // Antes: `disconnect()` disparaba el evento 'disconnect', cuyo handler
+    // programaba una reconexión — al apagar, el bot volvía a conectarse y el
+    // timer mantenía vivo el proceso.
+    this.shuttingDown = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.socket?.disconnect();
+    this.reconnectTimer = null;
+    this.dropSocket();
+  }
+
+  /** Suelta el socket actual sin que sus eventos disparen nada más. */
+  private dropSocket(): void {
+    if (!this.socket) return;
+    this.socket.removeAllListeners();
+    this.socket.disconnect();
+    this.socket = null;
   }
 
   /** Register a handler to be called for every incoming message */
@@ -93,6 +127,9 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey }),
+        // Sin esto, un backend colgado dejaba el connect esperando para siempre
+        // y nunca se programaba el reintento.
+        signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
       });
 
       if (!res.ok) {
@@ -130,6 +167,9 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     this.socket.on('joinedChat', (data: { success: boolean }) => {
       if (data.success) {
         this.logger.log(`🤖 Joined chat as ${this.botUsername}`);
+        // Recién acá cuenta como conexión buena: conectar el socket y que
+        // después rebote el join no debe resetear el backoff.
+        this.reconnectAttempts = 0;
       }
     });
 
@@ -158,8 +198,14 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
       this.stickerCatalog.update(data?.stickers, data?.stickerCategories);
     });
 
-    this.socket.on('joinError', (data: { message: string }) => {
-      this.logger.error(`joinError: ${data.message}`);
+    // Antes sólo se logueaba: el socket quedaba conectado pero fuera de la
+    // sala 'joined' (sin presencia) y, si el rechazo era por rol o API key, el
+    // bot quedaba sordo sin que nadie lo notara. Ahora se suelta el socket y
+    // se reintenta con backoff (y el error queda en el log en cada intento).
+    this.socket.on('joinError', (data: { message?: string }) => {
+      this.logger.error(`joinError: ${data?.message ?? '(sin mensaje)'} — reintentando con backoff`);
+      this.dropSocket();
+      this.scheduleReconnect();
     });
 
     this.socket.on('newMessage', (msg: ChatMessage & { clientId?: string }) => {
@@ -190,13 +236,14 @@ export class ChatSocketService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private scheduleReconnect(delayMs = 5000) {
-    if (this.reconnectTimer) return;
-    this.logger.log(`Reconnecting in ${delayMs / 1000}s…`);
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.shuttingDown) return;
+    const delayMs = reconnectDelay(this.reconnectAttempts);
+    this.reconnectAttempts++;
+    this.logger.log(`Reconnecting in ${Math.round(delayMs / 1000)}s (intento ${this.reconnectAttempts})…`);
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
-      this.socket?.disconnect();
-      this.socket = null;
+      this.dropSocket();
       await this.connect();
     }, delayMs);
   }

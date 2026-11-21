@@ -4,7 +4,7 @@ import { Client, Quality, Ytdl } from "@distube/ytdl-core";
 import * as ffmpeg from "fluent-ffmpeg";
 import * as ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import * as ytsr from "ytsr";
-import { Stream, Readable } from "stream";
+import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import * as fs from "fs";
 import * as path from "path";
@@ -30,6 +30,9 @@ import {
   buildSongSearchBody,
   parseSongResults,
 } from "./youtube-music-search";
+import { createLog } from '../../common/utils/log';
+
+const log = createLog('MusicService');
 
 // Configurar ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -123,17 +126,17 @@ export class MusicService {
     this.litterboxExpiry =
       this.configService.get<string>("music.litterboxExpiry") || "1h";
 
-    console.log(`🔧 [CONFIG] Servicio de subida: ${this.uploadService}`);
+    log.info(`🔧 [CONFIG] Servicio de subida: ${this.uploadService}`);
     if (this.uploadService === "litterbox") {
-      console.log(`🔧 [CONFIG] Expiración Litterbox: ${this.litterboxExpiry}`);
+      log.info(`🔧 [CONFIG] Expiración Litterbox: ${this.litterboxExpiry}`);
     }
 
     // Cargar cookies de YouTube si están configuradas
     this.youtubeCookies = this.loadYouTubeCookies();
     if (this.youtubeCookies) {
-      console.log(`🍪 [CONFIG] Cookies de YouTube cargadas exitosamente`);
+      log.info(`🍪 [CONFIG] Cookies de YouTube cargadas exitosamente`);
     } else {
-      console.log(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
+      log.info(`🍪 [CONFIG] Sin cookies de YouTube - usando acceso público`);
     }
 
     const cookie: string | undefined = this.youtubeCookies
@@ -152,18 +155,18 @@ export class MusicService {
   private async initializeYtDlp(): Promise<void> {
     try {
       this.ytdlp = new YTDlpWrap();
-      console.log(`🔧 [YT-DLP] Inicializado como fallback`);
+      log.info(`🔧 [YT-DLP] Inicializado como fallback`);
       
       // Verificar disponibilidad de forma asíncrona sin bloquear
       this.ensureYtDlpAvailable().then(() => {
         this.ytdlpAvailable = true;
-        console.log(`✅ [YT-DLP] yt-dlp está listo para usar`);
+        log.info(`✅ [YT-DLP] yt-dlp está listo para usar`);
       }).catch(error => {
         this.ytdlpAvailable = false;
-        console.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, solo se usará ytdl-core:`, error instanceof Error ? error.message : error);
+        log.warn(`⚠️ [YT-DLP] yt-dlp no está disponible, solo se usará ytdl-core:`, error instanceof Error ? error.message : error);
       });
     } catch (error) {
-      console.warn(`⚠️ [YT-DLP] Error inicializando yt-dlp:`, error instanceof Error ? error.message : error);
+      log.warn(`⚠️ [YT-DLP] Error inicializando yt-dlp:`, error instanceof Error ? error.message : error);
       this.ytdlp = null;
       this.ytdlpAvailable = false;
     }
@@ -177,19 +180,19 @@ export class MusicService {
     try {
       // Verificar si yt-dlp está disponible con timeout
       await this.safeYtDlpExec(['--version'], 10000);
-      console.log(`✅ [YT-DLP] yt-dlp está disponible`);
+      log.info(`✅ [YT-DLP] yt-dlp está disponible`);
     } catch (error) {
-      console.log(`📥 [YT-DLP] yt-dlp no encontrado, intentando descarga automática...`);
+      log.info(`📥 [YT-DLP] yt-dlp no encontrado, intentando descarga automática...`);
       try {
         // Descargar yt-dlp automáticamente
         await YTDlpWrap.downloadFromGithub();
-        console.log(`✅ [YT-DLP] yt-dlp descargado exitosamente`);
+        log.info(`✅ [YT-DLP] yt-dlp descargado exitosamente`);
         
         // Verificar que funcione después de la descarga
         await this.safeYtDlpExec(['--version'], 10000);
-        console.log(`✅ [YT-DLP] yt-dlp verificado después de descarga`);
+        log.info(`✅ [YT-DLP] yt-dlp verificado después de descarga`);
       } catch (downloadError) {
-        console.error(`❌ [YT-DLP] Error descargando o verificando yt-dlp:`, downloadError);
+        log.error(`❌ [YT-DLP] Error descargando o verificando yt-dlp:`, downloadError);
         throw new Error(`No se pudo configurar yt-dlp: ${downloadError instanceof Error ? downloadError.message : downloadError}`);
       }
     }
@@ -249,7 +252,7 @@ export class MusicService {
       return true;
     } catch (error) {
       this.ytdlpAvailable = false;
-      console.warn(`⚠️ [YT-DLP] yt-dlp no responde:`, error instanceof Error ? error.message : error);
+      log.warn(`⚠️ [YT-DLP] yt-dlp no responde:`, error instanceof Error ? error.message : error);
       return false;
     }
   }
@@ -260,7 +263,7 @@ export class MusicService {
   static isMusicRequest(message: string): boolean {
     // Validar que el mensaje existe y no es nulo/undefined
     if (!message || typeof message !== "string") {
-      console.log(`🔍 [DEBUG] Mensaje inválido para detección de música:`, {
+      log.debug(`🔍 [DEBUG] Mensaje inválido para detección de música:`, {
         message,
         type: typeof message,
       });
@@ -277,25 +280,23 @@ export class MusicService {
     }
 
     // Detectar solicitudes naturales de música
+    // Sólo verbos que piden reproducir algo. Se sacaron "música de",
+    // "canción de", "tema de", "song by", "quiero escuchar" y "escuchar
+    // música": aparecían en charla normal ("el tema de hoy", "me encanta la
+    // música de ese anime", "quiero escuchar tu opinión") y disparaban una
+    // descarga. Esos pedidos, si le hablan al bot, los resuelve el modelo con
+    // {{music:…}}. Además el dispatcher (`BotService`) sólo acepta frases
+    // naturales si el mensaje le habla al bot; sin mención, sólo `!music`.
     const musicKeywords = [
       "reproduce",
+      "reproducí",
+      "reproduci",
       "pon música",
       "pon musica",
       "play music",
-      "reproduce canción",
-      "reproduce cancion",
-      "quiero escuchar",
+      "play song",
       "busca la canción",
       "busca la cancion",
-      "música de",
-      "musica de",
-      "canción de",
-      "cancion de",
-      "tema de",
-      "song by",
-      "play song",
-      "escuchar música",
-      "escuchar musica",
     ];
 
     return musicKeywords.some((keyword) => lowerMessage.includes(keyword));
@@ -324,7 +325,7 @@ export class MusicService {
   static extractMusicQuery(message: string): string {
     // Validar que el mensaje existe y no es nulo/undefined
     if (!message || typeof message !== "string") {
-      console.log(`🔍 [DEBUG] Mensaje inválido para extracción de query:`, {
+      log.debug(`🔍 [DEBUG] Mensaje inválido para extracción de query:`, {
         message,
         type: typeof message,
       });
@@ -361,14 +362,14 @@ export class MusicService {
       const match = decodedMessage.match(pattern);
       if (match && match[1]) {
         const extractedQuery = match[1].trim();
-        console.log(
+        log.info(
           `🔍 [DEBUG] Query extraído con patrón ${pattern}: "${extractedQuery}"`
         );
         return extractedQuery;
       }
     }
 
-    console.log(
+    log.info(
       `🔍 [DEBUG] No se pudo extraer query del mensaje: "${decodedMessage}"`
     );
     return "";
@@ -395,7 +396,7 @@ export class MusicService {
     if (normalizedQuery) {
       const inFlight = this.inFlightTrackRequests.get(normalizedQuery);
       if (inFlight) {
-        console.log(
+        log.info(
           `🎵 [DEDUP] Pedido idéntico en vuelo para "${query}" — reutilizando sin encolar de nuevo`
         );
         const track = await inFlight;
@@ -459,7 +460,7 @@ export class MusicService {
     try {
       cached = await this.graphCacheService.findTrack(query);
     } catch (err) {
-      console.warn(
+      log.warn(
         `⚠️ [CACHE] findTrack falló, se sigue sin caché: ${err instanceof Error ? err.message : err}`
       );
       return null;
@@ -469,17 +470,17 @@ export class MusicService {
     const status = await this.checkCachedUrl(cached.uploadUrl);
 
     if (status === "dead") {
-      console.log(`🗑️ [CACHE] URL cacheada muerta (404/410) para "${query}", invalidando y siguiendo al pipeline`);
+      log.info(`🗑️ [CACHE] URL cacheada muerta (404/410) para "${query}", invalidando y siguiendo al pipeline`);
       await this.graphCacheService.invalidateTrack(query).catch(() => {});
       return null;
     }
 
     if (status === "unknown") {
-      console.log(`❓ [CACHE] No se pudo confirmar la URL cacheada para "${query}" (timeout/error/status ambiguo), sin invalidar — siguiendo al pipeline`);
+      log.info(`❓ [CACHE] No se pudo confirmar la URL cacheada para "${query}" (timeout/error/status ambiguo), sin invalidar — siguiendo al pipeline`);
       return null;
     }
 
-    console.log(`✨ [CACHE] Sirviendo "${query}" desde el grafo, sin pipeline`);
+    log.info(`✨ [CACHE] Sirviendo "${query}" desde el grafo, sin pipeline`);
     return this.buildResultFromTrack(cached, username);
   }
 
@@ -503,7 +504,7 @@ export class MusicService {
       // que el archivo siga vivo.
       return "unknown";
     } catch (err) {
-      console.warn(
+      log.warn(
         `⚠️ [CACHE] HEAD a "${url}" falló o hizo timeout: ${err instanceof Error ? err.message : err}`
       );
       return "unknown";
@@ -601,7 +602,7 @@ export class MusicService {
 
     const isVideo = request.kind === 'video';
     const tag = isVideo ? '🎬' : '🎵';
-    console.log(
+    log.info(
       `${tag} [QUEUE] "${request.query}" encolada. Pendientes: ${this.pending.length}`,
     );
 
@@ -611,7 +612,7 @@ export class MusicService {
       const video = await this.searchSem.run(() =>
         this.findVideo(request.query, isVideo),
       );
-      console.log(`🎯 [FOUND] "${video.title}" - ${video.url}`);
+      log.info(`🎯 [FOUND] "${video.title}" - ${video.url}`);
 
       // ── Etapa 2: descarga + transcodificación (serializada) ──────────────
       await prevTurn;
@@ -633,7 +634,7 @@ export class MusicService {
         this.publishPreparedFile(prepared, video, request.username, isVideo),
       );
     } catch (error) {
-      console.error(`${tag} [ERROR] Error procesando "${request.query}":`, error);
+      log.error(`${tag} [ERROR] Error procesando "${request.query}":`, error);
       throw error instanceof Error ? error : new Error(String(error));
     } finally {
       // Si falló antes de formarse (búsqueda sin resultados, ytsr caído), el
@@ -705,11 +706,11 @@ export class MusicService {
     try {
       const song = pickSong(await this.searchYouTubeMusic(query), query, maxMinutes);
       if (!song) {
-        console.log(`🔎 [YT-MUSIC] Sin coincidencia para "${query}", se busca en YouTube`);
+        log.info(`🔎 [YT-MUSIC] Sin coincidencia para "${query}", se busca en YouTube`);
       }
       return song;
     } catch (error) {
-      console.warn(
+      log.warn(
         `⚠️ [YT-MUSIC] Búsqueda fallida, se busca en YouTube:`,
         error instanceof Error ? error.message : error,
       );
@@ -759,7 +760,7 @@ export class MusicService {
     });
     if (video) {
       if (video !== videos[0]) {
-        console.log(
+        log.info(
           `🔀 [PICK] Se prefirió "${video.title}" (${video.duration ?? '?'}) sobre el primer resultado "${videos[0]?.title}" (${videos[0]?.duration ?? '?'})`,
         );
       }
@@ -809,12 +810,12 @@ export class MusicService {
     if (await this.isYtDlpAvailable()) {
       try {
         await this.downloadAudioWithYtDlp(video.url, outputPath);
-        console.log(
+        log.info(
           `✅ [YT-DLP] Audio listo: ${this.fileSizeMb(outputPath)} MB (sin re-codificar)`,
         );
         return { path: outputPath };
       } catch (error) {
-        console.warn(
+        log.warn(
           `⚠️ [YT-DLP] Falló, probando ytdl-core:`,
           error instanceof Error ? error.message : error,
         );
@@ -833,7 +834,7 @@ export class MusicService {
     // pagaba otra vez por cada pedido de la cola.
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        console.log(`⬇️ [YTDL-CORE] Intento ${attempt}/2 — ${video.url}`);
+        log.info(`⬇️ [YTDL-CORE] Intento ${attempt}/2 — ${video.url}`);
         await this.streamToFile(
           this.yt.download(video.url, {
             quality: Quality.HighestAudio,
@@ -842,7 +843,7 @@ export class MusicService {
           rawPath,
           60_000,
         );
-        console.log(`✅ [YTDL-CORE] Descargado: ${this.fileSizeMb(rawPath)} MB`);
+        log.info(`✅ [YTDL-CORE] Descargado: ${this.fileSizeMb(rawPath)} MB`);
 
         await this.transcodeToMp3(rawPath, outputPath);
         this.safeUnlink(rawPath);
@@ -851,7 +852,7 @@ export class MusicService {
         lastError = error;
         this.safeUnlink(rawPath);
         const msg = error instanceof Error ? error.message : String(error);
-        console.error(`❌ [YTDL-CORE] Intento ${attempt} falló:`, msg);
+        log.error(`❌ [YTDL-CORE] Intento ${attempt} falló:`, msg);
         if (/too many redirects|status code: 403|sign in to confirm/i.test(msg)) {
           break;
         }
@@ -893,12 +894,12 @@ export class MusicService {
         outputPath,
         5 * 60 * 1000,
       );
-      console.log(`✅ [VIDEO] ytdl-core OK: ${this.fileSizeMb(outputPath)} MB`);
+      log.info(`✅ [VIDEO] ytdl-core OK: ${this.fileSizeMb(outputPath)} MB`);
       return { path: outputPath };
     } catch (error) {
       lastError = error;
       this.safeUnlink(outputPath);
-      console.error(
+      log.error(
         `❌ [VIDEO] ytdl-core falló:`,
         error instanceof Error ? error.message : error,
       );
@@ -913,7 +914,7 @@ export class MusicService {
     }
 
     try {
-      console.log(`🔄 [VIDEO] Probando yt-dlp como fallback`);
+      log.info(`🔄 [VIDEO] Probando yt-dlp como fallback`);
       await this.safeYtDlpExec(
         [
           video.url,
@@ -927,7 +928,7 @@ export class MusicService {
         5 * 60 * 1000,
       );
       if (!fs.existsSync(outputPath)) throw new Error('yt-dlp no produjo archivo');
-      console.log(`✅ [VIDEO] yt-dlp OK: ${this.fileSizeMb(outputPath)} MB`);
+      log.info(`✅ [VIDEO] yt-dlp OK: ${this.fileSizeMb(outputPath)} MB`);
       return { path: outputPath };
     } catch (ytdlpError) {
       this.safeUnlink(outputPath);
@@ -954,7 +955,7 @@ export class MusicService {
     const { path: filePath } = prepared;
     try {
       const uploadUrl = await this.uploadFile(filePath);
-      console.log(`☁️ [UPLOAD] OK: ${uploadUrl}`);
+      log.info(`☁️ [UPLOAD] OK: ${uploadUrl}`);
       this.safeUnlink(filePath);
 
       const body = isVideo
@@ -978,7 +979,7 @@ export class MusicService {
         uploadError instanceof Error ? uploadError.message : String(uploadError);
 
       if (msg.includes('temporalmente no disponibles')) {
-        console.log(`💾 [BACKUP] Manteniendo archivo local: ${filePath}`);
+        log.info(`💾 [BACKUP] Manteniendo archivo local: ${filePath}`);
         return {
           text: `${isVideo ? '🎬' : '🎵'} <@${username}> "${video.title}" se procesó pero los servicios de subida están temporalmente no disponibles. Probá de nuevo en unos minutos.`,
           track: null,
@@ -996,7 +997,7 @@ export class MusicService {
   private assertDurationWithin(video: any, maxMinutes: number): void {
     if (!video?.duration || typeof video.duration !== 'string') return;
     const minutes = this.parseDurationToMinutes(video.duration);
-    console.log(
+    log.info(
       `⏱️ [DURATION] ${video.duration} (${minutes} min) — límite ${maxMinutes} min`,
     );
     if (minutes > maxMinutes) {
@@ -1060,7 +1061,7 @@ export class MusicService {
       logged += chunk.length;
       if (logged >= 5 * 1024 * 1024) {
         logged = 0;
-        console.log(`📥 [STREAM] +5 MB → ${path.basename(outputPath)}`);
+        log.info(`📥 [STREAM] +5 MB → ${path.basename(outputPath)}`);
       }
     });
 
@@ -1079,7 +1080,7 @@ export class MusicService {
    */
   private transcodeToMp3(inputPath: string, outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log(`🔄 [FFMPEG] Transcodificando ${path.basename(inputPath)} → mp3`);
+      log.info(`🔄 [FFMPEG] Transcodificando ${path.basename(inputPath)} → mp3`);
       ffmpeg(inputPath)
         .toFormat('mp3')
         .audioBitrate(128)
@@ -1088,15 +1089,15 @@ export class MusicService {
         .output(outputPath)
         .on('progress', (progress) => {
           if (progress.percent) {
-            console.log(`🔄 [FFMPEG] ${Math.round(progress.percent)}%`);
+            log.info(`🔄 [FFMPEG] ${Math.round(progress.percent)}%`);
           }
         })
         .on('end', () => {
-          console.log(`✅ [FFMPEG] Listo: ${outputPath}`);
+          log.info(`✅ [FFMPEG] Listo: ${outputPath}`);
           resolve();
         })
         .on('error', (error) => {
-          console.error(`❌ [FFMPEG] Error:`, error);
+          log.error(`❌ [FFMPEG] Error:`, error);
           reject(error);
         })
         .run();
@@ -1109,13 +1110,13 @@ export class MusicService {
     // chequeo se hacía por cada archivo subido, gastando ~5s por canción
     // aunque la red estuviera claramente bien.
     if (Date.now() - this.lastConnectivityOk > this.CONNECTIVITY_TTL_MS) {
-      console.log(`🌐 [CONNECTIVITY] Verificando conectividad de red...`);
+      log.info(`🌐 [CONNECTIVITY] Verificando conectividad de red...`);
       try {
         await this.testConnectivity();
         this.lastConnectivityOk = Date.now();
-        console.log(`✅ [CONNECTIVITY] Conectividad verificada`);
+        log.info(`✅ [CONNECTIVITY] Conectividad verificada`);
       } catch (connectivityError) {
-        console.error(`❌ [CONNECTIVITY] Sin conectividad de red:`, connectivityError instanceof Error ? connectivityError.message : connectivityError);
+        log.error(`❌ [CONNECTIVITY] Sin conectividad de red:`, connectivityError instanceof Error ? connectivityError.message : connectivityError);
         throw new Error(`❌ Sin conectividad a internet. Verifica tu conexión de red.`);
       }
     }
@@ -1125,25 +1126,25 @@ export class MusicService {
     const retryDelay = 2000;
 
     if (this.uploadService === "uguu") {
-      console.log(`📤 [UPLOAD] Intentando subir a uguu.se primero (configurado)...`);
+      log.info(`📤 [UPLOAD] Intentando subir a uguu.se primero (configurado)...`);
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          console.log(`📤 [UGUU] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          log.info(`📤 [UGUU] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
           return await this.uploadToUguu(filePath);
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [UGUU] Error en intento ${attempt}:`, errorMsg);
+          log.error(`❌ [UGUU] Error en intento ${attempt}:`, errorMsg);
 
           if (attempt === maxRetries) {
-            console.log(
+            log.info(
               `🔄 [FALLBACK] uguu.se falló tras ${maxRetries} intentos, probando Catbox...`,
             );
             break;
           }
           if (attempt < maxRetries) {
             const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
-            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
         }
@@ -1155,15 +1156,15 @@ export class MusicService {
       if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
-        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+        log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
         return result;
       } catch (catboxError) {
         const catboxMsg =
           catboxError instanceof Error ? catboxError.message : String(catboxError);
-        console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+        log.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
         try {
           const result = await this.uploadToLitterboxFallback(filePath);
-          console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+          log.info(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
           return result;
         } catch (litterError) {
           const litterMsg =
@@ -1182,25 +1183,25 @@ export class MusicService {
 
     if (this.uploadService === "filegarden") {
       if (!this.hasFileGardenCreds()) {
-        console.warn(
+        log.warn(
           `⚠️ [UPLOAD] UPLOAD_SERVICE=filegarden pero faltan credenciales — usando catbox como primario.`,
         );
       } else {
-        console.log(`📤 [UPLOAD] Intentando subir a FileGarden primero (configurado)...`);
+        log.info(`📤 [UPLOAD] Intentando subir a FileGarden primero (configurado)...`);
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
-            console.log(
+            log.info(
               `📤 [FILEGARDEN] Intento ${attempt}/${maxRetries} - Subiendo archivo...`,
             );
             return await this.uploadToFileGarden(filePath);
           } catch (error) {
             const errorMsg =
               error instanceof Error ? error.message : String(error);
-            console.error(`❌ [FILEGARDEN] Error en intento ${attempt}:`, errorMsg);
+            log.error(`❌ [FILEGARDEN] Error en intento ${attempt}:`, errorMsg);
 
             if (attempt === maxRetries) {
-              console.log(
+              log.info(
                 `🔄 [FALLBACK] FileGarden falló tras ${maxRetries} intentos, probando Catbox...`,
               );
               break;
@@ -1209,7 +1210,7 @@ export class MusicService {
               const delay = errorMsg.includes("ENOTFOUND")
                 ? retryDelay * 2
                 : retryDelay;
-              console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+              log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
               await new Promise((resolve) => setTimeout(resolve, delay));
             }
           }
@@ -1222,15 +1223,15 @@ export class MusicService {
         if (x02) return x02;
         try {
           const result = await this.uploadToCatboxWithRetry(filePath);
-          console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+          log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
           return result;
         } catch (catboxError) {
           const catboxMsg =
             catboxError instanceof Error ? catboxError.message : String(catboxError);
-          console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+          log.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
           try {
             const result = await this.uploadToLitterboxFallback(filePath);
-            console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+            log.info(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
             return result;
           } catch (litterError) {
             const litterMsg =
@@ -1247,28 +1248,28 @@ export class MusicService {
     }
 
     if (this.uploadService === "nullpointer") {
-      console.log(`📤 [UPLOAD] Intentando subir a 0x0.st primero (configurado)...`);
+      log.info(`📤 [UPLOAD] Intentando subir a 0x0.st primero (configurado)...`);
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          console.log(`📤 [0x0.ST] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          log.info(`📤 [0x0.ST] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
           return await this.uploadToNullpointerWithRetry(filePath);
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [0x0.ST] Error en intento ${attempt}:`, errorMsg);
+          log.error(`❌ [0x0.ST] Error en intento ${attempt}:`, errorMsg);
 
           if (errorMsg.includes("getaddrinfo ENOTFOUND") || errorMsg.includes("ENOTFOUND")) {
-            console.log(`🌐 [DNS] Problema de conectividad detectado con 0x0.st`);
+            log.info(`🌐 [DNS] Problema de conectividad detectado con 0x0.st`);
           }
 
           if (attempt === maxRetries) {
-            console.log(`🔄 [FALLBACK] 0x0.st falló tras ${maxRetries} intentos, probando Catbox...`);
+            log.info(`🔄 [FALLBACK] 0x0.st falló tras ${maxRetries} intentos, probando Catbox...`);
             break;
           }
 
           if (attempt < maxRetries) {
             const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
-            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
         }
@@ -1279,14 +1280,14 @@ export class MusicService {
       if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
-        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+        log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
         return result;
       } catch (catboxError) {
         const catboxMsg = catboxError instanceof Error ? catboxError.message : String(catboxError);
-        console.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
+        log.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
         try {
           const result = await this.uploadToLitterboxFallback(filePath);
-          console.log(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
+          log.info(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
           return result;
         } catch (litterError) {
           const litterMsg = litterError instanceof Error ? litterError.message : String(litterError);
@@ -1301,31 +1302,31 @@ export class MusicService {
     }
 
     if (this.uploadService === "catbox") {
-      console.log(`📤 [UPLOAD] Intentando subir a Catbox primero (configurado)...`);
+      log.info(`📤 [UPLOAD] Intentando subir a Catbox primero (configurado)...`);
       
       // Intentar Catbox con reintentos
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          console.log(`📤 [CATBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          log.info(`📤 [CATBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
           return await this.uploadToCatboxWithRetry(filePath);
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [CATBOX] Error en intento ${attempt}:`, errorMsg);
+          log.error(`❌ [CATBOX] Error en intento ${attempt}:`, errorMsg);
           
           // Verificar si es un error de conectividad DNS
           if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
-            console.log(`🌐 [DNS] Problema de conectividad detectado con Catbox`);
+            log.info(`🌐 [DNS] Problema de conectividad detectado con Catbox`);
           }
           
           if (attempt === maxRetries) {
-            console.log(`🔄 [FALLBACK] Catbox falló después de ${maxRetries} intentos, intentando con Litterbox como fallback...`);
+            log.info(`🔄 [FALLBACK] Catbox falló después de ${maxRetries} intentos, intentando con Litterbox como fallback...`);
             break; // Salir para intentar el fallback
           }
           
           // Esperar antes del siguiente intento (más tiempo si es problema DNS)
           if (attempt < maxRetries) {
             const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
-            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
             await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
@@ -1336,7 +1337,7 @@ export class MusicService {
       if (x02) return x02;
       try {
         const result = await this.uploadToLitterboxFallback(filePath);
-        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
+        log.info(`✅ [FALLBACK] Archivo subido exitosamente a Litterbox como fallback`);
         return result;
       } catch (fallbackError) {
         const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
@@ -1346,38 +1347,38 @@ export class MusicService {
 
         // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
         if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
-          console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
+          log.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
           throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
         }
 
         throw new Error(`Error en Catbox y Litterbox fallback: ${fallbackErrorMsg}`);
       }
     } else {
-      console.log(`📤 [UPLOAD] Intentando subir a Litterbox primero (configurado)...`);
+      log.info(`📤 [UPLOAD] Intentando subir a Litterbox primero (configurado)...`);
       
       // Intentar Litterbox con reintentos
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          console.log(`📤 [LITTERBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
+          log.info(`📤 [LITTERBOX] Intento ${attempt}/${maxRetries} - Subiendo archivo...`);
           return await this.uploadToLitterbox(filePath);
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [LITTERBOX] Error en intento ${attempt}:`, errorMsg);
+          log.error(`❌ [LITTERBOX] Error en intento ${attempt}:`, errorMsg);
           
           // Verificar si es un error de conectividad DNS
           if (errorMsg.includes('getaddrinfo ENOTFOUND') || errorMsg.includes('ENOTFOUND')) {
-            console.log(`🌐 [DNS] Problema de conectividad detectado con Litterbox`);
+            log.info(`🌐 [DNS] Problema de conectividad detectado con Litterbox`);
           }
           
           if (attempt === maxRetries) {
-            console.log(`🔄 [FALLBACK] Litterbox falló después de ${maxRetries} intentos, intentando con Catbox como fallback...`);
+            log.info(`🔄 [FALLBACK] Litterbox falló después de ${maxRetries} intentos, intentando con Catbox como fallback...`);
             break; // Salir para intentar el fallback
           }
           
           // Esperar antes del siguiente intento (más tiempo si es problema DNS)
           if (attempt < maxRetries) {
             const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
-            console.log(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
             await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
@@ -1388,7 +1389,7 @@ export class MusicService {
       if (x02) return x02;
       try {
         const result = await this.uploadToCatboxWithRetry(filePath);
-        console.log(`✅ [FALLBACK] Archivo subido exitosamente a Catbox como fallback`);
+        log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox como fallback`);
         return result;
       } catch (fallbackError) {
         const fallbackErrorMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
@@ -1398,7 +1399,7 @@ export class MusicService {
 
         // Si ambos servicios fallan por problemas de conectividad, dar un mensaje más útil
         if (fallbackErrorMsg.includes('getaddrinfo ENOTFOUND') || fallbackErrorMsg.includes('ENOTFOUND')) {
-          console.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
+          log.error(`🌐 [DNS] Problema de conectividad detectado con ambos servicios`);
           throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica tu conexión a internet y intenta nuevamente en unos minutos.`);
         }
 
@@ -1663,13 +1664,13 @@ export class MusicService {
   private async tryFileGardenLastResort(filePath: string): Promise<string | null> {
     if (!this.hasFileGardenCreds()) return null;
     try {
-      console.log(`📤 [FILEGARDEN] Último recurso — subiendo archivo...`);
+      log.info(`📤 [FILEGARDEN] Último recurso — subiendo archivo...`);
       const url = await this.uploadToFileGarden(filePath);
-      console.log(`✅ [FILEGARDEN] Subida exitosa: ${url}`);
+      log.info(`✅ [FILEGARDEN] Subida exitosa: ${url}`);
       return url;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`❌ [FILEGARDEN] Falló como último recurso: ${msg}`);
+      log.error(`❌ [FILEGARDEN] Falló como último recurso: ${msg}`);
       return null;
     }
   }
@@ -1737,13 +1738,13 @@ export class MusicService {
   private async tryX02Fallback(filePath: string): Promise<string | null> {
     if (!this.configService.get<string>("music.x02ApiKey")) return null;
     try {
-      console.log(`📤 [X02] Fallback — subiendo archivo...`);
+      log.info(`📤 [X02] Fallback — subiendo archivo...`);
       const url = await this.uploadToX02(filePath);
-      console.log(`✅ [X02] Subida exitosa: ${url}`);
+      log.info(`✅ [X02] Subida exitosa: ${url}`);
       return url;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`❌ [X02] Falló como fallback: ${msg}`);
+      log.error(`❌ [X02] Falló como fallback: ${msg}`);
       return null;
     }
   }
@@ -1875,7 +1876,7 @@ export class MusicService {
     const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 segundos timeout (más tiempo que Catbox)
 
     try {
-      console.log(`📤 [LITTERBOX-FALLBACK] Subiendo con expiración de 72h...`);
+      log.info(`📤 [LITTERBOX-FALLBACK] Subiendo con expiración de 72h...`);
       
       const response = await fetch(
         "https://litterbox.catbox.moe/resources/internals/api.php",
@@ -1915,7 +1916,7 @@ export class MusicService {
       );
 
       if (!cookiesPath) {
-        console.log(
+        log.info(
           `🍪 [DEBUG] No se especificó YOUTUBE_COOKIES_PATH en la configuración`
         );
         return null;
@@ -1925,22 +1926,22 @@ export class MusicService {
       const fullPath = path.resolve(cookiesPath);
 
       if (!fs.existsSync(fullPath)) {
-        console.log(`🍪 [DEBUG] Archivo de cookies no encontrado: ${fullPath}`);
+        log.debug(`🍪 [DEBUG] Archivo de cookies no encontrado: ${fullPath}`);
         return null;
       }
 
-      console.log(`🍪 [DEBUG] Cargando cookies desde: ${fullPath}`);
+      log.debug(`🍪 [DEBUG] Cargando cookies desde: ${fullPath}`);
       const cookiesData = fs.readFileSync(fullPath, "utf8");
 
       if (!cookiesData.trim()) {
-        console.log(`🍪 [DEBUG] Archivo de cookies vacío`);
+        log.debug(`🍪 [DEBUG] Archivo de cookies vacío`);
         return null;
       }
 
       const cookies: YouTubeCookie[] = JSON.parse(cookiesData);
 
       if (!Array.isArray(cookies) || cookies.length === 0) {
-        console.log(`🍪 [DEBUG] Archivo de cookies vacío o formato inválido`);
+        log.debug(`🍪 [DEBUG] Archivo de cookies vacío o formato inválido`);
         return null;
       }
 
@@ -1954,14 +1955,14 @@ export class MusicService {
       );
 
       if (validCookies.length === 0) {
-        console.log(
+        log.info(
           `🍪 [DEBUG] No se encontraron cookies válidas en el archivo`
         );
         return null;
       }
 
       if (validCookies.length !== cookies.length) {
-        console.log(
+        log.info(
           `🍪 [WARNING] Se ignoraron ${cookies.length - validCookies.length} cookies con formato inválido`
         );
       }
@@ -1977,13 +1978,13 @@ export class MusicService {
         sameSite: cookie.sameSite || 'Lax'
       }));
 
-      console.log(
+      log.info(
         `🍪 [DEBUG] ${validCookies.length} cookies válidas cargadas en nuevo formato`
       );
       
       return cookieJar;
     } catch (error) {
-      console.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
+      log.error(`🍪 [ERROR] Error cargando cookies de YouTube:`, error);
       return null;
     }
   }
@@ -2068,7 +2069,7 @@ export class MusicService {
         );
         args.push('--cookies', cookiesFile);
       } catch (cookieError) {
-        console.warn(`⚠️ [YT-DLP] Sin cookies:`, cookieError);
+        log.warn(`⚠️ [YT-DLP] Sin cookies:`, cookieError);
         cookiesFile = null;
       }
     }
@@ -2126,11 +2127,11 @@ export class MusicService {
         const [hours, minutes, seconds] = parts;
         return (hours * 60) + minutes + (seconds / 60);
       } else {
-        console.warn(`⚠️ [DURATION] Formato de duración no reconocido: ${duration}`);
+        log.warn(`⚠️ [DURATION] Formato de duración no reconocido: ${duration}`);
         return 0; // Permitir si no podemos parsear
       }
     } catch (error) {
-      console.error(`❌ [DURATION] Error parseando duración "${duration}":`, error);
+      log.error(`❌ [DURATION] Error parseando duración "${duration}":`, error);
       return 0; // Permitir si hay error en parsing
     }
   }

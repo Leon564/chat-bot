@@ -34,6 +34,14 @@ export const MIN_ERRAND_TEXT = 1;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Un recado pendiente visto por su autor (`!misrecados`). */
+export interface SentErrand {
+  /** Destinatario, tal como quedó guardado (clave normalizada). */
+  forUser: string;
+  text: string;
+  expiresAt: Date;
+}
+
 export type CreateErrandResult =
   | 'ok'
   | 'author_full'
@@ -254,6 +262,57 @@ export class ErrandService {
    * `_id` de Mongo es monótono creciente por inserción, así que desempata de
    * forma estable en el mismo orden en que se crearon.
    */
+  /**
+   * Recados que `fromUser` dejó y siguen pendientes, del más viejo al más
+   * nuevo. La posición (1-based) en esta lista es la que usa `cancelSent`.
+   */
+  async listSent(fromUser: string): Promise<SentErrand[]> {
+    const rows = await this.sentQuery(fromUser);
+    return rows.map((r) => ({ forUser: r.forUser, text: r.text, expiresAt: r.expiresAt }));
+  }
+
+  /**
+   * Cancela el recado número `position` de `listSent`. La lista se vuelve a
+   * leer acá y el borrado exige que siga sin entregar: si el destinatario
+   * escribió entre el `!misrecados` y el `!cancelarrecado`, el recado ya se
+   * entregó y no hay nada que cancelar (`'gone'`).
+   */
+  async cancelSent(fromUser: string, position: number): Promise<{ ok: true; errand: SentErrand } | { ok: false; reason: 'not_found' | 'gone' }> {
+    const rows = await this.sentQuery(fromUser);
+    if (!Number.isInteger(position) || position < 1 || position > rows.length) {
+      return { ok: false, reason: 'not_found' };
+    }
+    const target = rows[position - 1];
+    const res = await this.errandModel.deleteOne({ _id: target._id, deliveredAt: null }).exec();
+    if (res.deletedCount !== 1) return { ok: false, reason: 'gone' };
+    return { ok: true, errand: { forUser: target.forUser, text: target.text, expiresAt: target.expiresAt } };
+  }
+
+  /**
+   * Borra, sin entregarlos, todos los recados pendientes PARA `forUser`.
+   * Es la contención que no tenía el destinatario: hasta ahora un recado
+   * ajeno se le decía en público sí o sí la próxima vez que escribiera.
+   * Devuelve cuántos borró.
+   */
+  async rejectIncoming(forUser: string): Promise<number> {
+    const key = this.graph.normalizeUserKey(forUser);
+    if (!key) return 0;
+    const res = await this.errandModel
+      .deleteMany({ forUser: key, deliveredAt: null, expiresAt: { $gt: new Date() } })
+      .exec();
+    return res.deletedCount ?? 0;
+  }
+
+  private async sentQuery(fromUser: string) {
+    const key = this.graph.normalizeUserKey(fromUser);
+    if (!key) return [];
+    return this.errandModel
+      .find({ fromUser: key, deliveredAt: null, expiresAt: { $gt: new Date() } })
+      .sort({ createdAt: 1, _id: 1 })
+      .lean()
+      .exec();
+  }
+
   async claimNext(forUser: string): Promise<{ fromLabel: string; text: string } | null> {
     try {
       const key = this.graph.normalizeUserKey(forUser);

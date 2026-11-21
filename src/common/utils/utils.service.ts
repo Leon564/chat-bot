@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import path from 'path';
-import fs from 'fs';
 import * as he from 'he';
 import { bbcodeToPlain } from '../bbcode/bbcode';
+import { createLog } from './log';
+
+const log = createLog('UtilsService');
 
 @Injectable()
 export class UtilsService {
@@ -26,7 +27,7 @@ export class UtilsService {
 
       return cleanMessage;
     } catch (e) {
-      console.log('Error cleaning HTML from message:', e);
+      log.info('Error cleaning HTML from message:', e);
       return message || '';
     }
   }
