@@ -209,6 +209,11 @@ export class BotService implements OnModuleInit {
     // dispatcher la deje pasar por casualidad.
     if (await this.handleForgetCommand(content, authorUsername)) return;
 
+    // Recados: ver/cancelar los propios y rechazar los entrantes. Antes de la
+    // entrega de abajo, para que `!rechazarrecados` no dispare justo la
+    // entrega del recado que se quiere rechazar.
+    if (await this.handleErrandCommands(content, authorUsername)) return;
+
     // Entrega de recados. Va antes del filtro de menciones a propósito: el
     // caso de uso es justamente que Lyna aparezca diciendo "hola gente" sin
     // dirigirse al bot. Con el filtro delante, el recado no se entregaría
@@ -279,7 +284,9 @@ export class BotService implements OnModuleInit {
     }
 
     // Debug commands (owner only)
-    if (authorUsername === 'Sleepy Ash' && content.toLowerCase().includes('debug')) {
+    // Por rol y no por nombre: antes sólo respondía al nombre exacto
+    // 'Sleepy Ash', fijo en el código.
+    if ((authorRole === 'admin' || authorRole === 'superAdmin') && content.toLowerCase().includes('debug')) {
       const qs = this.musicService.getQueueStatus();
       this.sendBotMessage(`@${authorUsername} Debug: Procesando=${qs.isProcessing}, Cola=${qs.queueLength} 🎵`);
       return;
@@ -1532,6 +1539,9 @@ export class BotService implements OnModuleInit {
       `• "${bot} resumen" — resumen de lo que se habló`,
       '• !quesabes — lo que recuerdo de vos',
       '• !olvida <algo> | !olvida todo — que me olvide de cosas tuyas',
+      '• !misrecados — recados que dejaste y todavía no entregué',
+      '• !cancelarrecado <n> — cancela uno de tus recados',
+      '• !rechazarrecados — borra sin leer los recados que hay para vos',
       '• !ayuda — esta lista',
     ];
     if (isStaff) {
@@ -1557,6 +1567,78 @@ export class BotService implements OnModuleInit {
       if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
     }
     return true;
+  }
+
+  // ─── Recados (!misrecados / !cancelarrecado / !rechazarrecados) ─────────
+
+  /**
+   * Hasta ahora un recado no se podía ver ni cancelar: ni el autor (que se
+   * arrepentía) ni el destinatario (que lo iba a escuchar en público con la
+   * voz del bot la próxima vez que escribiera). Los tres comandos operan
+   * SIEMPRE sobre quien escribe, igual que `!quesabes`/`!olvida`; no hay forma
+   * de tocar recados de otra persona. `!rechazarrecados` no muestra el texto:
+   * la idea es poder sacárselos de encima sin leerlos.
+   */
+  private async handleErrandCommands(content: string, authorUsername: string): Promise<boolean> {
+    const text = content.trim();
+    const list = /^!misrecados\s*$/i.test(text);
+    const cancel = text.match(/^!cancelarrecado(?:\s+#?(\S+))?\s*$/i);
+    const reject = /^!rechazarrecados\s*$/i.test(text);
+    if (!list && !cancel && !reject) return false;
+
+    try {
+      if (list) {
+        const sent = await this.errandService.listSent(authorUsername);
+        if (sent.length === 0) {
+          this.sendBotMessage(`@${authorUsername} 📭 No tenés recados pendientes.`);
+          return true;
+        }
+        const now = Date.now();
+        const lines = sent.map(
+          (e, i) => `${i + 1}. Para ${e.forUser}: "${e.text}" (vence en ${formatRemaining(e.expiresAt.getTime() - now)})`,
+        );
+        const message = `📨 Tus recados pendientes:\n${lines.join('\n')}\nPara cancelar uno: !cancelarrecado <n>`;
+        const parts = this.splitForChat(message, `@${authorUsername} `.length);
+        const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+        for (let i = 0; i < parts.length; i++) {
+          this.sendBotMessage(i === 0 ? `@${authorUsername} ${parts[i]}` : parts[i]);
+          if (i < parts.length - 1) await this.utilsService.sleep(responseDelay);
+        }
+        return true;
+      }
+
+      if (cancel) {
+        const n = Number(cancel[1]);
+        if (!cancel[1] || !Number.isInteger(n)) {
+          this.sendBotMessage(`@${authorUsername} Uso: !cancelarrecado <n> (mirá los números con !misrecados)`);
+          return true;
+        }
+        const result = await this.errandService.cancelSent(authorUsername, n);
+        if (result.ok === true) {
+          this.sendBotMessage(`@${authorUsername} 🗑️ Cancelé el recado para ${result.errand.forUser}.`);
+        } else {
+          const reason = (result as { reason: 'not_found' | 'gone' }).reason;
+          this.sendBotMessage(
+            reason === 'gone'
+              ? `@${authorUsername} 📬 Ese recado ya lo entregué, no se puede cancelar.`
+              : `@${authorUsername} ❌ No tenés un recado número ${n}. Mirá la lista con !misrecados`,
+          );
+        }
+        return true;
+      }
+
+      const removed = await this.errandService.rejectIncoming(authorUsername);
+      this.sendBotMessage(
+        removed > 0
+          ? `@${authorUsername} 🧹 Borré ${removed} recado${removed === 1 ? '' : 's'} que había para vos, sin entregarlos.`
+          : `@${authorUsername} 📭 No había recados para vos.`,
+      );
+      return true;
+    } catch (err) {
+      log.warn(`📨 [RECADOS] Falló un comando de recados de ${authorUsername}: ${(err as Error)?.message}`);
+      this.sendBotMessage(`@${authorUsername} ❌ No pude leer los recados, probá de nuevo.`);
+      return true;
+    }
   }
 
   // ─── Usage (!uso) ────────────────────────────────────────────────────────
@@ -1595,12 +1677,16 @@ export class BotService implements OnModuleInit {
     const fmt = (n: number) => n.toLocaleString('es-ES');
     const priceIn = this.configService.get<number>('bot.llmPriceInputPerM') ?? 0;
     const priceOut = this.configService.get<number>('bot.llmPriceOutputPerM') ?? 0;
-    const cost = (summary.promptTokens * priceIn + summary.completionTokens * priceOut) / 1_000_000;
+    // Sin precio propio para la entrada cacheada, se cobra como entrada normal.
+    const priceCached = this.configService.get<number | null>('bot.llmPriceCachedInputPerM') ?? priceIn;
+    const cached = Math.min(summary.cachedPromptTokens ?? 0, summary.promptTokens);
+    const cost =
+      ((summary.promptTokens - cached) * priceIn + cached * priceCached + summary.completionTokens * priceOut) / 1_000_000;
 
     const lines = [
       `📊 Consumo del modelo (${window.label}):`,
       `• ${fmt(summary.calls)} llamadas`,
-      `• ${fmt(summary.promptTokens)} tokens de entrada + ${fmt(summary.completionTokens)} de salida`,
+      `• ${fmt(summary.promptTokens)} tokens de entrada${summary.cachedPromptTokens ? ` (${fmt(summary.cachedPromptTokens)} desde caché)` : ''} + ${fmt(summary.completionTokens)} de salida`,
       ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
     ];
     if (summary.topUsers.length > 0) {

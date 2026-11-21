@@ -20,6 +20,8 @@ export const USAGE_CAP = 5000;
 export interface UsageSummary {
   calls: number;
   promptTokens: number;
+  /** Parte de `promptTokens` que el proveedor sirvió desde su caché. */
+  cachedPromptTokens: number;
   completionTokens: number;
   /** Los que más llamadas dispararon en la ventana (sin filas sin usuario). */
   topUsers: Array<{ user: string; calls: number; tokens: number }>;
@@ -97,13 +99,14 @@ export class UsageService {
     const match = { createdAt: { $gte: since } };
     const [totals, top, oldestRow] = await Promise.all([
       this.usageModel
-        .aggregate<{ calls: number; promptTokens: number; completionTokens: number }>([
+        .aggregate<{ calls: number; promptTokens: number; cachedPromptTokens: number; completionTokens: number }>([
           { $match: match },
           {
             $group: {
               _id: null,
               calls: { $sum: 1 },
               promptTokens: { $sum: '$promptTokens' },
+              cachedPromptTokens: { $sum: { $ifNull: ['$cachedPromptTokens', 0] } },
               completionTokens: { $sum: '$completionTokens' },
             },
           },
@@ -130,6 +133,7 @@ export class UsageService {
     return {
       calls: t?.calls ?? 0,
       promptTokens: t?.promptTokens ?? 0,
+      cachedPromptTokens: t?.cachedPromptTokens ?? 0,
       completionTokens: t?.completionTokens ?? 0,
       topUsers: top.map((r) => ({ user: r._id, calls: r.calls, tokens: r.tokens })),
       oldest: (oldestRow as { createdAt?: Date } | null)?.createdAt ?? null,

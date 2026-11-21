@@ -89,7 +89,7 @@ export class ChatService {
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
-      baseURL: this.configService.get<string>('openai.baseURL') || 'https://api.openai.com/v1',
+      baseURL: this.configService.get<string>('openai.baseURL') || 'https://api.deepseek.com',
       timeout: this.configService.get<number>('openai.timeoutMs') ?? 30_000,
       maxRetries: this.configService.get<number>('openai.maxRetries') ?? 1,
     });
@@ -260,7 +260,7 @@ export class ChatService {
       
       const response = await this.openai.chat.completions.create({
         messages: messages as any,
-        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        model: this.configService.get('openai.model') || 'deepseek-flash',
         temperature: isSimpleGreeting ? 0.3 : 0.7, // Temperatura baja para saludos
         max_tokens: maxTokens,
       });
@@ -614,7 +614,7 @@ export class ChatService {
           },
           { role: 'user', content: input },
         ],
-        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        model: this.configService.get('openai.model') || 'deepseek-flash',
         temperature: 0.2,
         max_tokens: Math.max(400, Math.ceil(input.length * 1.5)),
       });
@@ -705,7 +705,7 @@ escribas nada después del delimitador.`
             content: `Genera un resumen de esta conversación de chat:\n\n${cleanMessages}`
           }
         ],
-        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        model: this.configService.get('openai.model') || 'deepseek-flash',
         temperature: 0.7,
         max_tokens: 500,
       });
@@ -910,6 +910,8 @@ escribas nada después del delimitador.`
         prompt_tokens?: number;
         completion_tokens?: number;
         prompt_tokens_details?: { cached_tokens?: number };
+        /** DeepSeek informa el caché acá, no en `prompt_tokens_details`. */
+        prompt_cache_hit_tokens?: number;
       };
     },
     user?: string,
@@ -929,7 +931,10 @@ escribas nada después del delimitador.`
         user: user ?? '',
         promptTokens: response.usage?.prompt_tokens ?? 0,
         completionTokens: response.usage?.completion_tokens ?? 0,
-        cachedPromptTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        // DeepSeek: `prompt_cache_hit_tokens`; OpenAI: `prompt_tokens_details.cached_tokens`.
+        // Antes sólo se leía el segundo, así que con DeepSeek quedaba siempre en 0.
+        cachedPromptTokens:
+          response.usage?.prompt_cache_hit_tokens ?? response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
         model: this.configService.get<string>('openai.model') ?? '',
         intents: intents ?? [],
       })
@@ -1657,7 +1662,7 @@ escribas nada después del delimitador.`
               `No escribas el título ni el artista (ya se ven en la carátula), no pongas links ni tokens.`,
           },
         ],
-        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        model: this.configService.get('openai.model') || 'deepseek-flash',
         temperature: 0.9,
         max_tokens: 60,
       });
@@ -1735,7 +1740,7 @@ escribas nada después del delimitador.`
               `diciendo que viene de ${fromLabel}.`,
           },
         ],
-        model: this.configService.get('openai.model') || 'gpt-3.5-turbo',
+        model: this.configService.get('openai.model') || 'deepseek-flash',
         temperature: 0.7,
         max_tokens: 120,
       });

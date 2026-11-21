@@ -116,6 +116,17 @@ describe('ChatService — instrucciones de sala', () => {
     expect(crearMock.mock.calls[0][0].max_tokens).toBe(800);
   });
 
+  it('registra los tokens de caché de DeepSeek (prompt_cache_hit_tokens)', async () => {
+    crearMock.mockResolvedValue({
+      choices: [{ message: { content: 'hola' } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 20, prompt_cache_hit_tokens: 900 },
+    });
+    const usage = (service as unknown as { usageService: { record: jest.Mock } }).usageService;
+    await service.chat('hola', 'Aria', 'nico');
+    await new Promise((r) => setImmediate(r));
+    expect(usage.record).toHaveBeenCalledWith(expect.objectContaining({ promptTokens: 1000, cachedPromptTokens: 900 }));
+  });
+
   it('las instrucciones vigentes van al prompt de cualquiera', async () => {
     crearMock.mockResolvedValue(respuesta('hola'));
     await service.chat('hola', 'Aria', 'nico');

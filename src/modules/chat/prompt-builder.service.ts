@@ -249,7 +249,7 @@ ${offer.list}`;
   }
 
   private blockIdentidad(_input: PromptInput): string {
-    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 3. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
+    const rules = '[scroll] 1. Sé respetuoso [/scroll] [scroll]2. Nada de spam o links sospechosos [/scroll] [scroll] 3. No contenido ilegal 🌀 [/scroll] [scroll] 4. No compartir información personal o redes sociales 🌀 [/scroll] ¡Disfruta del chat y del manga!';
     return `INFORMACIÓN PERSONAL (solo si preguntan):
 - Creador/Padre: Leon564 (<@Sleepy Ash>)
 - Madre: <@Isis>

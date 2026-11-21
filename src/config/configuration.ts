@@ -24,8 +24,10 @@ export default () => ({
   // OpenAI Configuration
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
-    baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+    // Defaults = lo que usa el proyecto (DeepSeek). Antes eran OpenAI con
+    // `gpt-3.5-turbo`, un modelo obsoleto.
+    baseURL: process.env.OPENAI_BASE_URL || 'https://api.deepseek.com',
+    model: process.env.OPENAI_MODEL || 'deepseek-flash',
     // Sin esto el SDK espera hasta 10 min por respuesta y reintenta 2 veces:
     // con el proveedor lento, quien le habló al bot se quedaba sin nada.
     timeoutMs: Math.max(1000, parseIntEnv(process.env.OPENAI_TIMEOUT_MS, 30_000)),
@@ -86,6 +88,11 @@ export default () => ({
     // en `!uso`. En 0 (default) `!uso` muestra tokens sin costo.
     llmPriceInputPerM: Math.max(0, parseFloatEnv(process.env.LLM_PRICE_INPUT_PER_M, 0)),
     llmPriceOutputPerM: Math.max(0, parseFloatEnv(process.env.LLM_PRICE_OUTPUT_PER_M, 0)),
+    // Precio de la entrada que el proveedor sirve desde su caché (DeepSeek la
+    // cobra ~50 veces menos). Vacío = se cobra como entrada normal.
+    llmPriceCachedInputPerM: process.env.LLM_PRICE_CACHED_INPUT_PER_M
+      ? Math.max(0, parseFloatEnv(process.env.LLM_PRICE_CACHED_INPUT_PER_M, 0))
+      : null,
   },
 
   // Music Configuration

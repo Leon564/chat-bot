@@ -37,11 +37,11 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 
 ## 🟢 Mejoras
 
-- [ ] **15. Recados.** Sin cancelación (`!misrecados` / `!cancelarrecado`) ni índice TTL sobre `expiresAt`: los vencidos se acumulan en `bot_errands`. (`bot_llm_usage` no necesita TTL: `UsageService` ya lo poda a las últimas 5000 filas.)
-- [ ] **16. Datos fijos en el código.** El comando `debug` se valida por el nombre `'Sleepy Ash'` en vez del rol admin. El bloque IDENTIDAD (`prompt-builder.service.ts`) tiene familia y reglas escritas a mano, con la regla "3." repetida. Moverlo a config o a instrucciones de sala.
-- [ ] **17. Modelo por defecto `gpt-3.5-turbo`** (obsoleto). Además, para modelos de razonamiento `max_tokens` está deprecado (`max_completion_tokens`).
-- [ ] **18. Archivos gigantes.** `music.service.ts` (2152 líneas), `bot.service.ts` (1746), `chat.service.ts` (1699). Candidatos: `CommandsService` para todos los `!…`, servicio propio para la cadena de subidas.
-- [ ] **19. CI.** GitHub Action con `npx jest` + `npm run build` en cada PR.
+- [x] **15. Recados.** Sin cancelación (`!misrecados` / `!cancelarrecado`) ni índice TTL sobre `expiresAt`: los vencidos se acumulan en `bot_errands`. (`bot_llm_usage` no necesita TTL: `UsageService` ya lo poda a las últimas 5000 filas.) ✅ `!misrecados` (los que dejaste, numerados), `!cancelarrecado <n>` y `!rechazarrecados` (borra sin leer los que hay para vos); los tres operan sólo sobre quien escribe. Índice TTL sobre `expiresAt`.
+- [x] **16. Datos fijos en el código.** El comando `debug` se valida por el nombre `'Sleepy Ash'` en vez del rol admin. El bloque IDENTIDAD (`prompt-builder.service.ts`) tiene familia y reglas escritas a mano, con la regla "3." repetida. Moverlo a config o a instrucciones de sala. ✅ `debug` se valida por rol admin/superAdmin; arreglada la regla "3." repetida. La familia y las reglas siguen en el prompt (son contenido de la persona; si cambian, se pueden pisar con instrucciones de sala).
+- [x] **17. Modelo por defecto `gpt-3.5-turbo`** (obsoleto). Además, para modelos de razonamiento `max_tokens` está deprecado (`max_completion_tokens`). ✅ Defaults `https://api.deepseek.com` + `deepseek-flash` (lo que usa el proyecto). Se sigue usando `max_tokens`, que DeepSeek acepta. De paso: se lee `prompt_cache_hit_tokens` de DeepSeek (antes la entrada cacheada quedaba en 0) y `!uso` puede cobrarla aparte con `LLM_PRICE_CACHED_INPUT_PER_M`.
+- [ ] **18. Archivos gigantes.** `music.service.ts` (2152 líneas), `bot.service.ts` (1746), `chat.service.ts` (1699). Candidatos: `CommandsService` para todos los `!…`, servicio propio para la cadena de subidas. ⏸️ Pospuesto a un PR propio (decisión del dueño): mueve mucho código y toca cientos de tests que llaman a métodos privados.
+- [x] **19. CI.** GitHub Action con `npx jest` + `npm run build` en cada PR. ✅ `.github/workflows/ci.yml`: `npm ci`, lint, typecheck, tests y build en cada PR y push a `main` (Node 24, caché del binario de mongod).
 
 ## ✨ Novedades
 

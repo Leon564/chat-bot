@@ -45,6 +45,14 @@ describe('UsageService', () => {
         createdAt: new Date(Date.now() - hoursAgo * 3_600_000),
       });
 
+    it('suma también los tokens servidos desde caché (filas viejas sin el campo cuentan 0)', async () => {
+      await model.collection.insertOne({ kind: 'chat', user: 'a', promptTokens: 1000, completionTokens: 10, cachedPromptTokens: 900, createdAt: new Date() });
+      await seed('b', 500, 5, 0); // sin cachedPromptTokens
+      const s = await service.summarize(new Date(Date.now() - 3_600_000));
+      expect(s.promptTokens).toBe(1500);
+      expect(s.cachedPromptTokens).toBe(900);
+    });
+
     it('suma la ventana pedida y ordena a los que más usan', async () => {
       await seed('nico', 100, 10, 1);
       await seed('nico', 200, 20, 2);
@@ -66,7 +74,7 @@ describe('UsageService', () => {
 
     it('sin filas devuelve ceros', async () => {
       const s = await service.summarize(new Date(0));
-      expect(s).toEqual({ calls: 0, promptTokens: 0, completionTokens: 0, topUsers: [], oldest: null });
+      expect(s).toEqual({ calls: 0, promptTokens: 0, cachedPromptTokens: 0, completionTokens: 0, topUsers: [], oldest: null });
     });
   });
 
