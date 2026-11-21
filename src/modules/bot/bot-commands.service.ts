@@ -13,6 +13,7 @@ import {
   INSTRUCTION_STAFF_ROLES,
   MAX_ROOM_INSTRUCTIONS,
 } from '../chat/room-instructions.service';
+import { ProactiveService } from './proactive.service';
 import { BotOutputService } from './bot-output.service';
 import { createLog } from '../../common/utils/log';
 
@@ -90,6 +91,7 @@ export class BotCommandsService {
     private readonly errandService: ErrandService,
     private readonly output: BotOutputService,
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
+    @Optional() private readonly proactive?: ProactiveService,
   ) {}
 
   /**
@@ -101,6 +103,7 @@ export class BotCommandsService {
       (await this.handlePersonalityCommand(content, authorUsername, authorRole)) ||
       (await this.handleCrossContextCommand(content, authorUsername, authorRole)) ||
       (await this.handleSharedContextCommand(content, authorUsername, authorRole)) ||
+      (await this.handleProactiveCommand(content, authorUsername, authorRole)) ||
       (await this.handleRoomInstructionsCommand(content, authorUsername, authorRole)) ||
       (await this.handleHelpCommand(content, authorUsername, authorRole)) ||
       (await this.handleUsageCommand(content, authorUsername, authorRole)) ||
@@ -233,6 +236,46 @@ export class BotCommandsService {
    * cada usuario. Calcado de `handlePersonalityCommand`, y como aquel el
    * override vive en `ChatService`.
    */
+  /**
+   * `!proactivo on|off|reset|status`: interruptor en caliente de los
+   * comentarios espontáneos (`ProactiveService`), sólo admin. Se pierde al
+   * reiniciar, como el de `!sharedcontext`.
+   */
+  private async handleProactiveCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!proactivo(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar los comentarios espontáneos.`);
+      return true;
+    }
+    if (!this.proactive) {
+      this.sendBotMessage(`@${authorUsername} Los comentarios espontáneos no están disponibles.`);
+      return true;
+    }
+    const sub = (match[1] ?? 'status').toLowerCase();
+    if (sub === 'on' || sub === 'off') {
+      this.proactive.setOverride(sub === 'on');
+      this.sendBotMessage(`@${authorUsername} ✅ Comentarios espontáneos ${sub === 'on' ? 'activados' : 'desactivados'}.`);
+      return true;
+    }
+    if (sub === 'reset' || sub === 'env') this.proactive.setOverride(null);
+    if (sub === 'reset' || sub === 'env' || sub === 'status') {
+      const info = this.proactive.getInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 🗣️ Comentarios espontáneos: ${info.enabled ? 'activados' : 'desactivados'}${note}. ` +
+          `Probabilidad ${Math.round(info.chance * 100)} % por mensaje, como mucho uno cada ${info.cooldownMinutes} min.`,
+      );
+      return true;
+    }
+    this.sendBotMessage(`@${authorUsername} Uso: !proactivo on | off | reset | status`);
+    return true;
+  }
+
   private async handleSharedContextCommand(
     content: string,
     authorUsername: string,
@@ -446,6 +489,7 @@ export class BotCommandsService {
         '• !uso [24h|7d|30d] — consumo del modelo',
         '• !personality default|unfiltered|reset|status',
         '• !sharedcontext on|off|reset|status',
+        '• !proactivo on|off|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
       );
     }

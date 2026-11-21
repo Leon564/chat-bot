@@ -21,21 +21,27 @@ export class LoggingService {
     @InjectModel(EventLog.name) private readonly eventLogModel: Model<EventLogDocument>,
   ) {}
 
-  async getLastMessages(): Promise<{ user: string; message: string }[]> {
+  /**
+   * Los mensajes más nuevos del log (hasta `MESSAGES_CAP`), del más viejo al
+   * más nuevo. Con `since`, sólo los posteriores: así `!resumen` cubre lo que
+   * pasó desde el resumen anterior sin tener que vaciar el log (antes lo
+   * vaciaba, y el bot se quedaba sin contexto de sala).
+   */
+  async getLastMessages(since?: Date | null): Promise<{ user: string; message: string }[]> {
+    const filter = since ? { createdAt: { $gt: since } } : {};
     const rows = await this.messageLogModel
-      .find()
-      .sort({ createdAt: 1 })
+      .find(filter)
+      .sort({ createdAt: -1, _id: -1 })
       .limit(MESSAGES_CAP)
       .lean()
       .exec();
-    return rows.map((r) => ({ user: r.user, message: r.message }));
+    return rows.reverse().map((r) => ({ user: r.user, message: r.message }));
   }
 
   /**
    * Los últimos `limit` mensajes de la sala dentro de los últimos `minutes`,
    * del más viejo al más nuevo. Alimenta el contexto de sala del modelo.
-   * Ojo: `!resumen` vacía este log, así que justo después el bot arranca sin
-   * contexto de sala hasta que se vuelva a hablar.
+   * Incluye las respuestas del propio bot (ver `BotService.logOwnMessage`).
    */
   async getRecent(limit: number, minutes: number): Promise<{ user: string; message: string; at: Date }[]> {
     if (limit <= 0 || minutes <= 0) return [];
@@ -71,13 +77,6 @@ export class LoggingService {
         await this.messageLogModel.deleteMany({ _id: { $in: overflow.map((d) => d._id) } });
       }
     }
-  }
-
-  async clearMessagesLog(): Promise<number> {
-    const before = await this.messageLogModel.estimatedDocumentCount();
-    await this.messageLogModel.deleteMany({});
-    log.info(`📝 Log de mensajes limpiado: ${before} mensajes eliminados`);
-    return before;
   }
 
   async saveEventsLog(event: string, user: string): Promise<void> {

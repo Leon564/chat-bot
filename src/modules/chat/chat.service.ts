@@ -80,7 +80,8 @@ export class ChatService {
   /**
    * Arma el bloque de contexto de sala. Saca el mensaje actual (el más nuevo
    * del log es el que se está respondiendo, guardado antes de llegar acá) y
-   * los mensajes del propio bot (no se loguean, pero por las dudas).
+   * marca las respuestas del propio bot como "(vos)", para que sepa qué ya
+   * dijo y a quién.
    */
   static buildRoomContext(
     rows: { user: string; message: string }[],
@@ -94,15 +95,67 @@ export class ChatService {
     }
     const bot = botName ? ChatService.normalizeAuthorName(botName) : null;
     const lines = list
-      .filter((r) => r.user && r.message && (!bot || ChatService.normalizeAuthorName(r.user) !== bot))
+      .filter((r) => r.user && r.message)
       .map((r) => {
         const text = r.message.replace(/\s+/g, ' ').trim();
         const cut = text.length > ChatService.ROOM_CONTEXT_MAX_CHARS
           ? `${text.slice(0, ChatService.ROOM_CONTEXT_MAX_CHARS)}…`
           : text;
-        return `${r.user}: ${cut}`;
+        const isBot = !!bot && ChatService.normalizeAuthorName(r.user) === bot;
+        return `${r.user}${isBot ? ' (vos)' : ''}: ${cut}`;
       });
     return lines.length > 0 ? `${ChatService.ROOM_CONTEXT_PREFIX}${lines.join('\n')}` : '';
+  }
+
+  /** Respuesta del modelo cuando no tiene nada que aportar a la charla. */
+  static readonly PROACTIVE_PASS = 'PASO';
+
+  /**
+   * Comentario espontáneo: nadie le habló al bot, pero la charla está viva y
+   * `ProactiveService` decidió que puede meterse. El modelo ve lo último de
+   * la sala (como dato) y escribe una o dos frases como uno más, o responde
+   * `PASO` si no tiene nada que aportar. Sin historial por usuario, sin
+   * memoria ni verbos: es un comentario al pasar. Devuelve '' si pasa o falla.
+   */
+  async chatProactive(botName: string, rows: { user: string; message: string }[]): Promise<string> {
+    const room = ChatService.buildRoomContext(rows, undefined, botName);
+    if (!room) return '';
+    try {
+      const systemPrompt = this.promptBuilder.build({
+        botName,
+        username: 'la sala',
+        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 2000,
+        personality: this.getPersonality(),
+        useMemory: false,
+        now: new Date(),
+        blocks: ['PERSONA', 'TEMPORAL'],
+      });
+      const response = await this.openai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: room },
+          {
+            role: 'user',
+            content:
+              `Nadie te habló directamente: estás leyendo la charla de arriba como uno más del chat. ` +
+              `Si tenés algo corto, natural y con onda para aportar al ÚLTIMO tema (un comentario, un chiste, un dato, una opinión), ` +
+              `escribilo en una o dos frases, sin saludar, sin presentarte y sin ofrecer ayuda; podés nombrar a alguien. ` +
+              `No repitas algo que ya dijiste (lo marcado "(vos)"). No uses tokens {{...}}, verbos SAVE_... ni STICKER(...). ` +
+              `Si no tenés nada que valga la pena, respondé exactamente: ${ChatService.PROACTIVE_PASS}`,
+          },
+        ],
+        model: this.configService.get('openai.model') || 'deepseek-flash',
+        temperature: 0.9,
+        max_tokens: 120,
+      });
+      this.recordUsage('chat', response, botName, ['proactive']);
+      const text = ChatService.stripTokens(response.choices[0]?.message?.content ?? '').replace(/^["“]|["”]$/g, '').trim();
+      if (!text || /^\W*paso\W*$/i.test(text)) return '';
+      return text;
+    } catch (err) {
+      this.logger.warn(`No se pudo generar el comentario espontáneo: ${(err as Error)?.message}`);
+      return '';
+    }
   }
 
   /** Mismo motivo que el de los recados: el título de la canción viene de YouTube. */
@@ -767,7 +820,11 @@ export class ChatService {
     text: string;
     facts: Array<{ user: string; relation: string; object: string }>;
   }> {
-    const messages = await this.loggingService.getLastMessages();
+    // Desde el resumen anterior (el evento 'Resumen' marca hasta dónde se
+    // resumió); el log ya no se vacía. `?.`: los dobles de los tests.
+    const lastSummary = await Promise.resolve(this.loggingService.getLastEventType?.('Resumen')).catch(() => null);
+    const sinceIso = lastSummary?.lastResumenEvent?.date;
+    const messages = await this.loggingService.getLastMessages(sinceIso ? new Date(sinceIso) : null);
 
     if (!messages || messages.length === 0) {
       return { text: 'No hay mensajes para resumir en este momento. 🤷‍♂️', facts: [] };
@@ -803,6 +860,8 @@ export class ChatService {
         .map((msg: any) => ChatService.normalizeAuthorName(msg.user))
         .filter((u: string) => u.length > 0),
     );
+    // El bot también está en el log (sus respuestas): nunca es sujeto de un hecho.
+    if (botName) knownAuthors.delete(ChatService.normalizeAuthorName(botName));
 
     try {
       const summaryResponse = await this.openai.chat.completions.create({

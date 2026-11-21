@@ -73,6 +73,10 @@ export default () => ({
     // respuesta. 0 en cualquiera de los dos lo apaga.
     roomContextMessages: Math.max(0, parseIntEnv(process.env.ROOM_CONTEXT_MESSAGES, 20)),
     roomContextMinutes: Math.max(0, parseIntEnv(process.env.ROOM_CONTEXT_MINUTES, 15)),
+    // Comentarios espontáneos (sin que lo nombren): probabilidad por mensaje
+    // (0..1, 0 apaga) y pausa mínima global entre intentos. Ver ProactiveService.
+    proactiveChance: Math.min(1, Math.max(0, parseFloatEnv(process.env.PROACTIVE_CHANCE, 0.06))),
+    proactiveCooldownMinutes: Math.max(1, parseFloatEnv(process.env.PROACTIVE_COOLDOWN_MINUTES, 15)),
     // Contexto cruzado entre usuarios. Apagado por defecto: es opt-in.
     // Enciende dos capacidades — que el bot lea del grafo de OTROS usuarios
     // mencionados y que acepte hechos sobre terceros. Los recados ya NO

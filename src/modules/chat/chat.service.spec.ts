@@ -216,6 +216,53 @@ describe('ChatService — instrumentación de tokens', () => {
     expect(context.getShared).not.toHaveBeenCalled();
   });
 
+  describe('comentario espontáneo (chatProactive)', () => {
+    const filas = [
+      { user: 'kei', message: 'vieron Frieren?' },
+      { user: 'lyna', message: 'sí, lloré' },
+    ];
+
+    it('le pasa la charla como dato y devuelve el comentario sin tokens', async () => {
+      crearMock.mockResolvedValue(respuesta('"yo también lloré {{music: x}}"'));
+
+      const out = await service.chatProactive('Aria', filas);
+
+      const mensajes = crearMock.mock.calls[0][0].messages;
+      expect(mensajes[1].content).toContain('lyna: sí, lloré');
+      expect(mensajes[2].content).toContain('Nadie te habló directamente');
+      expect(out).toBe('yo también lloré');
+    });
+
+    it.each(['PASO', 'paso.', ' PASO '])('"%s" = no dice nada', async (r) => {
+      crearMock.mockResolvedValue(respuesta(r));
+      expect(await service.chatProactive('Aria', filas)).toBe('');
+    });
+
+    it('sin charla ni llama al modelo', async () => {
+      expect(await service.chatProactive('Aria', [])).toBe('');
+      expect(crearMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resumen desde el anterior', () => {
+    it('pide los mensajes posteriores al último evento Resumen y saca al bot de los autores de hechos', async () => {
+      const fecha = '2026-11-20T10:00:00.000Z';
+      (logging as any).getLastEventType = jest.fn().mockResolvedValue({ minutesLeft: 30, lastResumenEvent: { date: fecha } });
+      logging.getLastMessages.mockResolvedValue([
+        { user: 'Nico', message: 'me encanta Berserk' },
+        { user: 'Aria', message: '@Nico buenísimo' },
+      ]);
+      crearMock.mockResolvedValue(
+        respuesta('Nico habló de Berserk.\n<<<HECHOS>>>\nNico|likes|Berserk\nAria|likes|Vagabond'),
+      );
+
+      const out = await service.generateSummary('Nico', 'Aria');
+
+      expect(logging.getLastMessages).toHaveBeenCalledWith(new Date(fecha));
+      expect(out.facts).toEqual([{ user: 'Nico', relation: 'likes', object: 'Berserk' }]);
+    });
+  });
+
   describe('contexto de la sala', () => {
     const filas = [
       { user: 'kei', message: 'alguien vio el cap nuevo de Frieren?' },
@@ -254,7 +301,7 @@ describe('ChatService — instrumentación de tokens', () => {
       expect(mensajes.some((m: any) => String(m.content).includes('LO ÚLTIMO QUE SE DIJO'))).toBe(false);
     });
 
-    it('buildRoomContext saca los mensajes del bot y recorta los largos', () => {
+    it('buildRoomContext marca las respuestas del bot como (vos) y recorta los largos', () => {
       const largo = 'a'.repeat(500);
       const out = ChatService.buildRoomContext(
         [
@@ -265,7 +312,7 @@ describe('ChatService — instrumentación de tokens', () => {
         'Nico',
         'Aria',
       );
-      expect(out).not.toContain('soy el bot');
+      expect(out).toContain('Aria (vos): soy el bot');
       expect(out).toContain('lyna: hola');
       expect(out).toContain(`kei: ${'a'.repeat(200)}…`);
       expect(ChatService.buildRoomContext([{ user: 'Nico', message: 'bot?' }], 'Nico', 'Aria')).toBe('');

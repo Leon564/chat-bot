@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { BotOutputService } from './bot-output.service';
 import { BotCommandsService } from './bot-commands.service';
 import { BotService, formatRemaining } from './bot.service';
+import { ProactiveService } from './proactive.service';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
 import { AniListService, AniListResult } from '../anilist/anilist.service';
@@ -542,7 +543,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
       expect(logging.clearMessagesLog).not.toHaveBeenCalled();
     });
 
-    it('cuando el resumen es válido, sí consume el cooldown y limpia el log (comportamiento normal, sin regresión)', async () => {
+    it('cuando el resumen es válido, consume el cooldown pero ya NO vacía el log (el evento marca hasta dónde se resumió)', async () => {
       chat.generateSummary.mockResolvedValue({
         text: 'Resumen del chat',
         facts: [],
@@ -552,7 +553,7 @@ describe('BotService — handleSummaryRequest (Task 5, fase 4b — hechos extra�
       await dejarCorrer();
 
       expect(logging.saveEventsLog).toHaveBeenCalledWith('Resumen', 'Nico');
-      expect(logging.clearMessagesLog).toHaveBeenCalled();
+      expect(logging.clearMessagesLog).not.toHaveBeenCalled();
     });
   });
 });
@@ -1473,6 +1474,7 @@ type ErrandDouble = {
 type ChatDouble = {
   chat?: jest.Mock;
   deliverErrand?: jest.Mock;
+  chatProactive?: jest.Mock;
   setSharedContextOverride?: jest.Mock;
   getSharedContextInfo?: jest.Mock;
 };
@@ -1494,6 +1496,8 @@ const buildBotService = async (
     usage?: Record<string, jest.Mock>;
     config?: Record<string, unknown>;
     stickers?: Record<string, unknown>;
+    proactive?: Record<string, unknown>;
+    logging?: Record<string, jest.Mock>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1502,7 +1506,7 @@ const buildBotService = async (
   chat: { chat: jest.Mock; deliverErrand: jest.Mock };
   utils: { splitMessageIntoParts: jest.Mock };
   socket: { getOnlineUsers: jest.Mock; username: string | undefined };
-  logging: { getLastEventType: jest.Mock; clearMessagesLog: jest.Mock };
+  logging: { getLastEventType: jest.Mock; clearMessagesLog: jest.Mock; saveLog: jest.Mock; getRecent?: jest.Mock };
 }> => {
   const sent: string[] = [];
   const socket = {
@@ -1528,6 +1532,7 @@ const buildBotService = async (
     getLastEventType: jest.fn().mockResolvedValue({ minutesLeft: 999 }),
     saveEventsLog: jest.fn().mockResolvedValue(undefined),
     clearMessagesLog: jest.fn().mockResolvedValue(0),
+    ...overrides.logging,
   };
 
   const crossContext = {
@@ -1593,6 +1598,7 @@ const buildBotService = async (
       ...(overrides.roomInstructions
         ? [{ provide: RoomInstructionsService, useValue: overrides.roomInstructions }]
         : []),
+      ...(overrides.proactive ? [{ provide: ProactiveService, useValue: overrides.proactive }] : []),
     ],
   }).compile();
 
@@ -2644,5 +2650,75 @@ describe('recados: !misrecados / !cancelarrecado / !rechazarrecados', () => {
     const { service, sent } = await buildBotService({ errands: { listSent } as never });
     await expect(handle(service, '!misrecados')).resolves.toBe(true);
     expect(sent.join(' ')).toContain('No pude leer los recados');
+  });
+});
+
+describe('el bot como uno más del chat', () => {
+  const dejarCorrer = () => new Promise((r) => setImmediate(r));
+  const charlaViva = [
+    { user: 'kei', message: 'vieron el cap de Frieren?' },
+    { user: 'lyna', message: 'sí, lloré' },
+    { user: 'kei', message: 'la escena del anillo' },
+    { user: 'lyna', message: 'un temazo la música también' },
+  ];
+
+  it('guarda en el log lo que respondió, con la mención, para el contexto de sala y el resumen', async () => {
+    const { service, logging } = await buildBotService({ chat: { chat: jest.fn().mockResolvedValue('Berserk, sin dudas') } });
+
+    await service['handleNewChatMessage']({ content: 'bot qué leo?', authorUsername: 'kei' } as any);
+    await dejarCorrer();
+
+    expect(logging.saveLog).toHaveBeenCalledWith('Aria', '@kei Berserk, sin dudas');
+  });
+
+  it('sin que lo nombren, con la charla viva y el dado a favor, comenta sin mención', async () => {
+    const proactive = { shouldTry: jest.fn().mockReturnValue(true), markAttempt: jest.fn() };
+    const chatProactive = jest.fn().mockResolvedValue('esa escena me rompió también 😭');
+    const { service, sent, logging } = await buildBotService({
+      proactive,
+      chat: { chatProactive },
+      logging: { getRecent: jest.fn().mockResolvedValue(charlaViva) },
+    });
+
+    await service['handleNewChatMessage']({ content: 'un temazo la música también', authorUsername: 'lyna' } as any);
+    await dejarCorrer();
+    await dejarCorrer();
+
+    expect(proactive.markAttempt).toHaveBeenCalled();
+    expect(chatProactive).toHaveBeenCalledWith('Aria', charlaViva);
+    expect(sent).toEqual([expect.stringContaining('esa escena me rompió también')]);
+    expect(sent[0]).not.toContain('<@');
+    expect(logging.saveLog).toHaveBeenCalledWith('Aria', 'esa escena me rompió también 😭');
+  });
+
+  it('si el modelo pasa, no manda nada', async () => {
+    const { service, sent } = await buildBotService({
+      proactive: { shouldTry: jest.fn().mockReturnValue(true), markAttempt: jest.fn() },
+      chat: { chatProactive: jest.fn().mockResolvedValue('') },
+      logging: { getRecent: jest.fn().mockResolvedValue(charlaViva) },
+    });
+
+    await service['handleNewChatMessage']({ content: 'un temazo la música también', authorUsername: 'lyna' } as any);
+    await dejarCorrer();
+    await dejarCorrer();
+
+    expect(sent).toEqual([]);
+  });
+
+  it('con una charla apagada (una sola persona) ni llama al modelo', async () => {
+    const chatProactive = jest.fn();
+    const proactive = { shouldTry: jest.fn().mockReturnValue(true), markAttempt: jest.fn() };
+    const { service } = await buildBotService({
+      proactive,
+      chat: { chatProactive },
+      logging: { getRecent: jest.fn().mockResolvedValue(charlaViva.map((r) => ({ ...r, user: 'kei' }))) },
+    });
+
+    await service['handleNewChatMessage']({ content: 'hablando solo un rato largo', authorUsername: 'kei' } as any);
+    await dejarCorrer();
+    await dejarCorrer();
+
+    expect(chatProactive).not.toHaveBeenCalled();
+    expect(proactive.markAttempt).not.toHaveBeenCalled();
   });
 });
