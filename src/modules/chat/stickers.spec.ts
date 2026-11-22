@@ -26,6 +26,22 @@ describe('ChatService.extractStickerVerb', () => {
     expect(ChatService.extractStickerVerb(text)).toEqual({ content: text, name: null });
   });
 
+  it('trata el [sticker: nombre] imitado como el verbo', () => {
+    expect(ChatService.extractStickerVerb('jaja qué pícara [sticker: Niña pícara]')).toEqual({
+      content: 'jaja qué pícara',
+      name: 'Niña pícara',
+    });
+  });
+
+  it('el verbo le gana al [sticker: …] y borra los dos', () => {
+    expect(ChatService.extractStickerVerb('[sticker: B] hola STICKER(A)')).toEqual({ content: 'hola', name: 'A' });
+  });
+
+  it('no toca el [sticker: …] dentro de un SAVE_ERRAND', () => {
+    const text = 'dale SAVE_ERRAND(kei, SECRETO: [sticker: Gato llorando] (shh))';
+    expect(ChatService.extractStickerVerb(text)).toEqual({ content: text, name: null });
+  });
+
   it('deja intacto un SAVE_FACT que venía antes', () => {
     expect(ChatService.extractStickerVerb('Genial! SAVE_FACT(likes, Berserk) STICKER(Gato)').content).toBe(
       'Genial! SAVE_FACT(likes, Berserk)',
