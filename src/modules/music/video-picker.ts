@@ -10,6 +10,24 @@
  * Todo acá es puro (sin red, sin config) para poder testearlo directo.
  */
 
+/**
+ * Lo que el pipeline usa de un resultado de búsqueda. Lo cumplen tanto los
+ * items de `ytsr` (`ytsr.Video`) como los que arma `parseSongResults` desde
+ * YouTube Music, que imita esa forma a propósito.
+ */
+export interface SearchVideo {
+  type?: string;
+  id?: string;
+  title: string;
+  url: string;
+  /** "3:45" / "1:02:10"; `null` si no se sabe. */
+  duration?: string | null;
+  isLive?: boolean;
+  author?: { name: string } | null;
+  bestThumbnail?: { url: string | null } | null;
+  thumbnails?: Array<{ url: string | null }>;
+}
+
 export interface PickOptions {
   /** Límite en minutos; los resultados que lo superan se descartan. */
   maxMinutes: number;
@@ -19,12 +37,12 @@ export interface PickOptions {
 
 export interface PickResult {
   /** El resultado elegido, o null si ninguno entra en el límite. */
-  video: any | null;
+  video: SearchVideo | null;
   /**
    * Cuando `video` es null porque todo era demasiado largo: el primer
    * resultado relevante, para armar el mensaje de error con su duración.
    */
-  tooLong: any | null;
+  tooLong: SearchVideo | null;
 }
 
 /**
@@ -93,7 +111,7 @@ export function parseDurationMinutes(duration: unknown): number | null {
 }
 
 /** Fracción de las palabras de la búsqueda que aparecen en título + canal. */
-export function queryCoverage(query: string, video: any): number {
+export function queryCoverage(query: string, video: SearchVideo): number {
   const wanted = Array.from(new Set(contentTokens(query)));
   if (wanted.length === 0) return 1;
   const haystack = new Set(
@@ -103,9 +121,9 @@ export function queryCoverage(query: string, video: any): number {
 }
 
 /** Puntaje de "esto es el audio y no el videoclip". Mayor es mejor. */
-export function audioScore(query: string, video: any): number {
+export function audioScore(query: string, video: SearchVideo): number {
   const title = normalizeText(video?.title ?? '');
-  const author = (video?.author?.name ?? '') as string;
+  const author = video?.author?.name ?? '';
   const q = normalizeText(query);
   let score = 0;
 
@@ -148,11 +166,11 @@ function isUnwantedVariant(title: string, query: string): boolean {
  *    formas que la cobertura no empareja ("Live", "Ao Vivo"), y "despacito en
  *    vivo" terminaba en una versión desconocida en vez del en vivo de Fonsi.
  */
-export function pickSong(songs: any[], query: string, maxMinutes: number): any | null {
+export function pickSong(songs: SearchVideo[], query: string, maxMinutes: number): SearchVideo | null {
   const q = normalizeText(query);
   if (isUnwantedVariant(q, '')) return null;
 
-  let best: any | null = null;
+  let best: SearchVideo | null = null;
   let bestCoverage = 0;
   for (const song of songs || []) {
     if (isUnwantedVariant(normalizeText(song?.title ?? ''), q)) continue;
@@ -168,7 +186,7 @@ export function pickSong(songs: any[], query: string, maxMinutes: number): any |
   return minutes !== null && minutes > maxMinutes ? null : best;
 }
 
-export function pickVideo(videos: any[], query: string, options: PickOptions): PickResult {
+export function pickVideo(videos: SearchVideo[], query: string, options: PickOptions): PickResult {
   const results = (videos || []).filter((v) => v && !v.isLive);
   if (results.length === 0) return { video: null, tooLong: null };
 
