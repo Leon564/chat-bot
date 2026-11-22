@@ -203,7 +203,7 @@ ${lines.join('\n')}
     return `STICKERS DEL CHAT:
 - Usalos como cualquiera del chat: para reaccionar, rematar un chiste o acompañar lo que decís. Podés poner UN sticker escribiendo STICKER(nombre exacto de la lista) al final de tu respuesta.
 - El sticker sale dentro de tu mismo mensaje, al lado del texto. No lo describas ni lo anuncies. Si no tenés nada que decir, podés responder únicamente con STICKER(...).
-- Cuando alguien mande un sticker lo vas a ver como [sticker: nombre].
+- Cuando alguien mande un sticker lo vas a ver como [sticker: nombre] (también los tuyos en la charla de la sala). Eso es sólo cómo los VES: para mandar uno escribí siempre STICKER(nombre), nunca [sticker: nombre].
 - STICKER(...) es para tu respuesta de ahora. Si te piden mandarle un sticker a otra persona cuando escriba, va dentro del recado (ver RECADOS), no acá.
 Lista (categoría: nombres separados por " | "):
 ${offer.list}`;

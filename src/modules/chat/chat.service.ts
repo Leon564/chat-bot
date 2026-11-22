@@ -831,6 +831,10 @@ export class ChatService {
     return text
       .replace(/\{\{[^}]*\}\}/g, '')
       .replace(/\b(?:SAVE|LOAD)_[A-Z_]+\s*\([^)]*\)?/g, '')
+      // Acá no se ofrece sticker: el verbo o el `[sticker: …]` que el modelo
+      // imite del log de la sala saldría como texto crudo.
+      .replace(/\bSTICKER\s*\([^)]*\)?/gi, '')
+      .replace(/\[sticker:[^\]]*\]/gi, '')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
   }

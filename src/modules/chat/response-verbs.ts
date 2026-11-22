@@ -190,6 +190,54 @@ export class ResponseVerbs {
    * también se borra (sin nombre).
    */
   static extractStickerVerb(content: string): { content: string; name: string | null } {
+    const verb = ResponseVerbs.extractStickerCall(content);
+    const bracket = ResponseVerbs.extractStickerBracket(verb.content);
+    return { content: bracket.content, name: verb.name ?? bracket.name };
+  }
+
+  /**
+   * El modelo ve los stickers ajenos (y los propios, en el log de la sala)
+   * como `[sticker: nombre]` y a veces los imita en vez de usar
+   * `STICKER(nombre)`: el texto literal salía al chat y el sticker no. Acá
+   * se trata como el verbo. Los que están DENTRO de un `SAVE_ERRAND(...)` no
+   * se tocan: ahí son el sticker del recado (`takeErrandSticker`).
+   */
+  private static extractStickerBracket(content: string): { content: string; name: string | null } {
+    const re = /\[sticker:\s*([^\]]*?)\s*\]/gi;
+    if (!re.test(content)) return { content, name: null };
+    const protectedRanges = ResponseVerbs.errandSpans(content);
+    let name: string | null = null;
+    let removed = false;
+    const cleaned = content.replace(re, (m: string, raw: string, offset: number) => {
+      if (protectedRanges.some(([s, e]) => offset >= s && offset < e)) return m;
+      const n = raw.replace(/^["'«“]+|["'»”]+$/g, '').trim();
+      if (!name && n) name = n;
+      removed = true;
+      return '';
+    });
+    if (!removed) return { content, name: null };
+    return { content: cleaned.replace(/[ \t]{2,}/g, ' ').trim(), name };
+  }
+
+  /** Rangos `[inicio, fin)` de cada `SAVE_ERRAND(...)`, contando paréntesis. */
+  private static errandSpans(content: string): Array<[number, number]> {
+    const spans: Array<[number, number]> = [];
+    const re = /\bSAVE_ERRAND\s*\(/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content))) {
+      let depth = 1;
+      let i = m.index + m[0].length;
+      for (; i < content.length && depth > 0; i++) {
+        if (content[i] === '(') depth++;
+        else if (content[i] === ')') depth--;
+      }
+      spans.push([m.index, i]);
+      re.lastIndex = i;
+    }
+    return spans;
+  }
+
+  private static extractStickerCall(content: string): { content: string; name: string | null } {
     if (!/\bSTICKER\s*\(/i.test(content)) return { content, name: null };
     let name: string | null = null;
     const cleaned = content
