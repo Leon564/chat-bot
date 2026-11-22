@@ -536,8 +536,41 @@ export class MusicService {
     query: string,
     username: string,
     onProgress?: (update: MusicProgress) => void,
+    options: { embed?: boolean } = {},
   ): Promise<MusicResult> {
+    if (options.embed) return this.embedVideo(query, username);
     return this.runPipeline({ query, username, kind: 'video', onProgress });
+  }
+
+  /**
+   * Modo `youtube` de `!video`: sólo busca y devuelve `[youtube]ID[/youtube]`
+   * (el gateway lo deja pasar porque el rol es `bot`, con `youtubeEmbedsEnabled`
+   * encendido). No descarga ni sube nada, así que no pasa por la cola pesada
+   * ni gasta espacio de FileGarden, y no tiene tope de duración: ese tope
+   * existe por el peso del archivo. `track` va en `null` a propósito: sin
+   * `uploadUrl` real, registrarlo en el grafo ensuciaría el caché de pistas.
+   */
+  private async embedVideo(query: string, username: string): Promise<MusicResult> {
+    const videos = await this.searchSem.run(() => this.searchYouTube(query));
+    const { video } = pickVideo(videos, query, { maxMinutes: Infinity, preferAudio: false });
+    const id = video ? MusicService.youtubeIdOf(video) : null;
+    if (!video || !id) throw new Error(`No se encontraron resultados para "${query}"`);
+    log.info(`🎯 [EMBED] "${video.title}" - ${id}`);
+    const body = `[youtube]${id}[/youtube]`;
+    return {
+      text: `🎬 <@${username}> Aquí tienes "${video.title}": ${body}`,
+      track: null,
+      media: body,
+    };
+  }
+
+  /** ID de 11 caracteres de un resultado de ytsr (`id`, o sacado de la URL). */
+  static youtubeIdOf(video: { id?: unknown; url?: unknown }): string | null {
+    const isId = (v: unknown): v is string => typeof v === 'string' && /^[\w-]{11}$/.test(v);
+    if (isId(video?.id)) return video.id;
+    const url = typeof video?.url === 'string' ? video.url : '';
+    const m = url.match(/(?:[?&]v=|youtu\.be\/|\/shorts\/|\/embed\/)([\w-]{11})(?![\w-])/);
+    return m ? m[1] : null;
   }
 
   /**
