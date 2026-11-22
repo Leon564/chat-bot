@@ -342,6 +342,33 @@ describe('ChatService — instrumentación de tokens', () => {
     });
   });
 
+  describe('fugas del modelo (HTML y autocorrección)', () => {
+    // Respuesta real de prod (2026-11-22) a un mensaje que era sólo un sticker.
+    const PROD =
+      '<img src="https://media.tenor.com/..."/> wait no BBCode only.\n\n' +
+      'Poné los ojos en su lugar que no te los veo 😏\n\n' +
+      '[color=#ff6699]Bueno, vos empezaste con el chisme 😌[/color]';
+
+    it('saca el <img> y la autocorrección de la respuesta y del historial', async () => {
+      crearMock.mockResolvedValue(respuesta(PROD));
+
+      const out = await service.chat('[sticker: Ojos en blanco]', 'Aria', 'Leon564');
+
+      expect(out).toBe(
+        'Poné los ojos en su lugar que no te los veo 😏\n\n[color=#ff6699]Bueno, vos empezaste con el chisme 😌[/color]',
+      );
+      const saved = context.save.mock.calls[0][0].answer as string;
+      expect(saved).not.toMatch(/<img|wait no|BBCode/i);
+    });
+
+    it('una respuesta normal sale intacta (con mención incluida)', async () => {
+      const texto = 'Jaja <@kei> te ganó <3 [b]sí[/b]';
+      crearMock.mockResolvedValue(respuesta(texto));
+
+      expect(await service.chat('bot hola', 'Aria', 'Nico')).toBe(texto);
+    });
+  });
+
   describe('reply a otro mensaje', () => {
     const reply = { author: 'kei', content: 'terminé de leer Berserk anoche' };
 

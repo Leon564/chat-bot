@@ -188,12 +188,32 @@ function isInvalidPair(open: Extract<Token, { kind: 'open' }>, body: string): bo
 const EMPTY_BBCODE_GLOBAL_RE = new RegExp(EMPTY_BBCODE_SRC, 'gi');
 const HTML_COLOR_TAG_RE = /<(\/)?\s*color\s*(?:=\s*"?([^>"\s]*)"?\s*)?>/gi;
 
+/** Etiquetas de medios: no hay nada que rescatar, se van enteras (con el cierre si lo hay). */
+const HTML_MEDIA_TAG_RE = /<\s*(img|video|audio|iframe|source|embed|object|picture)\b[^<>]*>(?:[^<]*<\s*\/\s*\1\s*>)?/gi;
+/**
+ * Etiquetas de formato/estructura: se quita la etiqueta y queda el contenido.
+ * Lista cerrada a propósito: `<@usuario>` (menciones), `<3` o una flecha `<-`
+ * no son HTML y no se pueden tocar.
+ */
+const HTML_TEXT_TAG_RE = /<\s*\/?\s*(a|b|i|u|s|em|strong|small|big|sub|sup|del|ins|mark|span|div|p|br|hr|font|center|code|pre|blockquote|ul|ol|li|h[1-6])\b[^<>]*>/gi;
+
+/**
+ * Quita el HTML que el modelo a veces escribe aunque el chat sólo entienda
+ * BBCode (`<img src="…gif"/>` para "mandar" un GIF, `<b>…</b>`): el widget lo
+ * mostraría literal. El color se trata aparte (se convierte a BBCode).
+ */
+export function stripHtmlTags(text: string): string {
+  if (!text || !text.includes('<')) return text ?? '';
+  return text.replace(HTML_MEDIA_TAG_RE, '').replace(HTML_TEXT_TAG_RE, '');
+}
+
 /**
  * Red de seguridad de todo lo que el bot manda al chat. Devuelve el texto con:
  *   - los tags huérfanos (sin su pareja) quitados;
  *   - los tags apagados por el admin y los inválidos (`[color=red]`,
  *     `[url=javascript:…]`) desarmados, dejando el contenido;
- *   - los tags vacíos quitados, en cascada (`[b][i] [/i][/b]` → ` `).
+ *   - los tags vacíos quitados, en cascada (`[b][i] [/i][/b]` → ` `);
+ *   - el HTML que el chat no entiende quitado (`stripHtmlTags`).
  * Sólo toca los 12 de formato; adjuntos, `[youtube]`, etc. quedan igual.
  */
 export function sanitizeBotBbcode(text: string, disabled: ReadonlySet<string> = new Set()): string {
@@ -205,6 +225,7 @@ export function sanitizeBotBbcode(text: string, disabled: ReadonlySet<string> = 
   text = text.replace(HTML_COLOR_TAG_RE, (_m, slash: string, attr?: string) =>
     slash ? '[/color]' : `[color${attr !== undefined ? `=${attr.trim()}` : ''}]`,
   );
+  text = stripHtmlTags(text);
   if (!text.includes('[') && !text.includes('||')) return text;
   const tokens = tokenize(text);
   const { pairs, orphan } = pairTokens(tokens);

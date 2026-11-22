@@ -134,4 +134,16 @@ describe('BotService — stickers', () => {
     await send(':stk_gato1:', 'sticker');
     expect(chat.chat.mock.calls[0][0]).toBe('[sticker: Gato llorando]');
   });
+
+  it('le avisa al gate cuando el mensaje es sólo un sticker', async () => {
+    const { send, gate } = await build('none', 'jaja');
+    await send(':stk_gato1:', 'sticker');
+    expect(gate.decide).toHaveBeenCalledWith(':stk_gato1:', { stickerOnly: true });
+  });
+
+  it('un mensaje de texto no es sólo sticker', async () => {
+    const { send, gate } = await build('none', 'jaja');
+    await send('bot cómo va');
+    expect(gate.decide).toHaveBeenCalledWith('bot cómo va', { stickerOnly: false });
+  });
 });

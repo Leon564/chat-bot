@@ -38,12 +38,19 @@ export class StickerGateService {
     return EXPLICIT_REQUEST_RE.test(content ?? '');
   }
 
-  decide(content: string): StickerOffer {
+  /**
+   * `stickerOnly`: el mensaje es sólo un sticker. Ahí se ofrece sin tirar el
+   * dado (respetando el cooldown y `STICKER_CHANCE=0`): sin un sticker a mano
+   * el modelo improvisaba un GIF en HTML (`<img src="…tenor…"/>`), que el
+   * chat no muestra.
+   */
+  decide(content: string, opts: { stickerOnly?: boolean } = {}): StickerOffer {
     if (StickerGateService.isExplicitRequest(content)) return 'requested';
     const chance = this.configService.get<number>('bot.stickerChance') ?? 0;
     if (chance <= 0) return 'none';
     const cooldownMs = (this.configService.get<number>('bot.stickerCooldownMinutes') ?? 2) * 60_000;
     if (this.now() - this.lastSentAt < cooldownMs) return 'none';
+    if (opts.stickerOnly) return 'optional';
     return this.random() < chance ? 'optional' : 'none';
   }
 

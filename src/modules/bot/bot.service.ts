@@ -330,7 +330,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // El BBCode del usuario llega limpio (`[b]x[/b]` → `x`, spoilers como
     // `(spoiler: …)`).
     const modelText = bbcodeToPlain(this.stickerCatalog.describeContent(content, msg.type), 'mark');
-    const stickers = this.buildStickerOffer(content);
+    const stickers = this.buildStickerOffer(content, msg.type);
     const bbcodes = this.bbcodeSettings?.enabled();
     const chatOptions = {
       ...(replyContext ? { replyTo: replyContext } : {}),
@@ -387,9 +387,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   // ─── Stickers ──────────────────────────────────────────────────────────────
 
   /** Oferta de sticker para esta respuesta, o null si no corresponde. */
-  private buildStickerOffer(content: string): { list: string; requested: boolean } | null {
+  private buildStickerOffer(content: string, type?: string): { list: string; requested: boolean } | null {
     if (this.stickerCatalog.size === 0) return null;
-    const decision = this.stickerGate.decide(content);
+    const stickerOnly = this.stickerCatalog.isOnlyStickers(content, type);
+    const decision = this.stickerGate.decide(content, { stickerOnly });
     if (decision === 'none') return null;
     return { list: this.stickerCatalog.promptList(), requested: decision === 'requested' };
   }

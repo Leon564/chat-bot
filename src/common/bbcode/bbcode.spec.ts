@@ -4,6 +4,7 @@ import {
   normalizeDisabledBbcodes,
   rebalanceBbcodeParts,
   sanitizeBotBbcode,
+  stripHtmlTags,
 } from './bbcode';
 
 describe('bbcode (bot)', () => {
@@ -108,5 +109,27 @@ describe('bbcode (bot)', () => {
   it('normalizeDisabledBbcodes filtra nombres desconocidos', () => {
     expect(normalizeDisabledBbcodes(['SHAKE', '[scroll]', 'img', 3])).toEqual(['shake', 'scroll']);
     expect(normalizeDisabledBbcodes(undefined)).toEqual([]);
+  });
+
+  describe('stripHtmlTags', () => {
+    it('saca las etiquetas de medios enteras (el GIF que el modelo inventó en prod)', () => {
+      expect(stripHtmlTags('<img src="https://media.tenor.com/..."/> hola')).toBe(' hola');
+      expect(stripHtmlTags('a <video src="x.mp4"></video> b')).toBe('a  b');
+      expect(stripHtmlTags('<IFRAME src="x">')).toBe('');
+    });
+
+    it('de las de formato saca la etiqueta y deja el contenido', () => {
+      expect(stripHtmlTags('<b>hola</b> <i>che</i><br/>fin')).toBe('hola chefin');
+      expect(stripHtmlTags('<a href="https://x.com">link</a>')).toBe('link');
+    });
+
+    it('no toca menciones, corazones ni flechas', () => {
+      const text = '<@kiki> te quiero <3 y <- eso, 2 < 3 > 1';
+      expect(stripHtmlTags(text)).toBe(text);
+    });
+
+    it('sanitizeBotBbcode la aplica', () => {
+      expect(sanitizeBotBbcode('<img src="x.gif"/>[b]sí[/b]')).toBe('[b]sí[/b]');
+    });
   });
 });

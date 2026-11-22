@@ -77,6 +77,20 @@ export class StickerCatalogService {
   }
 
   /**
+   * true si el mensaje es sólo stickers: un mensaje `type='sticker'`, o uno o
+   * más `:code:` del catálogo sin nada de texto alrededor. Un `:algo:` que no
+   * está en el catálogo no cuenta (puede ser texto normal).
+   */
+  isOnlyStickers(content: string, type?: string): boolean {
+    if (type === 'sticker') return true;
+    const text = (content ?? '').trim();
+    if (!text) return false;
+    const codes = Array.from(text.matchAll(STICKER_TOKEN_RE), (m) => m[1]);
+    if (codes.length === 0 || !codes.every((code) => this.nameForCode(code))) return false;
+    return text.replace(STICKER_TOKEN_RE, '').trim() === '';
+  }
+
+  /**
    * Texto legible de un mensaje para el modelo: un sticker deja de ser
    * `[sticker]` o `:stk_xxxxx:` y pasa a ser `[sticker: Gato llorando]`.
    * Los códigos que no están en el catálogo quedan tal cual.

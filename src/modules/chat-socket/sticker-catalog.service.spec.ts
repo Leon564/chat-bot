@@ -75,4 +75,22 @@ describe('StickerCatalogService', () => {
     catalog.update(undefined, []);
     expect(catalog.size).toBe(3);
   });
+
+  describe('isOnlyStickers', () => {
+    it('un mensaje type=sticker siempre cuenta', () => {
+      expect(build().isOnlyStickers(':stk_zzzzz:', 'sticker')).toBe(true);
+    });
+
+    it('uno o varios códigos del catálogo sin texto', () => {
+      expect(build().isOnlyStickers(':stk_aaaaa:')).toBe(true);
+      expect(build().isOnlyStickers(' :stk_aaaaa: :stk_bbbbb: ')).toBe(true);
+    });
+
+    it('con texto, con un código desconocido o vacío, no', () => {
+      expect(build().isOnlyStickers('jaja :stk_aaaaa:')).toBe(false);
+      expect(build().isOnlyStickers(':smile:')).toBe(false);
+      expect(build().isOnlyStickers(':stk_aaaaa: :otro:')).toBe(false);
+      expect(build().isOnlyStickers('')).toBe(false);
+    });
+  });
 });

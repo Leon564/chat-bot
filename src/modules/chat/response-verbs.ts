@@ -1,4 +1,5 @@
 import { createLog } from '../../common/utils/log';
+import { stripHtmlTags } from '../../common/bbcode/bbcode';
 
 const log = createLog('ResponseVerbs');
 
@@ -350,6 +351,31 @@ export class ResponseVerbs {
       .replace(ResponseVerbs.createLeftoverVerbRegex(), '')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
+  }
+
+  /**
+   * Autocorrección filtrada al principio de la respuesta: el modelo arranca
+   * con algo que no debía (un `<img>` para mandar un GIF) y se corrige en voz
+   * alta antes de la respuesta de verdad — en prod salió
+   * `<img src="…"/> wait no BBCode only.` y después el texto para el chat.
+   * Sólo cuenta si empieza con una interjección Y nombra el formato
+   * (BBCode/HTML/markdown), para no comerse charla normal ("ah, no sé").
+   * `(?=…)` en vez de `\b` después de la interjección: `\b` es ASCII y falla
+   * tras "esperá"/"perdón".
+   */
+  private static readonly FORMAT_SELF_CORRECTION_RE =
+    /^\s*(?:wait|oops|actually|hmm+|sorry|oh|espera|esperá|ups|perd[oó]n|ah|ay)(?=[\s,.!:;—-])[^.!?\n]{0,60}?\b(?:bbcode|html|markdown)\b[^.!?\n]{0,40}[.!?]*\s*/i;
+
+  /**
+   * Limpia lo que el modelo deja escapar de su propio proceso: HTML que el
+   * chat mostraría literal y la frase con la que se corrigió. Devuelve el
+   * texto tal cual si no hay nada de eso (la abrumadora mayoría).
+   */
+  static stripModelLeaks(content: string): string {
+    if (!content) return content ?? '';
+    const noHtml = stripHtmlTags(content);
+    const cleaned = noHtml.replace(ResponseVerbs.FORMAT_SELF_CORRECTION_RE, '');
+    return cleaned === content ? content : cleaned.trim();
   }
 
   /**

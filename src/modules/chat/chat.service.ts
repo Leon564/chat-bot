@@ -696,6 +696,11 @@ export class ChatService {
         }
       }
 
+      // HTML y autocorrecciones filtradas ("<img …/> wait no BBCode only."),
+      // antes de guardar en el contexto: si quedaran en el historial el modelo
+      // las vería como respuestas suyas y las repetiría.
+      content = ResponseVerbs.stripModelLeaks(content);
+
       // Sanitizar enlaces de Discord en la respuesta: eliminar paréntesis, corchetes o comillas adyacentes
       try {
         const discordSanitizeRegex = /[\(\[\<"'\uFF08\uFF09]*?(https?:\/\/(?:www\.)?discord\.gg\/[A-Za-z0-9_-]+)[\)\]\>"'\uFF08\uFF09]*/gi;
