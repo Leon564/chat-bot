@@ -19,6 +19,7 @@ import { GraphUserService, MAX_FACTS_SHOWN } from '../graph/graph-user.service';
 import { UsageService } from '../chat/usage.service';
 import { RateLimitService } from './rate-limit.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { VideoSettingsService } from '../../common/settings/video-settings.service';
 import { ErrandService } from '../graph/errand.service';
 
 import { StickerCatalogService } from '../chat-socket/sticker-catalog.service';
@@ -1502,6 +1503,8 @@ const buildBotService = async (
     logging?: Record<string, jest.Mock>;
     reminders?: Record<string, unknown>;
     polls?: Record<string, unknown>;
+    /** Registra el `VideoSettingsService` real (lee `video.enabled` del doble de config). */
+    videoSettings?: boolean;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1605,6 +1608,7 @@ const buildBotService = async (
       ...(overrides.proactive ? [{ provide: ProactiveService, useValue: overrides.proactive }] : []),
       ...(overrides.reminders ? [{ provide: ReminderService, useValue: overrides.reminders }] : []),
       ...(overrides.polls ? [{ provide: PollService, useValue: overrides.polls }] : []),
+      ...(overrides.videoSettings ? [VideoSettingsService] : []),
     ],
   }).compile();
 
@@ -1711,6 +1715,65 @@ describe('!contextocruzado', () => {
   it('devuelve false para un mensaje que no es el comando', async () => {
     const { service } = await buildBotService({});
     expect(await service['commands']['handleCrossContextCommand']('hola bot', 'leon', 'admin')).toBe(false);
+  });
+});
+
+describe('!videos', () => {
+  const pedido = (content: string): ChatMessage => ({
+    _id: '1',
+    content,
+    authorUsername: 'lyna',
+    authorRole: 'user',
+    type: 'text',
+    createdAt: new Date().toISOString(),
+  });
+
+  it('rechaza a quien no es admin y no cambia nada', async () => {
+    const { service, sent } = await buildBotService({ videoSettings: true });
+
+    const handled = await service['commands']['handleVideoToggleCommand']('!videos on', 'lyna', 'mod');
+
+    expect(handled).toBe(true);
+    expect(sent.join(' ')).toContain('Solo admins');
+    expect(service['commands'].isVideoEnabled()).toBe(false);
+  });
+
+  it('on/off/reset mueven el interruptor y el dispatcher lo respeta', async () => {
+    const { service } = await buildBotService({ videoSettings: true, config: { 'video.enabled': false } });
+    const handleVideo = jest.spyOn(service as any, 'handleVideoRequest').mockResolvedValue(undefined);
+    const dispatch = (c: string) =>
+      (service as unknown as BotServiceConDispatcher).handleNewChatMessage(pedido(c));
+
+    await dispatch('!video algo');
+    expect(handleVideo).not.toHaveBeenCalled();
+
+    await service['commands']['handleVideoToggleCommand']('!videos on', 'leon', 'admin');
+    expect(service['commands'].isVideoEnabled()).toBe(true);
+    await dispatch('!video algo');
+    expect(handleVideo).toHaveBeenCalledTimes(1);
+
+    await service['commands']['handleVideoToggleCommand']('!videos off', 'leon', 'superAdmin');
+    await dispatch('!video algo');
+    expect(handleVideo).toHaveBeenCalledTimes(1);
+
+    await service['commands']['handleVideoToggleCommand']('!videos reset', 'leon', 'admin');
+    expect(service['commands'].isVideoEnabled()).toBe(false);
+  });
+
+  it('status informa el estado y de dónde sale; un subcomando raro muestra el uso', async () => {
+    const { service, sent } = await buildBotService({ videoSettings: true, config: { 'video.enabled': true } });
+
+    await service['commands']['handleVideoToggleCommand']('!videos', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('habilitado (del .env)');
+
+    await service['commands']['handleVideoToggleCommand']('!videos quizas', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('Uso: !videos');
+  });
+
+  it('no se come los pedidos de video ni otros mensajes', async () => {
+    const { service } = await buildBotService({ videoSettings: true });
+    expect(await service['commands']['handleVideoToggleCommand']('!video off', 'leon', 'admin')).toBe(false);
+    expect(await service['commands']['handleVideoToggleCommand']('hola bot', 'leon', 'admin')).toBe(false);
   });
 });
 

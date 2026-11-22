@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger, OnModuleInit, Optional, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { MusicService } from '../music/music.service';
@@ -25,6 +25,7 @@ import { INSTRUCTION_STAFF_ROLES } from '../chat/room-instructions.service';
 
 import { bbcodeToPlain } from '../../common/bbcode/bbcode';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { VideoSettingsService } from '../../common/settings/video-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import { MusicProgress } from '../../common/interfaces';
 import { createLog } from '../../common/utils/log';
@@ -79,6 +80,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly proactive?: ProactiveService,
     @Optional() private readonly reminders?: ReminderService,
     @Optional() private readonly polls?: PollService,
+    // Opcional para los tests armados a mano: sin él manda VIDEO_ENABLED del .env.
+    @Optional() private readonly videoSettings?: VideoSettingsService,
   ) {}
 
   onModuleDestroy() {
@@ -225,7 +228,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // lista de conectados.
     const onlineCandidate = this.isOnlineUsersRequest(content);
     const isOnlineReq = onlineCandidate && (addressesBot || BotService.mentionsChatPresence(content));
-    const videoEnabled = !!this.configService.get<boolean>('video.enabled');
+    const videoEnabled = this.videoSettings
+      ? this.videoSettings.isEnabled()
+      : !!this.configService.get<boolean>('video.enabled');
     const isVideoReq = videoEnabled && MusicService.isVideoRequest(content);
 
     // Sin nombrar al bot, "reproduce X" sólo cuenta si el clasificador local

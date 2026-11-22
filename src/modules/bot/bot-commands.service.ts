@@ -7,6 +7,7 @@ import { GraphUserService, UserFact, MIN_FORGET_TERM_LENGTH, MAX_FACTS_SHOWN } f
 import { EdgeType } from '../../common/schemas/graph-edge.schema';
 import { UsageService } from '../chat/usage.service';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
+import { VideoSettingsService } from '../../common/settings/video-settings.service';
 import { ErrandService } from '../graph/errand.service';
 import {
   RoomInstructionsService,
@@ -99,6 +100,8 @@ export class BotCommandsService {
     @Optional() private readonly reminders?: ReminderService,
     @Optional() private readonly polls?: PollService,
     @Optional() private readonly musicService?: MusicService,
+    // Opcional para los tests armados a mano: sin él manda VIDEO_ENABLED del .env.
+    @Optional() private readonly videoSettings?: VideoSettingsService,
   ) {}
 
   /** Inyectable para tests: cómo se prueba cada servicio externo. */
@@ -113,6 +116,7 @@ export class BotCommandsService {
       (await this.handlePersonalityCommand(content, authorUsername, authorRole)) ||
       (await this.handleCrossContextCommand(content, authorUsername, authorRole)) ||
       (await this.handleSharedContextCommand(content, authorUsername, authorRole)) ||
+      (await this.handleVideoToggleCommand(content, authorUsername, authorRole)) ||
       (await this.handleProactiveCommand(content, authorUsername, authorRole)) ||
       (await this.handleRoomInstructionsCommand(content, authorUsername, authorRole)) ||
       (await this.handleHelpCommand(content, authorUsername, authorRole)) ||
@@ -586,6 +590,71 @@ export class BotCommandsService {
     return true;
   }
 
+  // ─── Video toggle (admins) ───────────────────────────────────────────────
+
+  /** Si `!video` está habilitado ahora (override de `!videos` o `VIDEO_ENABLED`). */
+  isVideoEnabled(): boolean {
+    return this.videoSettings
+      ? this.videoSettings.isEnabled()
+      : !!this.configService.get<boolean>('video.enabled');
+  }
+
+  /**
+   * `!videos on|off|reset|status`: habilita o deshabilita `!video` en
+   * caliente, sólo admin. En plural para no chocar con `!video <búsqueda>`
+   * (`MusicService.isVideoRequest` exige espacio tras `!video`, así que
+   * `!videos …` nunca se toma como pedido). El override vive en memoria y se
+   * pierde al reiniciar, como el de `!contextocruzado`.
+   */
+  private async handleVideoToggleCommand(
+    content: string,
+    authorUsername: string,
+    authorRole?: string,
+  ): Promise<boolean> {
+    const match = content.trim().match(/^!videos(?:\s+(\w+))?\s*$/i);
+    if (!match) return false;
+
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden habilitar o deshabilitar los videos.`);
+      return true;
+    }
+    if (!this.videoSettings) {
+      this.sendBotMessage(`@${authorUsername} El interruptor de videos no está disponible.`);
+      return true;
+    }
+
+    const sub = (match[1] ?? 'status').toLowerCase();
+
+    if (sub === 'on' || sub === 'off') {
+      this.videoSettings.setOverride(sub === 'on');
+      this.sendBotMessage(`@${authorUsername} ✅ Comando !video ${sub === 'on' ? 'habilitado' : 'deshabilitado'}.`);
+      log.info(`🎬 [VIDEO] ${authorUsername} → ${sub}`);
+      return true;
+    }
+
+    if (sub === 'reset' || sub === 'env') {
+      this.videoSettings.setOverride(null);
+      const info = this.videoSettings.getInfo();
+      this.sendBotMessage(
+        `@${authorUsername} ↩️ !video reseteado al valor del .env: ${info.enabled ? 'habilitado' : 'deshabilitado'}.`,
+      );
+      log.info(`🎬 [VIDEO] ${authorUsername} → reset (.env: ${info.enabled})`);
+      return true;
+    }
+
+    if (sub === 'status') {
+      const info = this.videoSettings.getInfo();
+      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      this.sendBotMessage(
+        `@${authorUsername} 🎬 Comando !video: ${info.enabled ? 'habilitado' : 'deshabilitado'}${note}.`,
+      );
+      return true;
+    }
+
+    this.sendBotMessage(`@${authorUsername} Uso: !videos on | off | reset | status`);
+    return true;
+  }
+
   // ─── Room instructions (!instruccion / !instrucciones) ─────────────────────
 
   /**
@@ -725,7 +794,7 @@ export class BotCommandsService {
     const bot = this.chatSocketService.username ?? 'bot';
     const isStaff = !!authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole);
     const isAdmin = authorRole === 'admin' || authorRole === 'superAdmin';
-    const video = !!this.configService.get<boolean>('video.enabled');
+    const video = this.isVideoEnabled();
 
     const lines = [
       '📖 Comandos del bot:',
@@ -758,6 +827,7 @@ export class BotCommandsService {
         '• !estado — salud del bot y de los servicios externos',
         '• !proactivo on|off|15%|pausa 10|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
+        '• !videos on|off|reset|status — habilita o deshabilita !video',
       );
     }
 
