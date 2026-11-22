@@ -600,11 +600,15 @@ export class BotCommandsService {
   }
 
   /**
-   * `!videos on|off|reset|status`: habilita o deshabilita `!video` en
-   * caliente, sólo admin. En plural para no chocar con `!video <búsqueda>`
+   * `!videos on|off|youtube|subir|reset|status`, sólo admin:
+   * - `on`/`off` habilitan o deshabilitan `!video`;
+   * - `youtube`/`subir` eligen cómo se entrega: embebido de YouTube (default,
+   *   no gasta espacio) o descargado y subido a FileGarden;
+   * - `reset` devuelve los dos al `.env`.
+   * En plural para no chocar con `!video <búsqueda>`
    * (`MusicService.isVideoRequest` exige espacio tras `!video`, así que
-   * `!videos …` nunca se toma como pedido). El override vive en memoria y se
-   * pierde al reiniciar, como el de `!contextocruzado`.
+   * `!videos …` nunca se toma como pedido). Los overrides viven en memoria y
+   * se pierden al reiniciar, como el de `!contextocruzado`.
    */
   private async handleVideoToggleCommand(
     content: string,
@@ -632,27 +636,42 @@ export class BotCommandsService {
       return true;
     }
 
+    if (sub === 'youtube' || sub === 'subir' || sub === 'upload') {
+      const mode = sub === 'youtube' ? 'youtube' : 'upload';
+      this.videoSettings.setModeOverride(mode);
+      this.sendBotMessage(`@${authorUsername} ✅ Los videos ahora se ${this.describeVideoMode(mode)}.`);
+      log.info(`🎬 [VIDEO] ${authorUsername} → modo ${mode}`);
+      return true;
+    }
+
     if (sub === 'reset' || sub === 'env') {
       this.videoSettings.setOverride(null);
+      this.videoSettings.setModeOverride(null);
       const info = this.videoSettings.getInfo();
       this.sendBotMessage(
-        `@${authorUsername} ↩️ !video reseteado al valor del .env: ${info.enabled ? 'habilitado' : 'deshabilitado'}.`,
+        `@${authorUsername} ↩️ !video reseteado al valor del .env: ${info.enabled ? 'habilitado' : 'deshabilitado'}, ` +
+          `y los videos se ${this.describeVideoMode(info.mode)}.`,
       );
-      log.info(`🎬 [VIDEO] ${authorUsername} → reset (.env: ${info.enabled})`);
+      log.info(`🎬 [VIDEO] ${authorUsername} → reset (.env: ${info.enabled}, ${info.mode})`);
       return true;
     }
 
     if (sub === 'status') {
       const info = this.videoSettings.getInfo();
-      const note = info.source === 'override' ? ' (override en runtime)' : ' (del .env)';
+      const note = (source: 'env' | 'override') => (source === 'override' ? ' (override en runtime)' : ' (del .env)');
       this.sendBotMessage(
-        `@${authorUsername} 🎬 Comando !video: ${info.enabled ? 'habilitado' : 'deshabilitado'}${note}.`,
+        `@${authorUsername} 🎬 Comando !video: ${info.enabled ? 'habilitado' : 'deshabilitado'}${note(info.source)}. ` +
+          `Los videos se ${this.describeVideoMode(info.mode)}${note(info.modeSource)}.`,
       );
       return true;
     }
 
-    this.sendBotMessage(`@${authorUsername} Uso: !videos on | off | reset | status`);
+    this.sendBotMessage(`@${authorUsername} Uso: !videos on | off | youtube | subir | reset | status`);
     return true;
+  }
+
+  private describeVideoMode(mode: 'youtube' | 'upload'): string {
+    return mode === 'youtube' ? 'insertan desde YouTube, sin subir archivos' : 'descargan y suben a FileGarden';
   }
 
   // ─── Room instructions (!instruccion / !instrucciones) ─────────────────────
@@ -827,7 +846,7 @@ export class BotCommandsService {
         '• !estado — salud del bot y de los servicios externos',
         '• !proactivo on|off|15%|pausa 10|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
-        '• !videos on|off|reset|status — habilita o deshabilita !video',
+        '• !videos on|off|youtube|subir|reset|status — habilita !video y elige si inserta de YouTube o sube el archivo',
       );
     }
 

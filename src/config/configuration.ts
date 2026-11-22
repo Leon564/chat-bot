@@ -145,6 +145,10 @@ export default () => ({
   // size manageable for catbox/litterbox.
   video: {
     enabled: process.env.VIDEO_ENABLED === 'true',
+    // 'youtube' (default): manda [youtube]ID[/youtube] sin descargar ni subir
+    // nada. 'upload': el camino viejo (descarga + FileGarden/catbox), que
+    // gasta espacio. Se mueve en caliente con !videos youtube|subir.
+    mode: process.env.VIDEO_MODE === 'upload' ? 'upload' : 'youtube',
     maxDurationMinutes: parseInt(process.env.MAX_VIDEO_DURATION || '5', 10),
   },
 

@@ -916,9 +916,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     );
 
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
+    // Sin el servicio (tests armados a mano) se respeta el default: embeber.
+    const embed = (this.videoSettings?.getMode() ?? 'youtube') === 'youtube';
 
     this.musicService
-      .processVideo(query, authorUsername, this.queueFeedback(authorUsername))
+      .processVideo(query, authorUsername, this.queueFeedback(authorUsername), { embed })
       .then(async (result) => {
         await this.utilsService.sleep(responseDelay);
         if (searchingId) this.chatSocketService.deleteMessage(searchingId);

@@ -419,3 +419,61 @@ describe('MusicService — orden de la cola y posición reportada', () => {
     expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ position: 1 }));
   });
 });
+
+describe('MusicService — !video en modo youtube (embebido)', () => {
+  const build = async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        MusicService,
+        UploadChainService,
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        { provide: GraphCacheService, useValue: { findTrack: jest.fn(), invalidateTrack: jest.fn() } },
+        { provide: GraphService, useValue: new GraphService({} as any, {} as any) },
+      ],
+    }).compile();
+    return moduleRef.get<MusicService>(MusicService);
+  };
+
+  it('devuelve [youtube]ID[/youtube] sin pasar por la descarga ni la subida, y sin tope de duración', async () => {
+    const service = await build();
+    jest.spyOn(service as any, 'searchYouTube').mockResolvedValue([
+      { type: 'video', id: 'hOYzB3Qa9DE', title: 'Video Largo', url: 'https://www.youtube.com/watch?v=hOYzB3Qa9DE', duration: '1:30:00' },
+    ]);
+    const pipeline = jest.spyOn(service as any, 'runPipeline');
+
+    const result = await service.processVideo('video largo', 'lyna', undefined, { embed: true });
+
+    expect(pipeline).not.toHaveBeenCalled();
+    expect(result.media).toBe('[youtube]hOYzB3Qa9DE[/youtube]');
+    expect(result.text).toContain('<@lyna>');
+    expect(result.text).toContain('"Video Largo"');
+    expect(result.track).toBeNull();
+  });
+
+  it('sin resultados lanza el error que el bot traduce a "no encontré"', async () => {
+    const service = await build();
+    jest.spyOn(service as any, 'searchYouTube').mockResolvedValue([]);
+    await expect(service.processVideo('nada', 'lyna', undefined, { embed: true })).rejects.toThrow(
+      'No se encontraron resultados',
+    );
+  });
+
+  it('sin { embed } sigue por el pipeline de siempre', async () => {
+    const service = await build();
+    const pipeline = jest
+      .spyOn(service as any, 'runPipeline')
+      .mockResolvedValue({ text: 'subido', track: null });
+    await service.processVideo('algo', 'lyna');
+    expect(pipeline).toHaveBeenCalledWith(expect.objectContaining({ kind: 'video' }));
+  });
+
+  it.each([
+    [{ id: 'hOYzB3Qa9DE' }, 'hOYzB3Qa9DE'],
+    [{ url: 'https://www.youtube.com/watch?v=hOYzB3Qa9DE&t=3' }, 'hOYzB3Qa9DE'],
+    [{ url: 'https://youtu.be/hOYzB3Qa9DE' }, 'hOYzB3Qa9DE'],
+    [{ url: 'https://www.youtube.com/shorts/hOYzB3Qa9DE' }, 'hOYzB3Qa9DE'],
+    [{ id: 'corto', url: 'https://example.com/x' }, null],
+  ])('youtubeIdOf(%j) → %s', (video, esperado) => {
+    expect(MusicService.youtubeIdOf(video)).toBe(esperado);
+  });
+});

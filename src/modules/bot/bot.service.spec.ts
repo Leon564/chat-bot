@@ -1505,6 +1505,7 @@ const buildBotService = async (
     polls?: Record<string, unknown>;
     /** Registra el `VideoSettingsService` real (lee `video.enabled` del doble de config). */
     videoSettings?: boolean;
+    music?: Record<string, unknown>;
   } = {},
 ): Promise<{
   service: BotService;
@@ -1587,7 +1588,7 @@ const buildBotService = async (
       BotCommandsService,
       { provide: ConfigService, useValue: { get: jest.fn((k: string) => overrides.config?.[k]) } },
       { provide: ChatService, useValue: chat },
-      { provide: MusicService, useValue: {} },
+      { provide: MusicService, useValue: overrides.music ?? {} },
       { provide: AniListService, useValue: {} },
       { provide: UtilsService, useValue: utils },
       { provide: LoggingService, useValue: logging },
@@ -1768,6 +1769,40 @@ describe('!videos', () => {
 
     await service['commands']['handleVideoToggleCommand']('!videos quizas', 'leon', 'admin');
     expect(sent.join(' ')).toContain('Uso: !videos');
+  });
+
+  it('por default inserta de YouTube; !videos subir vuelve a subir el archivo', async () => {
+    const processVideo = jest.fn().mockResolvedValue({ text: 'ok', track: null });
+    const { service, sent } = await buildBotService({
+      videoSettings: true,
+      config: { 'video.enabled': true },
+      music: { processVideo },
+    });
+    const dispatch = async (c: string) => {
+      await (service as unknown as BotServiceConDispatcher).handleNewChatMessage(pedido(c));
+      await new Promise((r) => setImmediate(r));
+    };
+
+    await dispatch('!video algo');
+    expect(processVideo).toHaveBeenLastCalledWith('algo', 'lyna', expect.anything(), { embed: true });
+
+    await service['commands']['handleVideoToggleCommand']('!videos subir', 'leon', 'admin');
+    expect(sent.join(' ')).toContain('suben a FileGarden');
+    await dispatch('!video algo');
+    expect(processVideo).toHaveBeenLastCalledWith('algo', 'lyna', expect.anything(), { embed: false });
+
+    await service['commands']['handleVideoToggleCommand']('!videos youtube', 'leon', 'admin');
+    await dispatch('!video algo');
+    expect(processVideo).toHaveBeenLastCalledWith('algo', 'lyna', expect.anything(), { embed: true });
+
+    await service['commands']['handleVideoToggleCommand']('!videos', 'leon', 'admin');
+    expect(sent[sent.length - 1]).toContain('insertan desde YouTube, sin subir archivos (override en runtime)');
+  });
+
+  it('un no-admin no puede cambiar el modo', async () => {
+    const { service } = await buildBotService({ videoSettings: true });
+    await service['commands']['handleVideoToggleCommand']('!videos subir', 'lyna', 'user');
+    expect(service['videoSettings']?.getMode()).toBe('youtube');
   });
 
   it('no se come los pedidos de video ni otros mensajes', async () => {
