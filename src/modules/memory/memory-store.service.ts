@@ -109,7 +109,7 @@ export class MemoryStore {
 
   async reschedule(id: string, eventDate: string, eventTime?: string): Promise<BotMemoryDocument | null> {
     return this.model
-      .findByIdAndUpdate(id, { $set: { eventDate, eventTime: eventTime ?? null } }, { new: true })
+      .findByIdAndUpdate(id, { $set: { eventDate, eventTime: eventTime ?? null } }, { returnDocument: 'after' })
       .exec();
   }
 
