@@ -65,7 +65,7 @@ export class EmbeddingService {
   thresholdFor(model: string): number {
     return model.startsWith('ext:')
       ? this.configService.get<number>('memory.embeddings.thresholdExternal') ?? 0.45
-      : this.configService.get<number>('memory.embeddings.thresholdLocal') ?? 0.82;
+      : this.configService.get<number>('memory.embeddings.thresholdLocal') ?? 0.86;
   }
 
   async embed(texts: string[], purpose: EmbedPurpose): Promise<{ model: string; vectors: number[][] } | null> {

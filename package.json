@@ -18,7 +18,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "lint:fix": "eslint \"src/**/*.ts\" --fix"
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "calibrate:memory": "ts-node -r tsconfig-paths/register scripts/calibrate-memory.ts"
   },
   "dependencies": {
     "@distube/ytdl-core": "github:Leon564/distube-ytdl-core#release",

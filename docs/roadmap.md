@@ -65,6 +65,8 @@ Orden sugerido: **1 + 2 + 3** → **6 + 8** (borrar el código muerto resuelve b
 - [ ] **30. Trivia de anime/manga.** El bot lanza una pregunta, el primero que acierta suma un punto; ranking semanal.
 - [x] **31. `!resumen 2h` / `!resumen hoy`.** ✅ `!resumen` (desde el anterior), `!resumen 2h` / `30m` / `hoy` (hasta 24 h), y "bot resumen de las últimas 2 horas / de hoy" en lenguaje natural. Toma hasta 150 mensajes del período; el log sube a 500 filas. Cooldown propio (`ResumenPeriodo`, 10 min) que no mueve la marca del resumen normal. "Hoy" = desde la medianoche de El Salvador.
 
+- [x] **37. Memoria a largo plazo** (diseño: `docs/superpowers/specs/2026-11-22-memoria-largo-plazo-design.md`). ✅ Aria decide sola qué recordar de los registrados (verbo `RECUERDO`: eventos con fecha, datos, cosas compartidas), los trae sólo cuando vienen al caso (embeddings externos compatibles con OpenAI, modelo local `multilingual-e5-small` de respaldo, palabras clave como piso) y hace seguimientos de los eventos: la suerte del día a la mañana con mención y el "¿cómo te fue?" cuando la persona aparece. `!quesabes` los muestra, `!olvida recuerdo <n>` borra uno, `!memoria on|off|reset|status` (admin). Nace apagada (`MEMORY_ENABLED`). Antes de encenderla: cargar `EMBEDDINGS_API_KEY` y correr `npm run calibrate:memory -- --source external` (y `--source local`) para fijar los umbrales.
+
 ### Mantenimiento
 - [x] **32. % de caché en `!uso`.** ✅ Línea "Caché: N % de la entrada" y, con precios, el ahorro estimado (`(precio entrada − precio caché) × tokens cacheados`).
 - [x] **33. Latencia del modelo.** ✅ `latencyMs` en `bot_llm_usage` (todas las llamadas); `!uso` muestra mediana, p95 y máximo de las respuestas de charla.

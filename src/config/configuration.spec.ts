@@ -175,7 +175,7 @@ describe('configuration — memory', () => {
     expect(embeddings.model).toBe('text-embedding-3-small');
     expect(embeddings.localModel).toBe('Xenova/multilingual-e5-small');
     expect(embeddings.thresholdExternal).toBe(0.45);
-    expect(embeddings.thresholdLocal).toBe(0.82);
+    expect(embeddings.thresholdLocal).toBe(0.86);
   });
 
   it('un umbral no numérico cae al default', () => {
