@@ -5,6 +5,7 @@ import { BotFollowup, BotFollowupSchema } from '../../common/schemas/bot-followu
 import { MemoryStore } from './memory-store.service';
 import { MemorySettingsService } from './memory-settings.service';
 import { EmbeddingService } from './embedding.service';
+import { MemoryRecallService } from './memory-recall.service';
 import { LOCAL_EMBEDDER, TransformersLocalEmbedder } from './local-embedder';
 import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema';
 import { UsageService } from '../chat/usage.service';
@@ -23,9 +24,10 @@ import { UsageService } from '../chat/usage.service';
     MemoryStore,
     MemorySettingsService,
     EmbeddingService,
+    MemoryRecallService,
     UsageService,
     { provide: LOCAL_EMBEDDER, useClass: TransformersLocalEmbedder },
   ],
-  exports: [MemoryStore, MemorySettingsService, EmbeddingService],
+  exports: [MemoryStore, MemorySettingsService, EmbeddingService, MemoryRecallService],
 })
 export class MemoryModule {}
