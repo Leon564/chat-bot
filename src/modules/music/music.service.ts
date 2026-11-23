@@ -23,7 +23,7 @@ import {
 import { GraphCacheService } from "../graph/graph-cache.service";
 import { GraphService } from "../graph/graph.service";
 import { Semaphore } from "./semaphore";
-import { pickSong, pickVideo } from "./video-picker";
+import { pickSong, pickVideo, SearchVideo } from "./video-picker";
 import {
   YOUTUBE_MUSIC_SEARCH_URL,
   buildSongSearchBody,
@@ -80,7 +80,7 @@ export class MusicService {
    */
   private downloadTurn: Promise<void> = Promise.resolve();
 
-  private youtubeCookies: any | null; // Cambiar de string a any para el jar de cookies
+  private youtubeCookies: YouTubeCookie[] | null;
   // Una sola instancia: guarda la sesión que YouTube le da (visitor data, player).
   private readonly yt: Ytdl;
   // VisionOS, el primer cliente por defecto, no ofrece formatos con audio y
@@ -698,7 +698,7 @@ export class MusicService {
    * YouTube cuando ahí no aparece lo pedido. Los pedidos de video van directo a
    * YouTube, porque lo que quieren es justamente el video.
    */
-  private async findVideo(query: string, isVideo: boolean): Promise<any> {
+  private async findVideo(query: string, isVideo: boolean): Promise<SearchVideo> {
     if (!isVideo) {
       const song = await this.findSong(query);
       if (song) return song;
@@ -711,7 +711,7 @@ export class MusicService {
   }
 
   /** Nunca lanza: si YouTube Music falla, el pedido sigue por YouTube. */
-  private async findSong(query: string): Promise<any | null> {
+  private async findSong(query: string): Promise<SearchVideo | null> {
     const maxMinutes =
       this.configService.get<number>('music.maxDurationMinutes') || 8;
     try {
@@ -729,7 +729,7 @@ export class MusicService {
     }
   }
 
-  private async searchYouTubeMusic(query: string): Promise<any[]> {
+  private async searchYouTubeMusic(query: string): Promise<SearchVideo[]> {
     const controller = new AbortController();
     const timeoutId = setTimeout(
       () => controller.abort(),
@@ -761,7 +761,7 @@ export class MusicService {
    * videoclip. Si todos los relevantes son demasiado largos lanza el mismo
    * error que `assertDurationWithin`.
    */
-  private chooseVideo(videos: any[], query: string, isVideo: boolean): any {
+  private chooseVideo(videos: SearchVideo[], query: string, isVideo: boolean): SearchVideo {
     const maxMinutes = isVideo
       ? this.configService.get<number>('video.maxDurationMinutes') || 5
       : this.configService.get<number>('music.maxDurationMinutes') || 8;
@@ -786,20 +786,22 @@ export class MusicService {
    * extraído para reutilizar entre el flujo de audio, el de video, y el
    * search-ahead que dispara processQueue antes de tocar al siguiente item.
    */
-  private async searchYouTube(query: string): Promise<any[]> {
+  private async searchYouTube(query: string): Promise<SearchVideo[]> {
     // 10 y no 5: la elección de resultado necesita alternativas para cuando
     // el primero es demasiado largo o es el videoclip en vez del audio.
     const searchResults = await ytsr(query, {
       limit: 10,
+      // Los tipos de ytsr declaran requestOptions como { [key]: object },
+      // que rechaza las opciones numéricas de miniget; el cast es sólo acá.
       requestOptions: {
         maxRedirects: 10,
         maxRetries: 3,
         maxReconnects: 2,
         backoff: { inc: 500, max: 5000 },
         headers: { 'User-Agent': this.getRandomUserAgent() },
-      },
-    } as any);
-    return searchResults.items.filter((item: any) => item.type === 'video');
+      } as unknown as ytsr.Options['requestOptions'],
+    });
+    return searchResults.items.filter((item): item is ytsr.Video => item.type === 'video');
   }
 
   /**
@@ -807,7 +809,7 @@ export class MusicService {
    * devuelve el contenido en memoria — ese era el origen del pico de RAM.
    */
   private async prepareAudioFile(
-    video: any,
+    video: SearchVideo,
     username: string,
   ): Promise<{ path: string }> {
     const maxDurationMinutes =
@@ -884,7 +886,7 @@ export class MusicService {
    * (hasta 5 minutos de video) sólo para escribirlo con writeFileSync.
    */
   private async prepareVideoFile(
-    video: any,
+    video: SearchVideo,
     username: string,
   ): Promise<{ path: string }> {
     const maxDur = this.configService.get<number>('video.maxDurationMinutes') || 5;
@@ -959,7 +961,7 @@ export class MusicService {
    */
   private async publishPreparedFile(
     prepared: { path: string },
-    video: any,
+    video: SearchVideo,
     username: string,
     isVideo: boolean,
   ): Promise<MusicResult> {
@@ -1005,7 +1007,7 @@ export class MusicService {
   // ─── Utilidades de archivo/stream ──────────────────────────────────────────
 
   /** Valida la duración declarada por ytsr antes de gastar red y CPU. */
-  private assertDurationWithin(video: any, maxMinutes: number): void {
+  private assertDurationWithin(video: SearchVideo, maxMinutes: number): void {
     if (!video?.duration || typeof video.duration !== 'string') return;
     const minutes = this.parseDurationToMinutes(video.duration);
     log.info(
@@ -1115,7 +1117,7 @@ export class MusicService {
     });
   }
 
-  private loadYouTubeCookies(): any | null {
+  private loadYouTubeCookies(): YouTubeCookie[] | null {
     try {
       const cookiesPath = this.configService.get<string>(
         "music.youtubeCookiesPath"
@@ -1296,7 +1298,10 @@ export class MusicService {
    * extracted from the ytsr video result. Quotes inside attribute values are
    * escaped as &quot; so the frontend's regex parser stays simple.
    */
-  private buildAudioBBCode(audioUrl: string, video: any): string {
+  private buildAudioBBCode(
+    audioUrl: string,
+    video: Pick<SearchVideo, 'title' | 'author' | 'bestThumbnail' | 'thumbnails'>,
+  ): string {
     const escapeAttr = (v: string | undefined): string =>
       (v ?? '').toString().replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ').trim();
 
@@ -1342,7 +1347,7 @@ export class MusicService {
     }
   }
 
-  private convertCookiesToNetscape(cookies: any[]): string {
+  private convertCookiesToNetscape(cookies: YouTubeCookie[]): string {
     const header = '# Netscape HTTP Cookie File\n# This is a generated file! Do not edit.\n\n';
     const lines = cookies.map(cookie => {
       const domain = cookie.domain || '.youtube.com';

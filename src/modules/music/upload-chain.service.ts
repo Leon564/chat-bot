@@ -60,11 +60,23 @@ export class UploadChainService {
       }
     }
 
-    // Intentar según prioridad configurada
+    // Intentar según prioridad configurada. FileGarden sin credenciales cae a
+    // catbox: antes saltaba todas las ramas y terminaba en la de litterbox
+    // (que expira según LITTERBOX_EXPIRY, 1 h por defecto) aunque el log
+    // dijera catbox.
+    const primary =
+      this.uploadService === "filegarden" && !this.hasFileGardenCreds()
+        ? "catbox"
+        : this.uploadService;
+    if (primary !== this.uploadService) {
+      log.warn(
+        `⚠️ [UPLOAD] UPLOAD_SERVICE=filegarden pero faltan credenciales — usando catbox como primario.`,
+      );
+    }
     const maxRetries = 3;
     const retryDelay = 2000;
 
-    if (this.uploadService === "uguu") {
+    if (primary === "uguu") {
       log.info(`📤 [UPLOAD] Intentando subir a uguu.se primero (configurado)...`);
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -84,7 +96,7 @@ export class UploadChainService {
           if (attempt < maxRetries) {
             const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
             log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-            await new Promise((resolve) => setTimeout(resolve, delay));
+            await this.sleep(delay);
           }
         }
       }
@@ -120,73 +132,67 @@ export class UploadChainService {
       }
     }
 
-    if (this.uploadService === "filegarden") {
-      if (!this.hasFileGardenCreds()) {
-        log.warn(
-          `⚠️ [UPLOAD] UPLOAD_SERVICE=filegarden pero faltan credenciales — usando catbox como primario.`,
-        );
-      } else {
-        log.info(`📤 [UPLOAD] Intentando subir a FileGarden primero (configurado)...`);
+    if (primary === "filegarden") {
+      log.info(`📤 [UPLOAD] Intentando subir a FileGarden primero (configurado)...`);
 
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-          try {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          log.info(
+            `📤 [FILEGARDEN] Intento ${attempt}/${maxRetries} - Subiendo archivo...`,
+          );
+          return await this.uploadToFileGarden(filePath);
+        } catch (error) {
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          log.error(`❌ [FILEGARDEN] Error en intento ${attempt}:`, errorMsg);
+
+          if (attempt === maxRetries) {
             log.info(
-              `📤 [FILEGARDEN] Intento ${attempt}/${maxRetries} - Subiendo archivo...`,
+              `🔄 [FALLBACK] FileGarden falló tras ${maxRetries} intentos, probando Catbox...`,
             );
-            return await this.uploadToFileGarden(filePath);
-          } catch (error) {
-            const errorMsg =
-              error instanceof Error ? error.message : String(error);
-            log.error(`❌ [FILEGARDEN] Error en intento ${attempt}:`, errorMsg);
-
-            if (attempt === maxRetries) {
-              log.info(
-                `🔄 [FALLBACK] FileGarden falló tras ${maxRetries} intentos, probando Catbox...`,
-              );
-              break;
-            }
-            if (attempt < maxRetries) {
-              const delay = errorMsg.includes("ENOTFOUND")
-                ? retryDelay * 2
-                : retryDelay;
-              log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-              await new Promise((resolve) => setTimeout(resolve, delay));
-            }
+            break;
+          }
+          if (attempt < maxRetries) {
+            const delay = errorMsg.includes("ENOTFOUND")
+              ? retryDelay * 2
+              : retryDelay;
+            log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
+            await this.sleep(delay);
           }
         }
+      }
 
-        // Cadena de fallback: X02 (si está configurado) → Catbox → Litterbox
-        // (filegarden ya falló como primario, no tiene sentido reintentar
-        // como último recurso).
-        const x02 = await this.tryX02Fallback(filePath);
-        if (x02) return x02;
+      // Cadena de fallback: X02 (si está configurado) → Catbox → Litterbox
+      // (filegarden ya falló como primario, no tiene sentido reintentar
+      // como último recurso).
+      const x02 = await this.tryX02Fallback(filePath);
+      if (x02) return x02;
+      try {
+        const result = await this.uploadToCatboxWithRetry(filePath);
+        log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+        return result;
+      } catch (catboxError) {
+        const catboxMsg =
+          catboxError instanceof Error ? catboxError.message : String(catboxError);
+        log.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
         try {
-          const result = await this.uploadToCatboxWithRetry(filePath);
-          log.info(`✅ [FALLBACK] Archivo subido exitosamente a Catbox`);
+          const result = await this.uploadToLitterboxFallback(filePath);
+          log.info(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
           return result;
-        } catch (catboxError) {
-          const catboxMsg =
-            catboxError instanceof Error ? catboxError.message : String(catboxError);
-          log.error(`❌ [FALLBACK] Catbox también falló:`, catboxMsg);
-          try {
-            const result = await this.uploadToLitterboxFallback(filePath);
-            log.info(`✅ [FALLBACK] Archivo subido a Litterbox como último recurso`);
-            return result;
-          } catch (litterError) {
-            const litterMsg =
-              litterError instanceof Error ? litterError.message : String(litterError);
-            if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
-              throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
-            }
-            throw new Error(
-              `Todos los servicios fallaron — FileGarden, Catbox y Litterbox. Último: ${litterMsg}`,
-            );
+        } catch (litterError) {
+          const litterMsg =
+            litterError instanceof Error ? litterError.message : String(litterError);
+          if (litterMsg.includes("ENOTFOUND") || catboxMsg.includes("ENOTFOUND")) {
+            throw new Error(`❌ Servicios de subida temporalmente no disponibles. Verifica la conexión.`);
           }
+          throw new Error(
+            `Todos los servicios fallaron — FileGarden, Catbox y Litterbox. Último: ${litterMsg}`,
+          );
         }
       }
     }
 
-    if (this.uploadService === "nullpointer") {
+    if (primary === "nullpointer") {
       log.info(`📤 [UPLOAD] Intentando subir a 0x0.st primero (configurado)...`);
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -209,7 +215,7 @@ export class UploadChainService {
           if (attempt < maxRetries) {
             const delay = errorMsg.includes("ENOTFOUND") ? retryDelay * 2 : retryDelay;
             log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-            await new Promise((resolve) => setTimeout(resolve, delay));
+            await this.sleep(delay);
           }
         }
       }
@@ -240,7 +246,7 @@ export class UploadChainService {
       }
     }
 
-    if (this.uploadService === "catbox") {
+    if (primary === "catbox") {
       log.info(`📤 [UPLOAD] Intentando subir a Catbox primero (configurado)...`);
       
       // Intentar Catbox con reintentos
@@ -266,7 +272,7 @@ export class UploadChainService {
           if (attempt < maxRetries) {
             const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
             log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await this.sleep(delay);
           }
         }
       }
@@ -318,7 +324,7 @@ export class UploadChainService {
           if (attempt < maxRetries) {
             const delay = errorMsg.includes('ENOTFOUND') ? retryDelay * 2 : retryDelay;
             log.info(`⏱️ Esperando ${delay}ms antes del siguiente intento...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await this.sleep(delay);
           }
         }
       }
@@ -345,6 +351,11 @@ export class UploadChainService {
         throw new Error(`Error en Litterbox y Catbox fallback: ${fallbackErrorMsg}`);
       }
     }
+  }
+
+  /** Espera entre reintentos. Método aparte para que los tests no esperen de verdad. */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async testConnectivity(): Promise<void> {
@@ -376,43 +387,6 @@ export class UploadChainService {
       }
       throw error;
     }
-  }
-
-  private async uploadToCatbox(filePath: string): Promise<string> {
-    const form = new FormData();
-    form.append("reqtype", "fileupload");
-    form.append("fileToUpload", fs.createReadStream(filePath));
-
-    const response = await fetch("https://catbox.moe/user/api.php", {
-      method: "POST",
-      headers: {
-        "accept": "application/json",
-        "accept-language": "es-419,es;q=0.9,es-ES;q=0.8,en;q=0.7,en-GB;q=0.6,en-US;q=0.5,es-US;q=0.4",
-        "cache-control": "no-cache",
-        "priority": "u=1, i",
-        "sec-ch-ua": "\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not_A Brand\";v=\"99\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Windows\"",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "x-requested-with": "XMLHttpRequest",
-        "Referer": "https://catbox.moe/"
-      },
-      body: form,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Error subiendo a Catbox: ${response.statusText}`);
-    }
-
-    const result = await response.text();
-
-    if (!result.startsWith("https://")) {
-      throw new Error(`Respuesta inválida de Catbox: ${result}`);
-    }
-
-    return result;
   }
 
   private async uploadToLitterbox(filePath: string): Promise<string> {
@@ -738,32 +712,6 @@ export class UploadChainService {
       }
       throw error;
     }
-  }
-
-  private async uploadToNullpointer(filePath: string): Promise<string> {
-    const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-
-    const response = await fetch("https://0x0.st", {
-      method: "POST",
-      headers: {
-        // 0x0.st rejects requests with no UA or generic library UAs.
-        "User-Agent": "chat-bot/1.0 (catbox-fallback)",
-      },
-      body: form,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Error subiendo a 0x0.st: ${response.statusText}`);
-    }
-
-    const result = (await response.text()).trim();
-
-    if (!result.startsWith("https://")) {
-      throw new Error(`Respuesta inválida de 0x0.st: ${result}`);
-    }
-
-    return result;
   }
 
   private async uploadToNullpointerWithRetry(filePath: string): Promise<string> {

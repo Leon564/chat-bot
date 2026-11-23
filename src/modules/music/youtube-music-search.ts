@@ -36,8 +36,43 @@ export function buildSongSearchBody(query: string): Record<string, unknown> {
   };
 }
 
-function runsText(text: any): string {
-  return (text?.runs ?? []).map((run: any) => run?.text ?? '').join('');
+import type { SearchVideo } from './video-picker';
+
+/**
+ * Lo que se lee de la respuesta de InnerTube. Todo opcional: no es un
+ * contrato público y cualquier nivel puede faltar o cambiar de forma.
+ */
+interface Runs {
+  runs?: Array<{ text?: string }>;
+}
+interface FlexColumn {
+  musicResponsiveListItemFlexColumnRenderer?: { text?: Runs };
+}
+interface SongItem {
+  musicResponsiveListItemRenderer?: {
+    playlistItemData?: { videoId?: string };
+    musicItemRendererDisplayPolicy?: string;
+    flexColumns?: FlexColumn[];
+  };
+}
+interface SongSearchResponse {
+  contents?: {
+    tabbedSearchResultsRenderer?: {
+      tabs?: Array<{
+        tabRenderer?: {
+          content?: {
+            sectionListRenderer?: {
+              contents?: Array<{ musicShelfRenderer?: { contents?: SongItem[] } }>;
+            };
+          };
+        };
+      }>;
+    };
+  };
+}
+
+function runsText(text: Runs | undefined): string {
+  return (text?.runs ?? []).map((run) => run?.text ?? '').join('');
 }
 
 /**
@@ -45,10 +80,11 @@ function runsText(text: any): string {
  * ahí en más el pipeline (descarga, BBCode, grafo) no distingue el origen.
  * Una respuesta con otra estructura devuelve `[]`, nunca lanza.
  */
-export function parseSongResults(response: any): any[] {
+export function parseSongResults(raw: unknown): SearchVideo[] {
+  const response = raw as SongSearchResponse | null | undefined;
   const tabs = response?.contents?.tabbedSearchResultsRenderer?.tabs ?? [];
   const sections = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
-  const songs: any[] = [];
+  const songs: SearchVideo[] = [];
 
   for (const section of sections) {
     for (const item of section?.musicShelfRenderer?.contents ?? []) {
