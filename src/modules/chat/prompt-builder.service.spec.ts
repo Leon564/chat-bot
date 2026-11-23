@@ -42,6 +42,33 @@ describe('PromptBuilderService', () => {
     });
   });
 
+  describe('memoria a largo plazo', () => {
+    it('sin memory no aparece', () => {
+      expect(service.build(baseInput())).not.toContain('RECUERDO(');
+      expect(service.build(baseInput({ memory: false }))).toBe(service.build(baseInput()));
+    });
+
+    it('con memory enseña los tres verbos, el formato con | y sus límites', () => {
+      const prompt = service.build(baseInput({ memory: true }));
+      expect(prompt).toContain('MEMORIA A LARGO PLAZO');
+      expect(prompt).toContain('RECUERDO(tipo | texto | claves | fecha | hora | delicado)');
+      expect(prompt).toContain('RECUERDO_CAMBIO(');
+      expect(prompt).toContain('RECUERDO_CERRADO(');
+      expect(prompt).toContain('no de otras personas');
+      expect(prompt).toMatch(/delicado.*salud, familia o plata/);
+      // Fecha de hoy en hora de El Salvador, para resolver "el viernes".
+      expect(prompt).toContain('2026-03-17');
+    });
+
+    it('es sólo un bloque agregado en la parte variable: sacándolo queda el prompt de siempre', () => {
+      const without = service.build(baseInput());
+      const withMem = service.build(baseInput({ memory: true }));
+      const block = withMem.split('\n\n').find((sec) => sec.startsWith('MEMORIA A LARGO PLAZO'))!;
+      expect(block).toBeDefined();
+      expect(withMem.replace(`${block}\n\n`, '')).toBe(without);
+    });
+  });
+
   describe('instrucciones de sala', () => {
     it('sin instrucciones ni staff el prompt queda idéntico', () => {
       const base = service.build(baseInput());

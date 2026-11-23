@@ -13,7 +13,8 @@ import { addDays, localDayKey } from './memory-time';
 /** Para sumar a la barrida final de verbos sueltos (`ResponseVerbs`). */
 export const MEMORY_VERB_PATTERN_SOURCE = '\\bRECUERDO(?:_CAMBIO|_CERRADO)?\\s*\\(';
 
-const HEAD_RE = /\bRECUERDO(_CAMBIO|_CERRADO)?\s*\(/i;
+// Sólo en MAYÚSCULAS: "un recuerdo (de cuando…)" es charla, no un verbo.
+const HEAD_RE = /\bRECUERDO(_CAMBIO|_CERRADO)?\s*\(/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const REF_RE = /^r\d+$/i;

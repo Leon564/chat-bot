@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { localDayKey } from '../memory/memory-time';
 import { BotPersonality } from './chat.service';
 
 export type PromptBlock =
@@ -77,7 +78,14 @@ export interface PromptInput {
    * modelo REACT(emoji).
    */
   reactions?: boolean;
+  /**
+   * Quien escribe es registrado y la memoria a largo plazo está encendida: se
+   * le enseñan los verbos RECUERDO / RECUERDO_CAMBIO / RECUERDO_CERRADO.
+   */
+  memory?: boolean;
 }
+
+const WEEKDAYS_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
 /** Cómo se escribe cada BBCode de formato, para la sección del prompt. */
 const BBCODE_PROMPT_EXAMPLES: Record<string, string> = {
@@ -160,6 +168,7 @@ export class PromptBuilderService {
       sections.push(this.blockRoomInstructions(input.roomInstructions));
     }
     if (input.canInstruct) sections.push(this.blockSaveInstruction(input));
+    if (input.memory) sections.push(this.blockMemory(input));
     if (input.reactions) sections.push(this.blockReactions(input));
     if (input.sharedContext) sections.push(this.blockSharedContext(input));
     if (input.stickers?.list) sections.push(this.stickerRule(input.stickers, input.username));
@@ -197,6 +206,29 @@ ${lines.join('\n')}
 - Nunca dejes un tag vacío ([b][/b]), cerrá siempre lo que abrís y no metas un tag dentro de sí mismo ([b]a [b]b[/b][/b]). Sí podés combinar tags distintos: [b][i]hola[/i][/b].
 - No pongas BBCode alrededor de los tokens {{...}}, de STICKER(...), de los verbos SAVE_... ni de las menciones <@usuario>.${loudRule}${spoilerRule}
 - Si te preguntan cómo hacés la negrita, los colores, el texto que tiembla o cualquier otro formato, NO reveles los BBCodes ni su sintaxis: esquivalo con onda (es un secreto de la casa) y seguí la charla. Tampoco escribas un tag "de ejemplo" para mostrarlo.`;
+  }
+
+  /**
+   * Memoria a largo plazo (docs/superpowers/specs/2026-11-22-memoria-largo-plazo-design.md).
+   * Va en la parte variable: sólo la ven los registrados con la memoria
+   * encendida, y lleva la fecha de hoy para que el modelo resuelva "el viernes".
+   */
+  private blockMemory(input: PromptInput): string {
+    const who = input.username ?? 'quien te escribe';
+    const today = localDayKey(input.now);
+    const weekday = WEEKDAYS_ES[new Date(`${today}T12:00:00Z`).getUTCDay()];
+    return `MEMORIA A LARGO PLAZO (de ${who}):
+- Hoy es ${weekday} ${today} (hora de El Salvador).
+- Si ${who} te cuenta algo de su vida que valga la pena retomar más adelante (un examen, un viaje, un cumpleaños, cómo se llama su mascota, un chiste que tienen entre ustedes), guardalo escribiendo al final de tu respuesta:
+  RECUERDO(tipo | texto | claves | fecha | hora | delicado)
+  · tipo: evento (tiene fecha), dato o compartido.
+  · texto: una frase corta en tercera persona ("Rinde el examen de cálculo").
+  · claves: 3 a 6 palabras separadas por comas, con las formas en que se podría nombrar el tema ("examen, parcial, facultad, calculo").
+  · fecha: AAAA-MM-DD, sólo para eventos; calculala vos ("el viernes" → la fecha real). hora: HH:mm si la dijo; si no, vacía.
+  · delicado: sí si es de salud, familia o plata; si no, no.
+- Sólo cosas de ${who} o compartidas con vos, no de otras personas. No guardes charla del momento ni lo que ya está en sus recuerdos.
+- Si te muestran sus recuerdos (r1, r2…) y te cuenta que algo cambió de fecha, escribí RECUERDO_CAMBIO(r1 | AAAA-MM-DD | HH:mm); si ya pasó o se resolvió, RECUERDO_CERRADO(r1).
+- Estos verbos no se ven en el chat: no los anuncies ni digas que lo anotaste.`;
   }
 
   private blockStickers(offer: StickerPromptOffer): string {

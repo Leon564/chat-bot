@@ -47,11 +47,16 @@ describe('extractMemoryVerbs', () => {
     expect(extractMemoryVerbs('dale RECUERDO(dato | algo').content).toBe('dale');
   });
 
-  it('MEMORY_VERB_PATTERN_SOURCE reconoce los tres verbos', () => {
-    const re = new RegExp(MEMORY_VERB_PATTERN_SOURCE, 'i');
+  it('la palabra recuerdo en minúscula es charla, no un verbo', () => {
+    const text = 'qué lindo recuerdo (de cuando fuimos a la playa)';
+    expect(extractMemoryVerbs(text)).toEqual({ content: text, saves: [], changes: [], closes: [] });
+  });
+
+  it('MEMORY_VERB_PATTERN_SOURCE reconoce los tres verbos, sólo en mayúsculas', () => {
+    const re = new RegExp(MEMORY_VERB_PATTERN_SOURCE);
     expect(re.test('RECUERDO(')).toBe(true);
     expect(re.test('RECUERDO_CAMBIO (')).toBe(true);
-    expect(re.test('recuerdo_cerrado(')).toBe(true);
+    expect(re.test('recuerdo_cerrado(')).toBe(false);
     expect(re.test('un recuerdo lindo')).toBe(false);
   });
 });

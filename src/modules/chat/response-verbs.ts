@@ -1,5 +1,6 @@
 import { createLog } from '../../common/utils/log';
 import { stripHtmlTags } from '../../common/bbcode/bbcode';
+import { MEMORY_VERB_PATTERN_SOURCE } from '../memory/memory-verbs';
 
 const log = createLog('ResponseVerbs');
 
@@ -346,9 +347,12 @@ export class ResponseVerbs {
    * mayoría.
    */
   static stripLeftoverVerbs(content: string): string {
-    if (!/\b(?:SAVE|LOAD)_(?:FACT_ABOUT|FACT|ERRAND|MEMORY)\s*\(/i.test(content)) return content;
+    const hasMemoryVerb = new RegExp(MEMORY_VERB_PATTERN_SOURCE).test(content);
+    if (!/\b(?:SAVE|LOAD)_(?:FACT_ABOUT|FACT|ERRAND|MEMORY)\s*\(/i.test(content) && !hasMemoryVerb) return content;
     return content
       .replace(ResponseVerbs.createLeftoverVerbRegex(), '')
+      // Los de memoria, sólo en mayúsculas (ver memory-verbs.ts).
+      .replace(new RegExp(`${MEMORY_VERB_PATTERN_SOURCE}[^)]*\\)?`, 'g'), '')
       .replace(/[ \t]{2,}/g, ' ')
       .trim();
   }
