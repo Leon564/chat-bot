@@ -18,11 +18,13 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "lint:fix": "eslint \"src/**/*.ts\" --fix"
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "calibrate:memory": "ts-node -r tsconfig-paths/register scripts/calibrate-memory.ts"
   },
   "dependencies": {
     "@distube/ytdl-core": "github:Leon564/distube-ytdl-core#release",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@huggingface/transformers": "^4.3.2",
     "@nestjs/common": "^11.2.11",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.2.11",

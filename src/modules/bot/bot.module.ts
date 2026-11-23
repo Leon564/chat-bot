@@ -1,3 +1,4 @@
+import { MemoryModule } from '../memory/memory.module';
 import { Module } from '@nestjs/common';
 import { BotService } from './bot.service';
 import { RateLimitService } from './rate-limit.service';
@@ -18,7 +19,7 @@ import { CrossContextModule } from '../../common/settings/cross-context.module';
 @Module({
   // ChatModule re-exports UtilsService, LoggingService and the
   // Mongoose models, so we no longer need duplicate providers here.
-  imports: [ChatModule, MusicModule, ChatSocketModule, AniListModule, GraphModule, CrossContextModule],
+  imports: [ChatModule, MusicModule, ChatSocketModule, AniListModule, GraphModule, CrossContextModule, MemoryModule],
   providers: [
     BotService,
     BotOutputService,

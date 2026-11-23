@@ -35,3 +35,15 @@ describe('ResponseVerbs.stripModelLeaks', () => {
     expect(ResponseVerbs.stripModelLeaks('<img src="x.gif"/>')).toBe('');
   });
 });
+
+describe('ResponseVerbs.stripLeftoverVerbs — verbos de memoria', () => {
+  it('borra un RECUERDO* que haya sobrevivido', () => {
+    expect(ResponseVerbs.stripLeftoverVerbs('hola RECUERDO_CERRADO(r1)')).toBe('hola');
+    expect(ResponseVerbs.stripLeftoverVerbs('dale RECUERDO (dato | algo | a) che')).toBe('dale che');
+  });
+
+  it('no toca la palabra recuerdo en la charla', () => {
+    const text = 'qué lindo recuerdo (de verdad)';
+    expect(ResponseVerbs.stripLeftoverVerbs(text)).toBe(text);
+  });
+});
