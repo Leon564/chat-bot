@@ -77,7 +77,7 @@ export class FollowupService {
       const claimed = await this.model.findOneAndUpdate(
         { phase: 'before', status: 'pending', dueAt: { $lte: now } },
         { $set: { status: 'sent', sentAt: now } },
-        { sort: { dueAt: 1 }, new: true },
+        { sort: { dueAt: 1 }, returnDocument: 'after' },
       );
       if (!claimed) break;
       const memory = await this.memories.findById(claimed.memoryId);
@@ -110,7 +110,7 @@ export class FollowupService {
           ...(opts.includeSensitive === false ? { sensitive: { $ne: true } } : {}),
         },
         { $set: { status: 'sent', sentAt: now } },
-        { sort: { dueAt: 1 }, new: true },
+        { sort: { dueAt: 1 }, returnDocument: 'after' },
       );
       if (!claimed) return null;
       const memory = await this.memories.findById(claimed.memoryId);
