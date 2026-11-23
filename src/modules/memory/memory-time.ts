@@ -48,3 +48,12 @@ export function afterWindow(eventDate: string): { from: Date; expiresAt: Date } 
   const next = addDays(eventDate, 1);
   return { from: localToUtc(next, '00:00'), expiresAt: localToUtc(addDays(next, 5), '00:00') };
 }
+
+const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+/** "viernes 27/11" o "viernes 27/11 15:00". */
+export function formatEventDate(eventDate: string, eventTime?: string | null): string {
+  const day = WEEKDAYS[new Date(`${eventDate}T12:00:00Z`).getUTCDay()];
+  const [, mm, dd] = eventDate.split('-');
+  return `${day} ${dd}/${mm}${eventTime ? ` ${eventTime}` : ''}`;
+}

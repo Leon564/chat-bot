@@ -30,6 +30,8 @@ export interface UsageSummary {
   oldest: Date | null;
   /** Tiempos de respuesta de las respuestas de charla (kind 'chat'), o null sin datos. */
   latency: { p50: number; p95: number; max: number; samples: number } | null;
+  /** Llamadas de embeddings (memoria a largo plazo): no entran en los totales de arriba. */
+  embeddingCalls: number;
 }
 
 /** Percentil `p` (0..1) de una lista YA ordenada, por el método del rango más cercano. */
@@ -107,8 +109,10 @@ export class UsageService {
    * quedó recortada.
    */
   async summarize(since: Date, topN = 5): Promise<UsageSummary> {
-    const match = { createdAt: { $gte: since } };
-    const [totals, top, oldestRow, latencyRows] = await Promise.all([
+    const since$ = { createdAt: { $gte: since } };
+    // Los embeddings tienen otro precio y otro sentido: van aparte.
+    const match = { ...since$, kind: { $ne: 'embedding' } };
+    const [totals, top, oldestRow, latencyRows, embeddingCalls] = await Promise.all([
       this.usageModel
         .aggregate<{ calls: number; promptTokens: number; cachedPromptTokens: number; completionTokens: number }>([
           { $match: match },
@@ -145,6 +149,7 @@ export class UsageService {
         .select({ latencyMs: 1 })
         .lean()
         .exec(),
+      this.usageModel.countDocuments({ ...since$, kind: 'embedding' }).exec(),
     ]);
     const latencies = (latencyRows as Array<{ latencyMs?: number }>)
       .map((r) => r.latencyMs ?? 0)
@@ -168,6 +173,7 @@ export class UsageService {
               samples: latencies.length,
             }
           : null,
+      embeddingCalls,
     };
   }
 }

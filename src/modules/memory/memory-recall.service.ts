@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BotMemoryDocument } from '../../common/schemas/bot-memory.schema';
 import { MemoryStore, memoryUserKey } from './memory-store.service';
 import { EmbeddingService, cosine } from './embedding.service';
-import { addDays, localDayKey } from './memory-time';
+import { addDays, formatEventDate, localDayKey } from './memory-time';
 import { MemoryKind } from './memory.types';
 
 export const MAX_RECALLED = 3;
@@ -14,7 +14,6 @@ export const DIRECT_MARGIN = 0.08;
 const EVENT_LOOKAHEAD_DAYS = 3;
 
 const KIND_LABEL: Record<MemoryKind, string> = { event: 'evento', fact: 'dato', shared: 'compartido' };
-const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
 export interface RecalledMemory {
   ref: string;
@@ -164,11 +163,7 @@ export class MemoryRecallService {
 
   private describe(r: RecalledMemory, sensitive: boolean): string {
     const parts = [KIND_LABEL[r.kind]];
-    if (r.kind === 'event' && r.eventDate) {
-      const day = WEEKDAYS[new Date(`${r.eventDate}T12:00:00Z`).getUTCDay()];
-      const [, mm, dd] = r.eventDate.split('-');
-      parts[0] += `, ${day} ${dd}/${mm}${r.eventTime ? ` ${r.eventTime}` : ''}`;
-    }
+    if (r.kind === 'event' && r.eventDate) parts[0] += `, ${formatEventDate(r.eventDate, r.eventTime)}`;
     if (sensitive) parts.push('delicado');
     return parts.join(', ');
   }
