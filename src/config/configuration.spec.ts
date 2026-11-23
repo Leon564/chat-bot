@@ -148,3 +148,40 @@ describe('configuration — stickers', () => {
     expect(configuration().bot.stickerCooldownMinutes).toBe(0);
   });
 });
+
+describe('configuration — memory', () => {
+  const KEYS = ['MEMORY_ENABLED', 'EMBEDDINGS_MODEL', 'EMBEDDINGS_LOCAL_MODEL', 'EMBEDDINGS_THRESHOLD_EXTERNAL', 'EMBEDDINGS_THRESHOLD_LOCAL'];
+  const ORIGINAL = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (ORIGINAL[k] === undefined) delete process.env[k];
+      else process.env[k] = ORIGINAL[k];
+    }
+  });
+
+  it('nace apagada y se enciende sólo con el literal true', () => {
+    delete process.env.MEMORY_ENABLED;
+    expect(configuration().memory.enabled).toBe(false);
+    process.env.MEMORY_ENABLED = '1';
+    expect(configuration().memory.enabled).toBe(false);
+    process.env.MEMORY_ENABLED = 'true';
+    expect(configuration().memory.enabled).toBe(true);
+  });
+
+  it('defaults de embeddings', () => {
+    for (const k of KEYS) delete process.env[k];
+    const { embeddings } = configuration().memory;
+    expect(embeddings.model).toBe('text-embedding-3-small');
+    expect(embeddings.localModel).toBe('Xenova/multilingual-e5-small');
+    expect(embeddings.thresholdExternal).toBe(0.45);
+    expect(embeddings.thresholdLocal).toBe(0.82);
+  });
+
+  it('un umbral no numérico cae al default', () => {
+    process.env.EMBEDDINGS_THRESHOLD_EXTERNAL = 'abc';
+    expect(configuration().memory.embeddings.thresholdExternal).toBe(0.45);
+    process.env.EMBEDDINGS_THRESHOLD_LOCAL = '0.9';
+    expect(configuration().memory.embeddings.thresholdLocal).toBe(0.9);
+  });
+});
