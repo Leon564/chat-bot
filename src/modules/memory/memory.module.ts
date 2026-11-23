@@ -6,6 +6,7 @@ import { MemoryStore } from './memory-store.service';
 import { MemorySettingsService } from './memory-settings.service';
 import { EmbeddingService } from './embedding.service';
 import { MemoryRecallService } from './memory-recall.service';
+import { FollowupService } from './followup.service';
 import { LOCAL_EMBEDDER, TransformersLocalEmbedder } from './local-embedder';
 import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema';
 import { UsageService } from '../chat/usage.service';
@@ -25,9 +26,10 @@ import { UsageService } from '../chat/usage.service';
     MemorySettingsService,
     EmbeddingService,
     MemoryRecallService,
+    FollowupService,
     UsageService,
     { provide: LOCAL_EMBEDDER, useClass: TransformersLocalEmbedder },
   ],
-  exports: [MemoryStore, MemorySettingsService, EmbeddingService, MemoryRecallService],
+  exports: [MemoryStore, MemorySettingsService, EmbeddingService, MemoryRecallService, FollowupService],
 })
 export class MemoryModule {}

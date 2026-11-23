@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { BotMemory, BotMemoryDocument } from '../../common/schemas/bot-memory.schema';
 import { MemoryDraft } from './memory.types';
 import { addDays, localDayKey, localToUtc } from './memory-time';
+import { FollowupService } from './followup.service';
 
 export const MAX_ACTIVE_MEMORIES = 50;
 export const MAX_NEW_PER_DAY = 5;
@@ -31,7 +32,11 @@ const normalizeText = (text: string): string =>
  */
 @Injectable()
 export class MemoryStore {
-  constructor(@InjectModel(BotMemory.name) private readonly model: Model<BotMemoryDocument>) {}
+  constructor(
+    @InjectModel(BotMemory.name) private readonly model: Model<BotMemoryDocument>,
+    // Opcional: cerrar/olvidar cancela los seguimientos si el servicio está.
+    @Optional() private readonly followups?: FollowupService,
+  ) {}
 
   async create(
     username: string,
@@ -97,6 +102,7 @@ export class MemoryStore {
 
   async close(id: string): Promise<void> {
     await this.model.updateOne({ _id: id }, { $set: { status: 'done' } });
+    await this.followups?.cancelFor(id);
   }
 
   async forgetByPosition(username: string, position: number, now = new Date()): Promise<BotMemoryDocument | null> {
@@ -104,6 +110,7 @@ export class MemoryStore {
     const target = Number.isInteger(position) && position >= 1 ? active[position - 1] : undefined;
     if (!target) return null;
     await this.model.deleteOne({ _id: target._id });
+    await this.followups?.cancelFor(String(target._id));
     return target;
   }
 
@@ -113,6 +120,7 @@ export class MemoryStore {
 
   async forgetAll(username: string): Promise<number> {
     const { deletedCount } = await this.model.deleteMany({ userKey: memoryUserKey(username) });
+    await this.followups?.cancelAllFor(username);
     return deletedCount ?? 0;
   }
 
