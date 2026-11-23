@@ -185,7 +185,7 @@ export default () => ({
       model: process.env.EMBEDDINGS_MODEL || 'text-embedding-3-small',
       apiKey: process.env.EMBEDDINGS_API_KEY || '',
       localModel: process.env.EMBEDDINGS_LOCAL_MODEL || 'Xenova/multilingual-e5-small',
-      thresholdExternal: parseFloatEnv(process.env.EMBEDDINGS_THRESHOLD_EXTERNAL, 0.45),
+      thresholdExternal: parseFloatEnv(process.env.EMBEDDINGS_THRESHOLD_EXTERNAL, 0.53),
       thresholdLocal: parseFloatEnv(process.env.EMBEDDINGS_THRESHOLD_LOCAL, 0.86),
     },
   },

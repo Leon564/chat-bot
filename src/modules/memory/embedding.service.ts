@@ -68,7 +68,7 @@ export class EmbeddingService {
 
   thresholdFor(model: string): number {
     return model.startsWith('ext:')
-      ? this.configService.get<number>('memory.embeddings.thresholdExternal') ?? 0.45
+      ? this.configService.get<number>('memory.embeddings.thresholdExternal') ?? 0.53
       : this.configService.get<number>('memory.embeddings.thresholdLocal') ?? 0.86;
   }
 
