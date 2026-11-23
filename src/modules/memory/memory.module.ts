@@ -4,6 +4,10 @@ import { BotMemory, BotMemorySchema } from '../../common/schemas/bot-memory.sche
 import { BotFollowup, BotFollowupSchema } from '../../common/schemas/bot-followup.schema';
 import { MemoryStore } from './memory-store.service';
 import { MemorySettingsService } from './memory-settings.service';
+import { EmbeddingService } from './embedding.service';
+import { LOCAL_EMBEDDER, TransformersLocalEmbedder } from './local-embedder';
+import { LlmUsage, LlmUsageSchema } from '../../common/schemas/llm-usage.schema';
+import { UsageService } from '../chat/usage.service';
 
 /** Memoria a largo plazo de Aria (ver docs/superpowers/specs/2026-11-22-memoria-largo-plazo-design.md). */
 @Module({
@@ -11,9 +15,17 @@ import { MemorySettingsService } from './memory-settings.service';
     MongooseModule.forFeature([
       { name: BotMemory.name, schema: BotMemorySchema },
       { name: BotFollowup.name, schema: BotFollowupSchema },
+      // Propio (no vía ChatModule, que importa éste): registra el uso de embeddings.
+      { name: LlmUsage.name, schema: LlmUsageSchema },
     ]),
   ],
-  providers: [MemoryStore, MemorySettingsService],
-  exports: [MemoryStore, MemorySettingsService],
+  providers: [
+    MemoryStore,
+    MemorySettingsService,
+    EmbeddingService,
+    UsageService,
+    { provide: LOCAL_EMBEDDER, useClass: TransformersLocalEmbedder },
+  ],
+  exports: [MemoryStore, MemorySettingsService, EmbeddingService],
 })
 export class MemoryModule {}
