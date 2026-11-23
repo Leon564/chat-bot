@@ -27,6 +27,10 @@ import { bbcodeToPlain } from '../../common/bbcode/bbcode';
 import { CrossContextSettingsService } from '../../common/settings/cross-context-settings.service';
 import { VideoSettingsService } from '../../common/settings/video-settings.service';
 import { ErrandService } from '../graph/errand.service';
+import { FollowupService } from '../memory/followup.service';
+import { MemorySettingsService } from '../memory/memory-settings.service';
+import { MEMORY_ROLES } from '../memory/memory.types';
+import { BotMemoryDocument } from '../../common/schemas/bot-memory.schema';
 import { MusicProgress } from '../../common/interfaces';
 import { createLog } from '../../common/utils/log';
 
@@ -82,6 +86,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly polls?: PollService,
     // Opcional para los tests armados a mano: sin él manda VIDEO_ENABLED del .env.
     @Optional() private readonly videoSettings?: VideoSettingsService,
+    // Memoria a largo plazo: sin estos dos (tests armados a mano) no hay memoria.
+    @Optional() private readonly followups?: FollowupService,
+    @Optional() private readonly memorySettings?: MemorySettingsService,
   ) {}
 
   onModuleDestroy() {
@@ -95,13 +102,42 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
    * tarde con una disculpa.
    */
   async deliverDueReminders(now = new Date()): Promise<void> {
-    if (!this.reminders) return;
-    const due = await this.reminders.claimDue(now);
-    for (const r of due) {
-      const late = now.getTime() - new Date(r.dueAt).getTime() > 10 * 60_000 ? ' (perdón la demora)' : '';
-      this.sendBotMessage(`⏰ <@${r.username}> te recuerdo: ${r.text}${late}`);
-      this.logOwnMessage(this.chatSocketService.username ?? '', `te recuerdo: ${r.text}`, r.username);
+    if (this.reminders) {
+      const due = await this.reminders.claimDue(now);
+      for (const r of due) {
+        const late = now.getTime() - new Date(r.dueAt).getTime() > 10 * 60_000 ? ' (perdón la demora)' : '';
+        this.sendBotMessage(`⏰ <@${r.username}> te recuerdo: ${r.text}${late}`);
+        this.logOwnMessage(this.chatSocketService.username ?? '', `te recuerdo: ${r.text}`, r.username);
+      }
     }
+    // Suerte del día de los eventos que Aria recordó (memoria a largo plazo).
+    if (this.followups && this.memorySettings?.isEnabled()) {
+      const due = await this.followups.claimDueBefore(now);
+      for (const { user, memory } of due) {
+        await this.sendFollowUp(memory, user, this.chatSocketService.username ?? '', 'before');
+      }
+    }
+  }
+
+  /** La memoria aplica a esta persona: encendida y registrada. */
+  private memoryOnFor(role: string | undefined): boolean {
+    return !!this.followups && !!this.memorySettings?.isEnabled() && !!role && MEMORY_ROLES.has(role);
+  }
+
+  /** Manda un seguimiento como mensaje propio, con la voz de Aria o un texto fijo de respaldo. */
+  private async sendFollowUp(
+    memory: BotMemoryDocument,
+    user: string,
+    botUsername: string,
+    phase: 'before' | 'after',
+  ): Promise<void> {
+    const drafted = await this.chatService.draftFollowUp(botUsername, user, memory.text, phase).catch(() => '');
+    const what = memory.text.charAt(0).toLowerCase() + memory.text.slice(1);
+    const text =
+      BotService.stripIntentTokens(drafted) ||
+      (phase === 'before' ? `¡hoy es el día! Suerte con lo de ${what} 🍀` : `¿cómo te fue con lo de ${what}?`);
+    this.sendBotMessage(`<@${user}> ${text}`);
+    this.logOwnMessage(botUsername, text, user);
   }
 
   async onModuleInit() {
@@ -121,7 +157,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Votos de las encuestas: el backend difunde cada cambio de reacciones.
     this.chatSocketService.onReactionUpdate?.((messageId, reactions) => this.polls?.onReactions(messageId, reactions));
 
-    if (this.reminders) {
+    if (this.reminders || this.followups) {
       this.reminderTimer = setInterval(() => {
         void this.deliverDueReminders().catch(() => {});
       }, BotService.REMINDER_TICK_MS);
@@ -251,8 +287,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       !isOnlineReq &&
       !isVideoReq
     ) {
-      // No le hablaron: a lo sumo, un comentario espontáneo cada tanto.
-      // Sin await: no demora nada y sus fallos se tragan adentro.
+      // No le hablaron. Si Aria tiene un "¿cómo te fue?" pendiente para esta
+      // persona, es el momento (apareció); si no, a lo sumo un comentario
+      // espontáneo cada tanto (sin await: sus fallos se tragan adentro).
+      if (this.memoryOnFor(authorRole)) {
+        const after = await this.followups!.claimAfter(authorUsername).catch(() => null);
+        if (after) {
+          await this.sendFollowUp(after, authorUsername, botUsername, 'after');
+          return;
+        }
+      }
       void this.maybeChimeIn(content, botUsername).catch(() => {});
       return;
     }
@@ -332,6 +376,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const modelText = bbcodeToPlain(this.stickerCatalog.describeContent(content, msg.type), 'mark');
     const stickers = this.buildStickerOffer(content, msg.type);
     const bbcodes = this.bbcodeSettings?.enabled();
+    // Memoria a largo plazo: si hay un "¿cómo te fue?" pendiente, va dentro de
+    // esta misma respuesta (un solo mensaje) en vez de un mensaje aparte.
+    const memoryOn = this.memoryOnFor(authorRole);
+    const followUp = memoryOn ? await this.followups!.claimAfter(authorUsername).catch(() => null) : null;
     const chatOptions = {
       ...(replyContext ? { replyTo: replyContext } : {}),
       ...(stickers ? { stickers } : {}),
@@ -339,6 +387,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ...(authorRole && INSTRUCTION_STAFF_ROLES.has(authorRole) ? { canInstruct: true } : {}),
       // Reaccionar necesita el id del mensaje y el flag del admin.
       ...(msg._id && this.chatSocketService.reactionsEnabled ? { reactions: true } : {}),
+      ...(memoryOn ? { memory: followUp ? { followUp: followUp.text } : {} } : {}),
     };
     // "<bot> está escribiendo…" mientras el modelo piensa. El `?.` es por los
     // dobles de los tests, que no traen el método.

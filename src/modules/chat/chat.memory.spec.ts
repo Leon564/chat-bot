@@ -204,3 +204,47 @@ describe('ChatService — memoria a largo plazo', () => {
     expect(await service.chat('x', 'Aria', 'Victoria', { memory: {} })).toBe('dale');
   });
 });
+
+describe('ChatService.draftFollowUp', () => {
+  let service: ChatService;
+  beforeEach(async () => {
+    crearMock.mockReset();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ChatService,
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        { provide: ContextService, useValue: {} },
+        { provide: UsageService, useValue: { record: jest.fn().mockResolvedValue(undefined) } },
+        { provide: LoggingService, useValue: {} },
+        { provide: PromptBuilderService, useValue: { build: jest.fn().mockReturnValue('persona') } },
+        { provide: IntentRouterService, useValue: {} },
+        { provide: GraphContextService, useValue: {} },
+        { provide: GraphIngestService, useValue: {} },
+        { provide: CrossContextSettingsService, useValue: { isEnabled: () => false } },
+        { provide: ErrandService, useValue: {} },
+      ],
+    }).compile();
+    service = moduleRef.get(ChatService);
+  });
+
+  const promptText = () => crearMock.mock.calls[0][0].messages.map((m: { content: string }) => m.content).join('\n');
+
+  it('le pasa al modelo el recuerdo y la fase, y limpia la respuesta', async () => {
+    crearMock.mockResolvedValue(respuesta('<b>¡Suerte hoy!</b> 🍀'));
+    expect(await service.draftFollowUp('Aria', 'Victoria', 'Rinde el examen de cálculo', 'before')).toBe('¡Suerte hoy! 🍀');
+    expect(promptText()).toContain('Rinde el examen de cálculo');
+    expect(promptText()).toContain('Victoria');
+    expect(promptText()).toMatch(/suerte/i);
+  });
+
+  it('para el después pide preguntar cómo le fue', async () => {
+    crearMock.mockResolvedValue(respuesta('¿Y? ¿Cómo te fue?'));
+    await service.draftFollowUp('Aria', 'Victoria', 'Rinde el examen', 'after');
+    expect(promptText()).toMatch(/cómo le fue/i);
+  });
+
+  it('si el modelo falla devuelve vacío', async () => {
+    crearMock.mockRejectedValue(new Error('timeout'));
+    expect(await service.draftFollowUp('Aria', 'Victoria', 'x', 'after')).toBe('');
+  });
+});
