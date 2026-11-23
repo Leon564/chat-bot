@@ -23,7 +23,7 @@ export class BotFollowup {
   @Prop({ default: false })
   sensitive: boolean;
 
-  @Prop({ required: true, enum: ['before', 'after'] })
+  @Prop({ type: String, required: true, enum: ['before', 'after'] })
   phase: 'before' | 'after';
 
   /** `before`: cuándo sale. `after`: desde cuándo está disponible. */
@@ -33,7 +33,7 @@ export class BotFollowup {
   @Prop({ required: true })
   expiresAt: Date;
 
-  @Prop({ default: 'pending', enum: ['pending', 'sent', 'skipped'] })
+  @Prop({ type: String, default: 'pending', enum: ['pending', 'sent', 'skipped'] })
   status: 'pending' | 'sent' | 'skipped';
 
   @Prop({ type: Date, default: null })
