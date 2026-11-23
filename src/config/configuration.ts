@@ -174,4 +174,19 @@ export default () => ({
   graph: {
     cacheEnabled: process.env.CACHE_ENABLED !== 'false',
   },
+
+  // Memoria a largo plazo (docs/superpowers/specs/2026-11-22-memoria-largo-plazo-design.md).
+  // Nace apagada; !memoria on|off la mueve en caliente. Los umbrales se fijan
+  // con `npm run calibrate:memory` antes de encenderla.
+  memory: {
+    enabled: process.env.MEMORY_ENABLED === 'true',
+    embeddings: {
+      baseUrl: process.env.EMBEDDINGS_BASE_URL || 'https://api.openai.com/v1',
+      model: process.env.EMBEDDINGS_MODEL || 'text-embedding-3-small',
+      apiKey: process.env.EMBEDDINGS_API_KEY || '',
+      localModel: process.env.EMBEDDINGS_LOCAL_MODEL || 'Xenova/multilingual-e5-small',
+      thresholdExternal: parseFloatEnv(process.env.EMBEDDINGS_THRESHOLD_EXTERNAL, 0.45),
+      thresholdLocal: parseFloatEnv(process.env.EMBEDDINGS_THRESHOLD_LOCAL, 0.86),
+    },
+  },
 });

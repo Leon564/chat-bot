@@ -4,9 +4,9 @@ import { Document } from 'mongoose';
 export type LlmUsageDocument = LlmUsage & Document;
 
 /** Qué llamada al modelo produjo esta fila. */
-export type LlmKind = 'chat' | 'translate' | 'summary';
+export type LlmKind = 'chat' | 'translate' | 'summary' | 'embedding';
 
-export const LLM_KINDS: LlmKind[] = ['chat', 'translate', 'summary'];
+export const LLM_KINDS: LlmKind[] = ['chat', 'translate', 'summary', 'embedding'];
 
 /**
  * Una llamada al modelo, con su consumo real de tokens.

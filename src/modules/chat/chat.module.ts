@@ -19,6 +19,7 @@ import { PromptBuilderService } from './prompt-builder.service';
 import { IntentRouterService } from './intent-router.service';
 import { GraphModule } from '../graph/graph.module';
 import { CrossContextModule } from '../../common/settings/cross-context.module';
+import { MemoryModule } from '../memory/memory.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { CrossContextModule } from '../../common/settings/cross-context.module';
     GraphModule,
     UtilsModule,
     CrossContextModule,
+    MemoryModule,
   ],
   providers: [ChatService, ContextService, UsageService, LoggingService, MigrationService, PromptBuilderService, IntentRouterService, RoomInstructionsService, ReminderService],
   // UtilsService ya no se declara acá: viene de UtilsModule (importado

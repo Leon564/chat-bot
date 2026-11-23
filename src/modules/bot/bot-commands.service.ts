@@ -1,4 +1,8 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { MemoryStore } from '../memory/memory-store.service';
+import { MemorySettingsService } from '../memory/memory-settings.service';
+import { EmbeddingService } from '../memory/embedding.service';
+import { formatEventDate } from '../memory/memory-time';
 import { ConfigService } from '@nestjs/config';
 import { ChatService } from '../chat/chat.service';
 import { UtilsService } from '../../common/utils/utils.service';
@@ -102,7 +106,21 @@ export class BotCommandsService {
     @Optional() private readonly musicService?: MusicService,
     // Opcional para los tests armados a mano: sin él manda VIDEO_ENABLED del .env.
     @Optional() private readonly videoSettings?: VideoSettingsService,
+    // Memoria a largo plazo (opcionales para los tests armados a mano).
+    @Optional() private readonly memoryStore?: MemoryStore,
+    @Optional() private readonly memorySettings?: MemorySettingsService,
+    @Optional() private readonly embeddings?: EmbeddingService,
   ) {}
+
+  private static readonly SOURCE_LABEL: Record<string, string> = {
+    external: 'externa',
+    local: 'local',
+    keywords: 'palabras clave',
+  };
+
+  private memorySourceLabel(): string {
+    return BotCommandsService.SOURCE_LABEL[this.embeddings?.currentSource() ?? 'keywords'];
+  }
 
   /** Inyectable para tests: cómo se prueba cada servicio externo. */
   probeService: (name: string, url: string) => Promise<ProbeResult> = (name, url) => probe(name, url);
@@ -117,6 +135,7 @@ export class BotCommandsService {
       (await this.handleCrossContextCommand(content, authorUsername, authorRole)) ||
       (await this.handleSharedContextCommand(content, authorUsername, authorRole)) ||
       (await this.handleVideoToggleCommand(content, authorUsername, authorRole)) ||
+      (await this.handleMemoryToggleCommand(content, authorUsername, authorRole)) ||
       (await this.handleProactiveCommand(content, authorUsername, authorRole)) ||
       (await this.handleRoomInstructionsCommand(content, authorUsername, authorRole)) ||
       (await this.handleHelpCommand(content, authorUsername, authorRole)) ||
@@ -250,6 +269,9 @@ export class BotCommandsService {
     }
     if (this.polls) extras.push(this.polls.current ? 'encuesta abierta' : 'sin encuesta');
     extras.push(`contexto compartido ${this.chatService.getSharedContextInfo().enabled ? 'sí' : 'no'}`);
+    if (this.memorySettings) {
+      extras.push(this.memorySettings.isEnabled() ? `memoria sí (${this.memorySourceLabel()})` : 'memoria no');
+    }
     lines.push(`• ${extras.join(' · ')}`);
 
     const targets: Array<[string, string]> = [
@@ -420,6 +442,29 @@ export class BotCommandsService {
    * nombrar al bot para apagar la feature. Ese detalle importa acá más que en
    * personalidad — es el interruptor de emergencia.
    */
+  /** `!memoria on|off|reset|status` (admin): interruptor de la memoria a largo plazo. */
+  private async handleMemoryToggleCommand(content: string, authorUsername: string, authorRole?: string): Promise<boolean> {
+    const match = content.trim().match(/^!memoria(?:\s+(\w+))?\s*$/i);
+    if (!match || !this.memorySettings) return false;
+    if (authorRole !== 'admin' && authorRole !== 'superAdmin') {
+      this.sendBotMessage(`@${authorUsername} ❌ Solo admins pueden cambiar la memoria.`);
+      return true;
+    }
+    const sub = (match[1] ?? 'status').toLowerCase();
+    if (sub === 'on' || sub === 'off') this.memorySettings.setOverride(sub === 'on');
+    else if (sub === 'reset' || sub === 'env') this.memorySettings.setOverride(null);
+    else if (sub !== 'status') {
+      this.sendBotMessage(`@${authorUsername} Uso: !memoria on|off|reset|status`);
+      return true;
+    }
+    const info = this.memorySettings.getInfo();
+    const origin = info.source === 'override' ? 'override en runtime' : 'del .env';
+    this.sendBotMessage(
+      `@${authorUsername} 🧠 Memoria a largo plazo: ${info.enabled ? 'encendida' : 'apagada'} (${origin}) · búsqueda: ${this.memorySourceLabel()}.`,
+    );
+    return true;
+  }
+
   private async handleCrossContextCommand(
     content: string,
     authorUsername: string,
@@ -826,6 +871,7 @@ export class BotCommandsService {
       '• !recordatorios / !cancelarrecordatorio <n>',
       '• !encuesta [10m] Pregunta | opción 1 | opción 2 — encuesta con reacciones (!encuesta cerrar)',
       '• !olvida <algo> | !olvida todo — que me olvide de cosas tuyas',
+      ...(this.memorySettings?.isEnabled() ? ['• !olvida recuerdo <n> — que me olvide de uno de tus recuerdos (los ves en !quesabes)'] : []),
       '• !misrecados — recados que dejaste y todavía no entregué',
       '• !cancelarrecado <n> — cancela uno de tus recados',
       '• !rechazarrecados — borra sin leer los recados que hay para vos',
@@ -846,6 +892,7 @@ export class BotCommandsService {
         '• !estado — salud del bot y de los servicios externos',
         '• !proactivo on|off|15%|pausa 10|reset|status — comentarios sin que me nombren',
         '• !contextocruzado on|off|reset|status',
+        ...(this.memorySettings ? ['• !memoria on|off|reset|status — memoria a largo plazo'] : []),
         '• !videos on|off|youtube|subir|reset|status — habilita !video y elige si inserta de YouTube o sube el archivo',
       );
     }
@@ -999,6 +1046,7 @@ export class BotCommandsService {
       ...(priceIn > 0 || priceOut > 0 ? [`• Costo estimado: US$ ${cost.toFixed(cost < 1 ? 4 : 2)}`] : []),
       ...(summary.promptTokens > 0 ? [BotCommandsService.cacheLine(cached, summary.promptTokens, priceIn, priceCached)] : []),
       ...(summary.latency ? [BotCommandsService.latencyLine(summary.latency)] : []),
+      ...(summary.embeddingCalls ? [`• Embeddings: ${fmt(summary.embeddingCalls)} llamadas`] : []),
     ];
     if (summary.topUsers.length > 0) {
       lines.push(
@@ -1040,13 +1088,24 @@ export class BotCommandsService {
     if (!match) return false;
 
     const facts = await this.graphUserService.describe(authorUsername);
+    const memories = (await this.memoryStore?.listActive(authorUsername).catch(() => [])) ?? [];
 
-    if (facts.length === 0) {
+    if (facts.length === 0 && memories.length === 0) {
       this.sendBotMessage(`@${authorUsername} 🤷 Todavía no tengo nada guardado sobre vos.`);
       return true;
     }
 
-    const message = await this.narrateMemory(authorUsername, facts);
+    const memorySection =
+      memories.length > 0
+        ? [
+            '🧠 Lo que recuerdo:',
+            ...memories.map(
+              (m, i) => `${i + 1}. ${m.text}${m.kind === 'event' && m.eventDate ? ` (${formatEventDate(m.eventDate, m.eventTime)})` : ''}`,
+            ),
+          ].join('\n')
+        : '';
+    const graphPart = facts.length > 0 ? await this.narrateMemory(authorUsername, facts) : '';
+    const message = [graphPart, memorySection].filter(Boolean).join('\n\n');
     const responseDelay = this.configService.get<number>('bot.responseDelay') || 1000;
     const parts = this.splitForChat(message, `@${authorUsername} `.length);
 
@@ -1201,6 +1260,19 @@ export class BotCommandsService {
       return true;
     }
 
+    // "!olvida recuerdo <n>": uno de los recuerdos a largo plazo, por número.
+    const memoryArg = rawArg.match(/^recuerdo\s+(\d+)$/i);
+    if (memoryArg && this.memoryStore) {
+      const n = Number(memoryArg[1]);
+      const gone = await this.memoryStore.forgetByPosition(authorUsername, n).catch(() => null);
+      this.sendBotMessage(
+        gone
+          ? `@${authorUsername} 🗑️ Listo, me olvidé de esto: ${gone.text}`
+          : `@${authorUsername} 🤷 No tengo un recuerdo número ${n}. Mirá la lista con !quesabes.`,
+      );
+      return true;
+    }
+
     const lower = rawArg.toLowerCase();
     // Minor #4: la confirmación se compara sin acentos (mismo criterio que
     // `isOnlineUsersRequest` en este archivo) para que "!olvida todo sí" —la
@@ -1212,7 +1284,8 @@ export class BotCommandsService {
     const lowerNoAccents = this.stripAccents(lower);
 
     if (lower === 'todo') {
-      const count = await this.graphUserService.countForgettableAll(authorUsername);
+      const memoryCount = (await this.memoryStore?.countActive(authorUsername).catch(() => 0)) ?? 0;
+      const count = (await this.graphUserService.countForgettableAll(authorUsername)) + memoryCount;
       if (count === 0) {
         this.sendBotMessage(`@${authorUsername} 🤷 Ya no tengo nada guardado sobre vos.`);
         return true;
@@ -1224,7 +1297,8 @@ export class BotCommandsService {
     }
 
     if (/^todo\s+si$/i.test(lowerNoAccents)) {
-      const deleted = await this.graphUserService.forgetAll(authorUsername);
+      const memoryDeleted = (await this.memoryStore?.forgetAll(authorUsername).catch(() => 0)) ?? 0;
+      const deleted = (await this.graphUserService.forgetAll(authorUsername)) + memoryDeleted;
       if (deleted === 0) {
         this.sendBotMessage(`@${authorUsername} 🤷 Ya no tenía nada guardado sobre vos.`);
         return true;

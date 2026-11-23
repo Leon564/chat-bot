@@ -69,4 +69,26 @@ describe('StickerGateService', () => {
     expect(gate.decide('bot hola')).toBe('optional');
     expect(gate.decide('bot hola')).toBe('optional');
   });
+
+  describe('mensaje que es sólo un sticker', () => {
+    it('ofrece sin tirar el dado', () => {
+      const { gate } = build(0.05);
+      gate.random = () => 0.99;
+      expect(gate.decide(':stk_aaaaa:', { stickerOnly: true })).toBe('optional');
+      expect(gate.decide(':stk_aaaaa:')).toBe('none');
+    });
+
+    it('respeta el cooldown', () => {
+      const { gate, advance } = build(0.05, 2);
+      gate.markSent();
+      expect(gate.decide(':stk_aaaaa:', { stickerOnly: true })).toBe('none');
+      advance(2 * 60_000);
+      expect(gate.decide(':stk_aaaaa:', { stickerOnly: true })).toBe('optional');
+    });
+
+    it('con STICKER_CHANCE=0 (apagados) no ofrece', () => {
+      const { gate } = build(0);
+      expect(gate.decide(':stk_aaaaa:', { stickerOnly: true })).toBe('none');
+    });
+  });
 });

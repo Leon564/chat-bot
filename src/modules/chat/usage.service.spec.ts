@@ -72,9 +72,19 @@ describe('UsageService', () => {
       expect(s.oldest?.getTime()).toBeLessThan(Date.now() - 47 * 3_600_000);
     });
 
+    it('los embeddings no cuentan en los totales del modelo: van aparte', async () => {
+      await seed('nico', 100, 10, 1);
+      await model.collection.insertOne({ kind: 'embedding', user: '', promptTokens: 5000, completionTokens: 0, createdAt: new Date() });
+      await model.collection.insertOne({ kind: 'embedding', user: '', promptTokens: 7000, completionTokens: 0, createdAt: new Date() });
+      const s = await service.summarize(new Date(Date.now() - 24 * 3_600_000));
+      expect(s.calls).toBe(1);
+      expect(s.promptTokens).toBe(100);
+      expect(s.embeddingCalls).toBe(2);
+    });
+
     it('sin filas devuelve ceros', async () => {
       const s = await service.summarize(new Date(0));
-      expect(s).toEqual({ calls: 0, promptTokens: 0, cachedPromptTokens: 0, completionTokens: 0, topUsers: [], oldest: null, latency: null });
+      expect(s).toEqual({ calls: 0, promptTokens: 0, cachedPromptTokens: 0, completionTokens: 0, topUsers: [], oldest: null, latency: null, embeddingCalls: 0 });
     });
 
     it('calcula mediana, p95 y máximo del tiempo de las respuestas de charla', async () => {

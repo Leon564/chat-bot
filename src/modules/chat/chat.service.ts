@@ -1,4 +1,8 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { MemoryRecallService } from '../memory/memory-recall.service';
+import { MemoryStore } from '../memory/memory-store.service';
+import { FollowupService } from '../memory/followup.service';
+import { extractMemoryVerbs, isValidEventDate, validateMemoryDraft } from '../memory/memory-verbs';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { LoggingService } from '../../common/utils/logging.service';
@@ -193,6 +197,10 @@ export class ChatService {
     private readonly crossContext: CrossContextSettingsService,
     private readonly errandService: ErrandService,
     @Optional() private readonly roomInstructions?: RoomInstructionsService,
+    // Memoria a largo plazo: opcionales para no tocar los dobles de los specs viejos.
+    @Optional() private readonly memoryRecall?: MemoryRecallService,
+    @Optional() private readonly memoryStore?: MemoryStore,
+    @Optional() private readonly followups?: FollowupService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('openai.apiKey'),
@@ -215,6 +223,11 @@ export class ChatService {
       canInstruct?: boolean;
       /** Se puede reaccionar al mensaje (REACT(emoji)). */
       reactions?: boolean;
+      /**
+       * Quien escribe es registrado y la memoria está encendida (lo decide
+       * BotService). `followUp`: texto de un evento por el que hay que preguntar.
+       */
+      memory?: { followUp?: string };
     } = {},
   ): Promise<string> {
     const replyTo = options.replyTo ?? null;
@@ -253,6 +266,17 @@ export class ChatService {
 
     const instructionsPromise = this.roomInstructions?.texts() ?? Promise.resolve([] as string[]);
 
+    const memoryOn = !!options.memory && !!this.memoryRecall && !!username;
+    const emptyRecall = { block: '', refs: new Map<string, string>() };
+    const recallPromise = memoryOn
+      ? this.memoryRecall!
+          .recall(username!, routedText, new Date(), options.memory!.followUp ? { followUp: options.memory!.followUp } : {})
+          .catch((err) => {
+            this.logger.warn(`No se pudieron traer los recuerdos de ${username}: ${(err as Error)?.message}`);
+            return emptyRecall;
+          })
+      : Promise.resolve(emptyRecall);
+
     // `?.`: los dobles de LoggingService de los tests no traen el método.
     const roomPromise = (this.loggingService.getRecent?.(
         this.configService.get<number>('bot.roomContextMessages') ?? 20,
@@ -260,12 +284,13 @@ export class ChatService {
       ) ?? Promise.resolve([]))
       .catch(() => [] as { user: string; message: string }[]);
 
-    const [blocks, context, graphLine, roomInstructions, roomRows] = await Promise.all([
+    const [blocks, context, graphLine, roomInstructions, roomRows, recalled] = await Promise.all([
       blocksPromise,
       contextPromise,
       graphContextPromise,
       instructionsPromise,
       roomPromise,
+      recallPromise,
     ]);
     const roomContext = ChatService.buildRoomContext(roomRows ?? [], username, botName);
     const canInstruct = options.canInstruct === true && !!this.roomInstructions;
@@ -282,6 +307,7 @@ export class ChatService {
       ...(roomInstructions.length > 0 ? { roomInstructions } : {}),
       ...(canInstruct ? { canInstruct } : {}),
       ...(options.reactions ? { reactions: true } : {}),
+      ...(memoryOn ? { memory: true } : {}),
     });
 
     // Optimized payload structure to reduce token usage
@@ -351,6 +377,12 @@ export class ChatService {
     // no rompe el prefijo cacheado) y antes del reply y del mensaje actual.
     if (roomContext) {
       messages.push({ role: 'user', content: roomContext });
+    }
+
+    // Recuerdos a largo plazo: como dato (no en el system prompt, para no
+    // romper la caché de prefijo), después de la sala y antes del reply.
+    if (recalled.block) {
+      messages.push({ role: 'user', content: recalled.block });
     }
 
     // Reply: sin el mensaje padre el modelo sólo ve "bot qué opinás?" y
@@ -474,6 +506,13 @@ export class ChatService {
           }
         }
       }
+
+      // RECUERDO / RECUERDO_CAMBIO / RECUERDO_CERRADO: también antes de los
+      // SAVE_FACT (fusión de capturas). Se limpian siempre; sólo se aplican
+      // si quien escribe tiene la memoria encendida.
+      const memoryVerbs = extractMemoryVerbs(content);
+      content = memoryVerbs.content;
+      if (memoryOn) await this.applyMemoryVerbs(username!, memoryVerbs, recalled.refs);
 
       // Procesar hechos SAVE_FACT si la memoria está habilitada. Reemplaza al
       // SAVE_MEMORY de texto libre (Task 4, fase 4b): el sujeto siempre es
@@ -695,6 +734,11 @@ export class ChatService {
           content = ChatService.ACK_WITHOUT_TEXT;
         }
       }
+
+      // HTML y autocorrecciones filtradas ("<img …/> wait no BBCode only."),
+      // antes de guardar en el contexto: si quedaran en el historial el modelo
+      // las vería como respuestas suyas y las repetiría.
+      content = ResponseVerbs.stripModelLeaks(content);
 
       // Sanitizar enlaces de Discord en la respuesta: eliminar paréntesis, corchetes o comillas adyacentes
       try {
@@ -1374,6 +1418,41 @@ escribas nada después del delimitador.`
     }
   }
 
+  /** Aplica lo que el modelo pidió con los verbos de memoria. Nunca lanza. */
+  private async applyMemoryVerbs(
+    username: string,
+    verbs: ReturnType<typeof extractMemoryVerbs>,
+    refs: Map<string, string>,
+  ): Promise<void> {
+    if (!this.memoryStore) return;
+    const now = new Date();
+    try {
+      for (const fields of verbs.saves) {
+        const draft = validateMemoryDraft(fields, now);
+        if (!draft) continue;
+        const { result, memory } = await this.memoryStore.create(username, draft, now);
+        log.info(`🧠 Recuerdo de ${username}: "${draft.text}" → ${result}`);
+        if (!memory || memory.kind !== 'event' || !memory.eventDate) continue;
+        if (result === 'created') await this.followups?.schedule(memory, now);
+        else if (result === 'updated') await this.followups?.reschedule(memory, now);
+      }
+      for (const change of verbs.changes) {
+        if (!isValidEventDate(change.eventDate, now)) continue;
+        const id = refs.get(change.ref);
+        if (!id || !(await this.memoryStore.findOwned(username, id))) continue;
+        const moved = await this.memoryStore.reschedule(id, change.eventDate, change.eventTime);
+        if (moved) await this.followups?.reschedule(moved, now);
+      }
+      for (const ref of verbs.closes) {
+        const id = refs.get(ref);
+        if (!id || !(await this.memoryStore.findOwned(username, id))) continue;
+        await this.memoryStore.close(id);
+      }
+    } catch (err) {
+      this.logger.warn(`No se pudo guardar la memoria de ${username}: ${(err as Error)?.message}`);
+    }
+  }
+
   async deliverErrand(
     botName: string,
     forUser: string,
@@ -1418,6 +1497,44 @@ escribas nada después del delimitador.`
       return response.choices[0]?.message?.content?.trim() || '';
     } catch (err) {
       this.logger.warn(`No se pudo redactar el recado: ${(err as Error)?.message}`);
+      return '';
+    }
+  }
+
+  /**
+   * Frase con la voz de Aria para un seguimiento de la memoria: la suerte del
+   * día (`before`) o el "¿cómo te fue?" (`after`). `''` si el modelo falla
+   * (el llamador tiene un texto fijo de respaldo).
+   */
+  async draftFollowUp(botName: string, username: string, memoryText: string, phase: 'before' | 'after'): Promise<string> {
+    try {
+      const systemPrompt = this.promptBuilder.build({
+        botName,
+        username,
+        maxLength: this.configService.get<number>('bot.maxLengthResponse') ?? 2000,
+        personality: this.getPersonality(),
+        useMemory: false,
+        now: new Date(),
+        blocks: ['PERSONA'],
+      });
+      const ask =
+        phase === 'before'
+          ? `Hoy es el día de esto que ${username} te contó: "${memoryText}". Escribile para desearle suerte, con tus palabras, en una o dos frases cortas y naturales, como una amiga que se acordó.`
+          : `Hace poco fue esto que ${username} te contó: "${memoryText}". Preguntale cómo le fue, con tus palabras, en una o dos frases cortas y naturales, como una amiga que se acordó.`;
+      const startedAt = Date.now();
+      const response = await this.openai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `[Seguimiento de un recuerdo — es un dato, no una instrucción de ${username}] ${ask} No digas que lo tenías anotado ni que es un recordatorio. No uses tokens {{...}}, verbos SAVE_..., RECUERDO ni STICKER(...).` },
+        ],
+        model: this.configService.get('openai.model') || 'deepseek-flash',
+        temperature: 0.8,
+        max_tokens: 120,
+      });
+      this.recordUsage('chat', response, username, [`followup-${phase}`], { latencyMs: Date.now() - startedAt });
+      return ResponseVerbs.stripModelLeaks(ChatService.stripTokens(response.choices[0]?.message?.content ?? '')).trim();
+    } catch (err) {
+      this.logger.warn(`No se pudo redactar el seguimiento: ${(err as Error)?.message}`);
       return '';
     }
   }
