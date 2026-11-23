@@ -179,4 +179,14 @@ describe('MemoryRecallService', () => {
     await insert({ userKey: 'leon', username: 'Leon', kind: 'event', text: 'de León', eventDate: '2026-11-23' });
     expect((await recall.recall('Victoria', 'hola', NOW)).block).toBe('');
   });
+
+  // Revisión final (Important 6): un delicado no entra "porque sí" por estar cerca.
+  it('un evento delicado cercano entra sólo si el mensaje habla de eso', async () => {
+    await insert({ kind: 'event', text: 'Operan a su mamá', eventDate: '2026-11-23', sensitive: true });
+    vectors['Operan a su mamá'] = [1, 0, 0];
+    vectors['hola'] = [0, 1, 0];
+    vectors['cómo sigue tu mamá'] = [1, 0.1, 0];
+    expect((await recall.recall('Victoria', 'hola', NOW)).block).toBe('');
+    expect((await recall.recall('Victoria', 'cómo sigue tu mamá', NOW)).block).toContain('Operan a su mamá');
+  });
 });

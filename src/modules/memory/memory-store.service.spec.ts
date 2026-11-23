@@ -78,6 +78,20 @@ describe('MemoryStore', () => {
     expect(await model.countDocuments()).toBe(1);
   });
 
+  // Revisión final (Important 2): el modelo casi nunca repite la frase exacta.
+  it('un evento de la misma fecha con dos claves en común es duplicate aunque cambie el texto', async () => {
+    await store.create('Victoria', draft({ kind: 'event', text: 'Rinde el examen de cálculo', keywords: ['examen', 'calculo', 'facultad'], eventDate: '2026-11-27' }), NOW);
+    const out = await store.create('Victoria', draft({ kind: 'event', text: 'Tiene el parcial de cálculo', keywords: ['parcial', 'calculo', 'examen'], eventDate: '2026-11-27' }), NOW);
+    expect(out.result).toBe('duplicate');
+    expect(await model.countDocuments()).toBe(1);
+  });
+
+  it('otra fecha o una sola clave en común no es duplicado', async () => {
+    await store.create('Victoria', draft({ kind: 'event', text: 'Rinde el examen de cálculo', keywords: ['examen', 'calculo'], eventDate: '2026-11-27' }), NOW);
+    expect((await store.create('Victoria', draft({ kind: 'event', text: 'Rinde el examen de física', keywords: ['examen', 'fisica'], eventDate: '2026-11-27' }), NOW)).result).toBe('created');
+    expect((await store.create('Victoria', draft({ kind: 'event', text: 'Recupera cálculo', keywords: ['examen', 'calculo'], eventDate: '2026-12-04' }), NOW)).result).toBe('created');
+  });
+
   it(`el recuerdo número ${MAX_NEW_PER_DAY + 1} del mismo día local es daily_cap`, async () => {
     for (let i = 0; i < MAX_NEW_PER_DAY; i++) {
       expect((await store.create('Victoria', draft({ text: `dato ${i}` }), NOW)).result).toBe('created');

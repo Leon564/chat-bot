@@ -56,6 +56,7 @@ describe('PromptBuilderService', () => {
       expect(prompt).toContain('RECUERDO_CERRADO(');
       expect(prompt).toContain('no de otras personas');
       expect(prompt).toMatch(/delicado.*salud, familia o plata/);
+      expect(prompt).toContain('no lo saques vos');
       // Fecha de hoy en hora de El Salvador, para resolver "el viernes".
       expect(prompt).toContain('2026-03-17');
     });

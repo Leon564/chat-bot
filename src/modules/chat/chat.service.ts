@@ -2,7 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { MemoryRecallService } from '../memory/memory-recall.service';
 import { MemoryStore } from '../memory/memory-store.service';
 import { FollowupService } from '../memory/followup.service';
-import { extractMemoryVerbs, validateMemoryDraft } from '../memory/memory-verbs';
+import { extractMemoryVerbs, isValidEventDate, validateMemoryDraft } from '../memory/memory-verbs';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { LoggingService } from '../../common/utils/logging.service';
@@ -1437,6 +1437,7 @@ escribas nada después del delimitador.`
         else if (result === 'updated') await this.followups?.reschedule(memory, now);
       }
       for (const change of verbs.changes) {
+        if (!isValidEventDate(change.eventDate, now)) continue;
         const id = refs.get(change.ref);
         if (!id || !(await this.memoryStore.findOwned(username, id))) continue;
         const moved = await this.memoryStore.reschedule(id, change.eventDate, change.eventTime);

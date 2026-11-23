@@ -111,6 +111,26 @@ describe('EmbeddingService', () => {
   });
 });
 
+describe('EmbeddingService — modelo local con tope de tiempo y pausa', () => {
+  it('si el local tarda de más devuelve null sin esperar', async () => {
+    const { service, local } = build({ apiKey: '' });
+    service.localTimeoutMs = 20;
+    local.embed.mockImplementation(() => new Promise(() => {}));
+    expect(await service.embed(['a'], 'query')).toBeNull();
+    expect(service.currentSource()).toBe('keywords');
+  });
+
+  it('si el local falla no se lo reintenta por 10 min', async () => {
+    const { service, local, advance } = build({ apiKey: '' });
+    local.embed.mockRejectedValueOnce(new Error('onnxruntime no carga'));
+    expect(await service.embed(['a'], 'query')).toBeNull();
+    expect(await service.embed(['b'], 'query')).toBeNull();
+    expect(local.embed).toHaveBeenCalledTimes(1);
+    advance(10 * 60_000 + 1);
+    expect((await service.embed(['c'], 'query'))?.model).toBe('local:Xenova/multilingual-e5-small');
+  });
+});
+
 describe('cosine', () => {
   it('casos básicos', () => {
     expect(cosine([1, 0], [1, 0])).toBeCloseTo(1);

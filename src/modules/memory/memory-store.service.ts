@@ -10,6 +10,8 @@ export const MAX_ACTIVE_MEMORIES = 50;
 export const MAX_NEW_PER_DAY = 5;
 /** Un evento pasa a `done` estos días después de su fecha. */
 export const EVENT_DONE_AFTER_DAYS = 7;
+/** Dos eventos de la misma fecha con al menos estas claves en común son el mismo. */
+const SAME_EVENT_SHARED_KEYWORDS = 2;
 
 export type CreateMemoryResult = 'created' | 'updated' | 'duplicate' | 'daily_cap';
 
@@ -47,7 +49,18 @@ export class MemoryStore {
     const key = normalizeText(draft.text);
     const active = await this.listActive(username, now);
 
-    const same = active.find((m) => normalizeText(m.text) === key);
+    const same =
+      active.find((m) => normalizeText(m.text) === key) ??
+      // El modelo casi nunca repite la frase exacta: un evento de la misma
+      // fecha que comparte dos claves es el mismo.
+      (draft.kind === 'event' && draft.eventDate
+        ? active.find(
+            (m) =>
+              m.kind === 'event' &&
+              m.eventDate === draft.eventDate &&
+              m.keywords.filter((k) => draft.keywords.includes(k)).length >= SAME_EVENT_SHARED_KEYWORDS,
+          )
+        : undefined);
     if (same) {
       const moved =
         draft.eventDate && (draft.eventDate !== same.eventDate || (draft.eventTime ?? null) !== (same.eventTime ?? null));

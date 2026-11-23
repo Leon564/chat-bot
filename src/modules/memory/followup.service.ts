@@ -6,6 +6,8 @@ import { BotMemory, BotMemoryDocument } from '../../common/schemas/bot-memory.sc
 import { afterWindow, beforeDueAt, localDayKey, localToUtc, addDays } from './memory-time';
 
 const userKeyOf = (username: string): string => (username ?? '').trim().toLowerCase();
+/** Un "hoy rindo" (sin hora) contado después de esta hora local se toma como relato. */
+const LATE_TODAY = '18:00';
 
 /**
  * Seguimientos de los eventos: la suerte del día (`before`, sale sola a su
@@ -22,16 +24,36 @@ export class FollowupService {
 
   async schedule(memory: BotMemoryDocument, now = new Date()): Promise<void> {
     if (memory.kind !== 'event' || !memory.eventDate) return;
-    const base = { userKey: memory.userKey, username: memory.username, memoryId: memory._id as Types.ObjectId, status: 'pending' as const };
+    const base = {
+      userKey: memory.userKey,
+      username: memory.username,
+      memoryId: memory._id as Types.ObjectId,
+      sensitive: !!memory.sensitive,
+      status: 'pending' as const,
+    };
     const docs: Partial<BotFollowup>[] = [];
 
     const before = beforeDueAt(memory.eventDate, memory.eventTime ?? undefined);
-    if (!memory.sensitive && before.getTime() > now.getTime()) {
+    if (!memory.sensitive && before && before.getTime() > now.getTime()) {
       docs.push({ ...base, phase: 'before', dueAt: before, expiresAt: localToUtc(addDays(memory.eventDate, 2), '00:00') });
     }
-    const { from, expiresAt } = afterWindow(memory.eventDate);
-    docs.push({ ...base, phase: 'after', dueAt: from, expiresAt });
-    await this.model.insertMany(docs);
+    if (this.wantsAfter(memory, now)) {
+      const { from, expiresAt } = afterWindow(memory.eventDate);
+      docs.push({ ...base, phase: 'after', dueAt: from, expiresAt });
+    }
+    if (docs.length > 0) await this.model.insertMany(docs);
+  }
+
+  /**
+   * Un evento que ya pasó cuando lo contó ("ayer rendí", "hoy rendí" a la
+   * noche) no lleva "¿cómo te fue?": la persona acaba de contar cómo le fue.
+   */
+  private wantsAfter(memory: BotMemoryDocument, now: Date): boolean {
+    const today = localDayKey(now);
+    if (memory.eventDate! > today) return true;
+    if (memory.eventDate! < today) return false;
+    if (memory.eventTime) return localToUtc(today, memory.eventTime).getTime() > now.getTime();
+    return now.getTime() < localToUtc(today, LATE_TODAY).getTime();
   }
 
   async reschedule(memory: BotMemoryDocument, now = new Date()): Promise<void> {
@@ -69,12 +91,24 @@ export class FollowupService {
   }
 
   /** El "¿cómo te fue?" disponible más viejo de esa persona, si hoy no recibió otro seguimiento. */
-  async claimAfter(username: string, now = new Date()): Promise<BotMemoryDocument | null> {
+  async claimAfter(
+    username: string,
+    now = new Date(),
+    opts: { includeSensitive?: boolean } = {},
+  ): Promise<BotMemoryDocument | null> {
     const userKey = userKeyOf(username);
     if (await this.model.exists({ userKey, status: 'sent', sentAt: { $gte: this.dayStart(now) } })) return null;
     for (;;) {
       const claimed = await this.model.findOneAndUpdate(
-        { userKey, phase: 'after', status: 'pending', dueAt: { $lte: now }, expiresAt: { $gt: now } },
+        {
+          userKey,
+          phase: 'after',
+          status: 'pending',
+          dueAt: { $lte: now },
+          expiresAt: { $gt: now },
+          // Fuera de una respuesta a esa persona, nada delicado (quedan pendientes).
+          ...(opts.includeSensitive === false ? { sensitive: { $ne: true } } : {}),
+        },
         { $set: { status: 'sent', sentAt: now } },
         { sort: { dueAt: 1 }, new: true },
       );

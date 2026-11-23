@@ -19,6 +19,10 @@ export class BotFollowup {
   @Prop({ type: Types.ObjectId, required: true })
   memoryId: Types.ObjectId;
 
+  /** Copia de `BotMemory.sensitive`: un delicado no sale en un mensaje que no es respuesta. */
+  @Prop({ default: false })
+  sensitive: boolean;
+
   @Prop({ required: true, enum: ['before', 'after'] })
   phase: 'before' | 'after';
 

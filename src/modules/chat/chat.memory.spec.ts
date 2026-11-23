@@ -173,6 +173,14 @@ describe('ChatService — memoria a largo plazo', () => {
     expect(followups.reschedule).toHaveBeenCalledWith(expect.objectContaining({ eventDate: '2026-11-30' }), expect.any(Date));
   });
 
+  // Revisión final (Important 3): la fecha nueva se valida igual que al guardar.
+  it.each(['2026-13-01', '2026-02-30', '2020-01-01'])('RECUERDO_CAMBIO con fecha inválida (%s) no toca nada', async (date) => {
+    crearMock.mockResolvedValue(respuesta(`ok RECUERDO_CAMBIO(r1 | ${date})`));
+    await service.chat('x', 'Aria', 'Victoria', { memory: {} });
+    expect(store.reschedule).not.toHaveBeenCalled();
+    expect(followups.reschedule).not.toHaveBeenCalled();
+  });
+
   it('RECUERDO_CERRADO cierra el recuerdo', async () => {
     crearMock.mockResolvedValue(respuesta('¡Bien ahí! RECUERDO_CERRADO(r1)'));
     await service.chat('ya rendí', 'Aria', 'Victoria', { memory: {} });

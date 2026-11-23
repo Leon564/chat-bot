@@ -96,7 +96,9 @@ export class MemoryRecallService {
     const today = localDayKey(now);
     const from = addDays(today, -1);
     const to = addDays(today, EVENT_LOOKAHEAD_DAYS);
-    const isNear = (m: BotMemoryDocument) => m.kind === 'event' && !!m.eventDate && m.eventDate >= from && m.eventDate <= to;
+    // Un delicado no entra "porque sí" por estar cerca: sólo si el mensaje habla de eso.
+    const isNear = (m: BotMemoryDocument) =>
+      m.kind === 'event' && !m.sensitive && !!m.eventDate && m.eventDate >= from && m.eventDate <= to;
 
     const scores = await this.score(text, active);
     const threshold = scores.threshold;

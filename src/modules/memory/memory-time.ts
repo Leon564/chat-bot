@@ -30,17 +30,17 @@ const MIN_LEAD_MS = 30 * 60_000;
 
 /**
  * Cuándo sale la suerte del día de un evento: sin hora, 09:00 local; con
- * hora, 2 h antes, pero no antes de las 08:00 — salvo que las 08:00 dejen
- * menos de 30 min de margen, y ahí sale 30 min antes.
+ * hora, 2 h antes, pero no antes de las 08:00. Un evento que empieza antes de
+ * las 08:30 no tiene aviso (`null`): sería mencionar a alguien de madrugada.
  */
-export function beforeDueAt(eventDate: string, eventTime?: string): Date {
+export function beforeDueAt(eventDate: string, eventTime?: string): Date | null {
   if (!eventTime) return localToUtc(eventDate, '09:00');
   const start = localToUtc(eventDate, eventTime).getTime();
   const earliest = localToUtc(eventDate, EARLIEST).getTime();
   const twoHoursBefore = start - 2 * HOUR_MS;
   if (twoHoursBefore >= earliest) return new Date(twoHoursBefore);
   if (start - earliest >= MIN_LEAD_MS) return new Date(earliest);
-  return new Date(start - MIN_LEAD_MS);
+  return null;
 }
 
 /** Ventana del "¿cómo te fue?": desde las 00:00 local del día siguiente, por 5 días. */

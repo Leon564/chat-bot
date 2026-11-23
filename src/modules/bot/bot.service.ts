@@ -291,7 +291,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // persona, es el momento (apareció); si no, a lo sumo un comentario
       // espontáneo cada tanto (sin await: sus fallos se tragan adentro).
       if (this.memoryOnFor(authorRole)) {
-        const after = await this.followups!.claimAfter(authorUsername).catch(() => null);
+        // Mensaje propio, no una respuesta: nada delicado (spec, "Delicado").
+        const after = await this.followups!.claimAfter(authorUsername, new Date(), { includeSensitive: false }).catch(() => null);
         if (after) {
           await this.sendFollowUp(after, authorUsername, botUsername, 'after');
           return;

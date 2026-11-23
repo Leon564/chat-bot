@@ -173,4 +173,28 @@ describe('FollowupService', () => {
     await store.forgetByPosition('Victoria', 1, NOW);
     expect(await model.countDocuments({ status: 'pending' })).toBe(0);
   });
+
+  // Revisión final (Critical 1): un delicado no sale en un mensaje que no es respuesta.
+  it('claimAfter con includeSensitive:false no reclama los delicados (y los deja pendientes)', async () => {
+    await followups.schedule(await event({ sensitive: true }), NOW);
+    const at = new Date('2026-11-28T15:00:00Z');
+    expect(await followups.claimAfter('Victoria', at, { includeSensitive: false })).toBeNull();
+    expect((await followups.claimAfter('Victoria', at))?.text).toBe('Rinde el examen de cálculo');
+  });
+
+  // Revisión final (Important 5): no preguntar por algo que ya contó hecho.
+  it('un evento de ayer no tiene ni antes ni después', async () => {
+    await followups.schedule(await event({ eventDate: '2026-11-21' }), NOW);
+    expect(await pending()).toEqual([]);
+  });
+
+  it('un evento de hoy sin hora guardado después de las 18:00 no tiene después', async () => {
+    await followups.schedule(await event({ eventDate: '2026-11-22' }), new Date('2026-11-23T01:00:00Z'));
+    expect(await pending()).toEqual([]);
+  });
+
+  it('un evento de hoy cuya hora ya pasó no tiene después', async () => {
+    await followups.schedule(await event({ eventDate: '2026-11-22', eventTime: '09:30' }), NOW);
+    expect(await pending()).toEqual([]);
+  });
 });

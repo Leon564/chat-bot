@@ -13,6 +13,7 @@ export type EmbeddingSource = 'external' | 'local' | 'keywords';
 /** Tras un fallo del externo, no se lo vuelve a probar por este tiempo. */
 export const EXTERNAL_RETRY_MS = 10 * 60_000;
 const EXTERNAL_TIMEOUT_MS = 3000;
+const LOCAL_TIMEOUT_MS = 3000;
 
 /** Similitud coseno; 0 si algún vector es nulo o las dimensiones no coinciden. */
 export function cosine(a: number[], b: number[]): number {
@@ -40,6 +41,9 @@ export class EmbeddingService {
   now: () => number = Date.now;
   private client: Pick<OpenAI, 'embeddings'> | null = null;
   private externalDownUntil = 0;
+  private localDownUntil = 0;
+  /** Tope de espera del modelo local en el camino de una respuesta (la carga sigue de fondo). */
+  localTimeoutMs = LOCAL_TIMEOUT_MS;
   private lastSource: EmbeddingSource;
 
   constructor(
@@ -129,13 +133,30 @@ export class EmbeddingService {
     }
   }
 
+  /**
+   * Modelo local con tope de tiempo: la primera vez baja y carga ~120 MB, y
+   * eso no puede colgar una respuesta. Si tarda, esta vez no hay vectores
+   * (palabras clave) y la carga sigue de fondo. Si falla, se pausa 10 min.
+   */
   private async tryLocal(texts: string[], purpose: EmbedPurpose): Promise<number[][] | null> {
+    if (this.now() < this.localDownUntil) return null;
+    let timer: NodeJS.Timeout | undefined;
     try {
       // Los modelos e5 esperan el prefijo que dice si es consulta o pasaje.
-      return await this.local.embed(texts.map((t) => `${purpose}: ${t}`));
+      const work = this.local.embed(texts.map((t) => `${purpose}: ${t}`));
+      work.catch(() => {}); // si pierde la carrera, su rechazo no queda suelto
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), this.localTimeoutMs);
+      });
+      const result = await Promise.race([work, timeout]);
+      if (!result) log.warn('El modelo local de embeddings tardó de más; esta vez se usan palabras clave.');
+      return result;
     } catch (err) {
-      log.warn(`El modelo local de embeddings falló: ${(err as Error)?.message}`);
+      this.localDownUntil = this.now() + EXTERNAL_RETRY_MS;
+      log.warn(`El modelo local de embeddings falló, se pausa ${EXTERNAL_RETRY_MS / 60_000} min: ${(err as Error)?.message}`);
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

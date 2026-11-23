@@ -91,6 +91,13 @@ function isRealDate(day: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === day;
 }
 
+/** Fecha real, entre ayer y dentro de un año (hora de El Salvador). */
+export function isValidEventDate(date: string, now: Date): boolean {
+  const today = localDayKey(now);
+  const latest = `${Number(today.slice(0, 4)) + 1}${today.slice(4)}`;
+  return isRealDate(date) && date >= addDays(today, -1) && date <= latest;
+}
+
 /**
  * Convierte los campos de un RECUERDO en un `MemoryDraft`, o `null` si no
  * sirve (tipo desconocido, texto vacío). Un evento sin fecha válida (relativa,
@@ -113,10 +120,8 @@ export function validateMemoryDraft(fields: string[], now: Date): MemoryDraft | 
   const draft: MemoryDraft = { kind, text, keywords, sensitive };
   if (kind !== 'event') return draft;
 
-  const today = localDayKey(now);
-  const latest = `${Number(today.slice(0, 4)) + 1}${today.slice(4)}`;
   const date = rawDate ?? '';
-  if (!isRealDate(date) || date < addDays(today, -1) || date > latest) {
+  if (!isValidEventDate(date, now)) {
     kind = 'fact';
     return { ...draft, kind };
   }

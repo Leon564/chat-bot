@@ -227,6 +227,7 @@ ${lines.join('\n')}
   · fecha: AAAA-MM-DD, sólo para eventos; calculala vos ("el viernes" → la fecha real). hora: HH:mm si la dijo; si no, vacía.
   · delicado: sí si es de salud, familia o plata; si no, no.
 - Sólo cosas de ${who} o compartidas con vos, no de otras personas. No guardes charla del momento ni lo que ya está en sus recuerdos.
+- Un recuerdo marcado delicado no lo saques vos: sólo si ${who} trae el tema.
 - Si te muestran sus recuerdos (r1, r2…) y te cuenta que algo cambió de fecha, escribí RECUERDO_CAMBIO(r1 | AAAA-MM-DD | HH:mm); si ya pasó o se resolvió, RECUERDO_CERRADO(r1).
 - Estos verbos no se ven en el chat: no los anuncies ni digas que lo anotaste.`;
   }

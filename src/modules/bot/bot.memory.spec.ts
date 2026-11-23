@@ -138,6 +138,12 @@ describe('BotService — memoria a largo plazo', () => {
     expect(logging.saveLog).toHaveBeenCalledWith('Aria', expect.stringContaining('¿Cómo te fue en el examen?'));
   });
 
+  it('sin hablarle, sólo reclama "después" que no sean delicados', async () => {
+    const { send, followups } = await build({ after: EXAM });
+    await send('hola gente');
+    expect(followups.claimAfter).toHaveBeenCalledWith('Victoria', expect.any(Date), { includeSensitive: false });
+  });
+
   it('si el modelo no redacta el después, sale el texto fijo', async () => {
     const { send, events } = await build({ after: EXAM, drafted: '' });
     await send('hola gente');

@@ -17,19 +17,26 @@ describe('memory-time (hora de El Salvador, UTC-6 fijo)', () => {
 
 describe('beforeDueAt / afterWindow', () => {
   it('sin hora: 09:00 local del día del evento', () => {
-    expect(beforeDueAt('2026-11-27').toISOString()).toBe('2026-11-27T15:00:00.000Z');
+    expect(beforeDueAt('2026-11-27')?.toISOString()).toBe('2026-11-27T15:00:00.000Z');
   });
 
   it('con hora: 2 h antes', () => {
-    expect(beforeDueAt('2026-11-27', '15:00').toISOString()).toBe('2026-11-27T19:00:00.000Z');
+    expect(beforeDueAt('2026-11-27', '15:00')?.toISOString()).toBe('2026-11-27T19:00:00.000Z');
   });
 
   it('con hora temprana: no antes de las 08:00', () => {
-    expect(beforeDueAt('2026-11-27', '09:00').toISOString()).toBe('2026-11-27T14:00:00.000Z');
+    expect(beforeDueAt('2026-11-27', '09:00')?.toISOString()).toBe('2026-11-27T14:00:00.000Z');
   });
 
-  it('si las 08:00 no quedan antes del evento: 30 min antes', () => {
-    expect(beforeDueAt('2026-11-27', '08:10').toISOString()).toBe('2026-11-27T13:40:00.000Z');
+  // Revisión final: no mencionar a nadie de madrugada.
+  it('evento antes de las 08:30: sin aviso (null)', () => {
+    expect(beforeDueAt('2026-11-27', '08:29')).toBeNull();
+    expect(beforeDueAt('2026-11-27', '05:00')).toBeNull();
+    expect(beforeDueAt('2026-11-27', '00:15')).toBeNull();
+  });
+
+  it('evento a las 08:30: a las 08:00', () => {
+    expect(beforeDueAt('2026-11-27', '08:30')?.toISOString()).toBe('2026-11-27T14:00:00.000Z');
   });
 
   it('el después: desde las 00:00 del día siguiente, por 5 días', () => {
