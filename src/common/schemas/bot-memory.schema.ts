@@ -18,7 +18,7 @@ export class BotMemory {
   @Prop({ required: true })
   username: string;
 
-  @Prop({ required: true, enum: MEMORY_KINDS })
+  @Prop({ type: String, required: true, enum: MEMORY_KINDS })
   kind: MemoryKind;
 
   @Prop({ required: true })
@@ -40,7 +40,7 @@ export class BotMemory {
   @Prop({ type: [{ _id: false, model: String, vector: [Number] }], default: [] })
   embeddings: { model: string; vector: number[] }[];
 
-  @Prop({ default: 'active', enum: ['active', 'done', 'cancelled'] })
+  @Prop({ type: String, default: 'active', enum: ['active', 'done', 'cancelled'] })
   status: 'active' | 'done' | 'cancelled';
 
   @Prop({ default: 0 })
